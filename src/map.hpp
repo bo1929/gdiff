@@ -67,8 +67,10 @@ private:
   vec<std::string> identifer_batch;
   optimize::HDistHistLLH llhfunc;
   double rho;
-  vec<double> s;
-  vec<double> c;
+  vec<double> s1;
+  vec<double> c1;
+  vec<double> s2;
+  vec<double> c2;
   vec<double> sd;
   vec<double> sdd;
   vec<double> prefix_sum_c;
@@ -77,6 +79,10 @@ private:
   vec<double> suffix_minima;
   double mp;
   double mp2;
+  double csum1 = 0;
+  double ssum1 = 0;
+  double csum2 = 0;
+  double ssum2 = 0;
   double dist_th;
   uint64_t min_length = 0;
   double chi_sq = 3.841; // 95%

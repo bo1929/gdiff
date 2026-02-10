@@ -103,13 +103,21 @@ void SBatch::map_sequences(std::ostream& output_stream)
     enmers = len - k + 1;
     onmers = 0;
 
-    s.resize(enmers);
-    c.resize(enmers);
+    ssum1 = 0;
+    csum1 = 0;
+    ssum2 = 0;
+    csum2 = 0;
+    s1.resize(enmers);
+    c1.resize(enmers);
+    s2.resize(enmers);
+    c2.resize(enmers);
     prefix_sum_s.resize(enmers + 1);
     prefix_sum_c.resize(enmers + 1);
 
-    std::fill(s.begin(), s.end(), 0);
-    std::fill(c.begin(), c.end(), 0);
+    std::fill(s1.begin(), s1.end(), 0);
+    std::fill(c1.begin(), c1.end(), 0);
+    std::fill(s2.begin(), s2.end(), 0);
+    std::fill(c2.begin(), c2.end(), 0);
     std::fill(prefix_sum_s.begin(), prefix_sum_s.end(), 0);
     std::fill(prefix_sum_c.begin(), prefix_sum_c.end(), 0);
 
@@ -120,10 +128,19 @@ void SBatch::map_sequences(std::ostream& output_stream)
     SSummary rc_summary(enmers, hdist_th);
     search_mers(seq, len, or_summary, rc_summary);
 
+    /* std::cout << ssum1  << "/" << ssum2 << std::endl; */
+    if (ssum1 < ssum2) {
     for ( int j = 0; j < prefix_sum_c.size()-1; ++j )
     {
-    prefix_sum_c[j + 1] = prefix_sum_c[j] + c[j];
-    prefix_sum_s[j + 1] = prefix_sum_s[j] + s[j];
+      prefix_sum_c[j + 1] = prefix_sum_c[j] + c1[j];
+      prefix_sum_s[j + 1] = prefix_sum_s[j] + s1[j];
+    }
+    } else {
+    for ( int j = 0; j < prefix_sum_c.size()-1; ++j )
+    {
+      prefix_sum_c[j + 1] = prefix_sum_c[j] + c2[j];
+      prefix_sum_s[j + 1] = prefix_sum_s[j] + s2[j];
+    }
     }
 
     vec<double> prefmax(prefix_sum_s.size() + 1);
@@ -137,46 +154,6 @@ void SBatch::map_sequences(std::ostream& output_stream)
       prefix_sum_s.rbegin(), prefix_sum_s.rend(), suffmin.rbegin(), [](double a, double b) { return std::min(a, b); });
     suffmin.push_back(std::numeric_limits<double>::max());
 
-    /* batch_stream<< "s: "; */
-    /* for ( int i = 0; i < s.size(); ++i ) */
-    /* { */
-    /*   batch_stream  << "," << s[i]; */
-    /* } */
-    /* batch_stream<< "\n"; */
-    /* batch_stream<< "prefix_sum_s: "; */
-    /* for ( int i = 0; i < prefix_sum_s.size(); ++i ) */
-    /* { */
-    /*   batch_stream << "," << prefix_sum_s[i]; */
-    /* } */
-    /* batch_stream<< "\n"; */
-
-    /* batch_stream<< "c: "; */
-    /* for ( int i = 0; i < c.size(); ++i ) */
-    /* { */
-    /*   batch_stream << "," << c[i]; */
-    /* } */
-    /* batch_stream<< "\n"; */
-    /* batch_stream<< "prefix_sum_c: "; */
-    /* for ( int i = 0; i < prefix_sum_c.size(); ++i ) */
-    /* { */
-    /*   batch_stream << "," << prefix_sum_c[i]; */
-    /* } */
-    /* batch_stream<< "\n"; */
-
-    /* batch_stream<< "prefmax: "; */
-    /* for ( int i = 0; i < prefmax.size(); ++i ) */
-    /* { */
-    /*   batch_stream << "," << prefmax[i]; */
-    /* } */
-    /* batch_stream<< "\n"; */
-
-    /* batch_stream<< "suffmin: "; */
-    /* for ( int i = 0; i < suffmin.size(); ++i ) */
-    /* { */
-    /*   batch_stream << "," << suffmin[i]; */
-    /* } */
-    /* batch_stream<< "\n"; */
-
     int n = enmers;
     uint64_t tau = std::min(min_length, len) - 100;
     int b = 1;
@@ -185,7 +162,9 @@ void SBatch::map_sequences(std::ostream& output_stream)
     vec<int> start_idx;
     vec<int> end_idx;
 
+    int ixx = rand();
     for (int a = 1; a <= n; ++a) {
+      /* batch_stream << "X:" <<  a << std::endl; */
       if (prefmax[a - 1] >= prefix_sum_s[a]) {
         continue;
       }
@@ -196,52 +175,48 @@ void SBatch::map_sequences(std::ostream& output_stream)
         break;
       }
       if (suffmin[b + 1] >= prefix_sum_s[a]) {
+        /* batch_stream << suffmin[b - 1] << std::endl; */
+        /* batch_stream << suffmin[b] << std::endl; */
+        /* batch_stream << suffmin[b + 1] << std::endl; */
+        /* batch_stream << prefix_sum_s[a - 1] << std::endl; */
+        /* batch_stream << prefix_sum_s[a] << std::endl; */
+        /* batch_stream << prefix_sum_s[a + 1] << std::endl; */
         continue;
       }
-      // std::cout << "1) a " << a << ", b " << b << " len " << tau << std::endl;
       b++;
       while (b <= n) {
-        // std::cout << (prefmax[a - 1] <= prefix_sum_s[b]) << "/" << (prefix_sum_s[b] < prefix_sum_s[a]) << "/"
-        //           << (prefix_sum_s[a] <= suffmin[b + 1]) << ";" << prefix_sum_s[a] << "," << suffmin[b + 1] << std::endl;
         if ((prefmax[a - 1] <= prefix_sum_s[b]) && (prefix_sum_s[b] < prefix_sum_s[a]) &&
             (prefix_sum_s[a] <= suffmin[b + 1])) {
+          /* batch_stream << bix << ixx << identifer_batch[bix] << "," << a << "," << b - 1 << ',' << n << "," */
+          /*              << prefix_sum_s[b] - prefix_sum_s[a] << "," << 0 << "\n"; */
           start_idx.push_back(a);
           end_idx.push_back(b);
-          /* batch_stream << bix << rand() << identifer_batch[bix] << "," << a << "," << b - 1 << ',' << n << "," */
-          /*              << prefix_sum_s[b] - prefix_sum_s[a] << "," << 0 << "\n"; */
           break;
         }
         b++;
       }
-      // std::cout << "2) a " << a << ", b " << b << " len " << tau << std::endl;
     }
-    int ixx = rand();
     if (!start_idx.empty()) {
       ap = start_idx[0];
       bp = end_idx[0];
+
       for (int i = 1; i < start_idx.size(); ++i) {
         int a = start_idx[i];
         int b = end_idx[i];
-        /* double chi_sq_b = */
-        /*   (prefix_sum_s[b] - prefix_sum_s[a]) * (prefix_sum_s[b] - prefix_sum_s[a]) / (prefix_sum_c[a] - prefix_sum_c[b]); */
-        /* batch_stream << bix << rand() << identifer_batch[bix] << "," << a << "," << b - 1 << ',' << n << "," */
-        /*               << prefix_sum_s[b] - prefix_sum_s[a] << "," << chi_sq_b << "\n"; */
         double chi_sq_b =
           (prefix_sum_s[b] - prefix_sum_s[ap]) * (prefix_sum_s[b] - prefix_sum_s[ap]) / (prefix_sum_c[ap] - prefix_sum_c[b]);
-        /* batch_stream << (prefix_sum_c[ap] - prefix_sum_c[b]) << "\n"; */
-        /* batch_stream  << prefix_sum_s[b] - prefix_sum_s[ap] << "," << (prefix_sum_s[b] - prefix_sum_s[ap]) << "," << (prefix_sum_c[ap] - prefix_sum_c[b]) << std::endl; */
-        if (chi_sq_b < chi_sq && chi_sq_b > 0 && ap > 0) {
+        if ((chi_sq_b < chi_sq) && (chi_sq_b > 0) && (a < bp)) {
           a = ap;
         } else {
-          batch_stream << bix << ixx << identifer_batch[bix] << "," << ap << "," << b - 1 << ',' << n << ","
+          batch_stream << bix << ixx << identifer_batch[bix] << "," << ap << "," << bp - 1 << ',' << n << ","
                        << prefix_sum_s[bp] - prefix_sum_s[ap] << "," << chi_sq_b << "\n";
         }
         ap = a;
         bp = b;
       }
         double chi_sq_b =
-          (prefix_sum_s[b] - prefix_sum_s[ap]) * (prefix_sum_s[b] - prefix_sum_s[ap]) / (prefix_sum_c[ap] - prefix_sum_c[b]);
-          batch_stream << bix << ixx << identifer_batch[bix] << "," << ap << "," << b - 1 << ',' << n << ","
+          (prefix_sum_s[bp] - prefix_sum_s[ap]) * (prefix_sum_s[bp] - prefix_sum_s[ap]) / (prefix_sum_c[ap] - prefix_sum_c[bp]);
+          batch_stream << bix << ixx << identifer_batch[bix] << "," << ap << "," << bp - 1 << ',' << n << ","
                        << prefix_sum_s[bp] - prefix_sum_s[ap] << "," << chi_sq_b << "\n";
     } else {
       batch_stream << bix << ixx << identifer_batch[bix] << "," << n << "," << n << ',' << n << "," << 0 << "," << 0
@@ -303,15 +278,22 @@ void SBatch::search_mers(const char* seq, uint64_t len, SSummary& or_summary, SS
     // if (i % 2 == 0) {
     //   continue;
     // }
-    hdist_curr = std::min(hdist_or, hdist_rc);
-    hdist_curr = std::min(hdist_curr, hdist_th + 1);
+    hdist_or = std::min(hdist_or, hdist_th + 1);
+    hdist_rc = std::min(hdist_rc, hdist_th + 1);
 
     int j = i - k;
-    c[j] = sdd[hdist_curr];
+    c1[j] = sdd[hdist_or];
+    c2[j] = sdd[hdist_rc];
     if (divergent) {
-      s[j] = -sd[hdist_curr];
+      s1[j] = -sd[hdist_or];
+      s2[j] = -sd[hdist_rc];
+      ssum1 += sd[hdist_or];
+      ssum2 += sd[hdist_rc];
     } else {
-      s[j] = sd[hdist_curr];
+      s1[j] = sd[hdist_or];
+      s2[j] = sd[hdist_rc];
+      ssum1 += sd[hdist_or];
+      ssum2 += sd[hdist_rc];
     }
   }
 }
