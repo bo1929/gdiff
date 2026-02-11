@@ -1,0 +1,39 @@
+---
+Language:     Cpp
+BasedOnStyle: Mozilla
+ColumnLimit:             125
+MaxEmptyLinesToKeep:     1
+ContinuationIndentWidth: 2
+PenaltyExcessCharacter:  100
+AlignAfterOpenBracket: Align
+IndentPPDirectives:    BeforeHash
+NamespaceIndentation:  All
+PenaltyReturnTypeOnItsOwnLine: 1
+Cpp11BracedListStyle: true
+BreakStringLiterals:  false
+ReflowComments:       false
+SortIncludes:         false
+AllowAllParametersOfDeclarationOnNextLine: false
+AllowShortIfStatementsOnASingleLine:       true
+AllowShortCaseLabelsOnASingleLine:         false
+AllowShortBlocksOnASingleLine:             false
+AllowShortLoopsOnASingleLine:              false
+AllowShortFunctionsOnASingleLine:     All
+AlwaysBreakAfterDefinitionReturnType: None
+AlwaysBreakAfterReturnType:           None
+BraceWrapping:
+  AfterControlStatement: Never
+  AfterFunction:         false
+  AfterClass:            false
+  AfterEnum:             false
+  AfterStruct:           false
+  AfterNamespace:        false
+  BeforeElse: 					 false
+  AfterUnion:            false
+  AfterExternBlock:      false
+  BeforeCatch:           false
+  IndentBraces:          false
+  SplitEmptyFunction:    false
+  SplitEmptyRecord:      false
+  SplitEmptyNamespace:   false
+---
