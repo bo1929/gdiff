@@ -7,7 +7,7 @@
 #include "map.hpp"
 #include "sketch.hpp"
 #include "table.hpp"
-#include <CLI.hpp>
+#include "CLI11.hpp"
 
 const auto url_validator = CLI::Validator(
   [](std::string& input) {

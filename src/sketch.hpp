@@ -11,7 +11,7 @@ class Sketch
 {
 public:
   Sketch(std::filesystem::path sketch_path)
-    : sketch_path(sketch_path) {};
+    : sketch_path(sketch_path){};
   void load_full_sketch();
   void make_rho_partial();
   uint32_t search_mer(uint32_t rix, uint32_t enc_lr);

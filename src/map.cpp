@@ -1,6 +1,4 @@
 #include "map.hpp"
-#include <boost/math/tools/minima.hpp>
-#include <cstdlib>
 
 using std::make_pair;
 using std::make_tuple;
@@ -130,17 +128,15 @@ void SBatch::map_sequences(std::ostream& output_stream)
 
     /* std::cout << ssum1  << "/" << ssum2 << std::endl; */
     if (ssum1 < ssum2) {
-    for ( int j = 0; j < prefix_sum_c.size()-1; ++j )
-    {
-      prefix_sum_c[j + 1] = prefix_sum_c[j] + c1[j];
-      prefix_sum_s[j + 1] = prefix_sum_s[j] + s1[j];
-    }
+      for (int j = 0; j < prefix_sum_c.size() - 1; ++j) {
+        prefix_sum_c[j + 1] = prefix_sum_c[j] + c1[j];
+        prefix_sum_s[j + 1] = prefix_sum_s[j] + s1[j];
+      }
     } else {
-    for ( int j = 0; j < prefix_sum_c.size()-1; ++j )
-    {
-      prefix_sum_c[j + 1] = prefix_sum_c[j] + c2[j];
-      prefix_sum_s[j + 1] = prefix_sum_s[j] + s2[j];
-    }
+      for (int j = 0; j < prefix_sum_c.size() - 1; ++j) {
+        prefix_sum_c[j + 1] = prefix_sum_c[j] + c2[j];
+        prefix_sum_s[j + 1] = prefix_sum_s[j] + s2[j];
+      }
     }
 
     vec<double> prefmax(prefix_sum_s.size() + 1);
@@ -214,13 +210,12 @@ void SBatch::map_sequences(std::ostream& output_stream)
         ap = a;
         bp = b;
       }
-        double chi_sq_b =
-          (prefix_sum_s[bp] - prefix_sum_s[ap]) * (prefix_sum_s[bp] - prefix_sum_s[ap]) / (prefix_sum_c[ap] - prefix_sum_c[bp]);
-          batch_stream << bix << ixx << identifer_batch[bix] << "," << ap << "," << bp - 1 << ',' << n << ","
-                       << prefix_sum_s[bp] - prefix_sum_s[ap] << "," << chi_sq_b << "\n";
+      double chi_sq_b = (prefix_sum_s[bp] - prefix_sum_s[ap]) * (prefix_sum_s[bp] - prefix_sum_s[ap]) /
+                        (prefix_sum_c[ap] - prefix_sum_c[bp]);
+      batch_stream << bix << ixx << identifer_batch[bix] << "," << ap << "," << bp - 1 << ',' << n << ","
+                   << prefix_sum_s[bp] - prefix_sum_s[ap] << "," << chi_sq_b << "\n";
     } else {
-      batch_stream << bix << ixx << identifer_batch[bix] << "," << n << "," << n << ',' << n << "," << 0 << "," << 0
-                   << "\n";
+      batch_stream << bix << ixx << identifer_batch[bix] << "," << n << "," << n << ',' << n << "," << 0 << "," << 0 << "\n";
     }
   }
 #pragma omp critical
@@ -311,7 +306,7 @@ uint32_t SSummary::add_matching_mer(sketch_sptr_t sketch, uint32_t rix, enc_t en
 void SSummary::optimize_likelihood(optimize::HDistHistLLH llhfunc, double rho)
 {
   llhfunc.set_parameters(hdisthist_v.data(), mismatch_count, rho);
-  std::pair<double, double> sol_r = boost::math::tools::brent_find_minima(llhfunc, 1e-10, 0.5, 16);
-  d_llh = sol_r.first;
-  v_llh = sol_r.second;
+  /* std::pair<double, double> sol_r = boost::math::tools::brent_find_minima(llhfunc, 1e-10, 0.5, 16); */
+  /* d_llh = sol_r.first; */
+  /* v_llh = sol_r.second; */
 }

@@ -25,7 +25,7 @@ class SFlatHT
 
 public:
   SFlatHT(sdynht_sptr_t source);
-  SFlatHT() {};
+  SFlatHT(){};
   ~SFlatHT()
   {
     inc_v.clear();
