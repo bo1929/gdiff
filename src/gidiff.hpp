@@ -92,8 +92,7 @@ private:
   uint64_t total_qseq = 0;
   uint64_t min_length = 0;
   double dist_th = 0;
-  double chi_sq = 3.841; // 95%
-  bool divergent = false;
+  double chisq = 3.841; // 95%
 };
 
 #endif

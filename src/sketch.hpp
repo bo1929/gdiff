@@ -14,7 +14,7 @@ public:
   void load_full_sketch();
   void make_rho_partial();
   bool check_partial(uint32_t rix);
-  uint32_t search_mer(uint32_t rix, uint32_t enc_lr);
+  uint32_t search_mer(uint32_t rix, enc_t enc_lr);
   std::pair<vec_enc_it, vec_enc_it> bucket_indices(uint32_t rix);
   sfhm_sptr_t get_sfhm_sptr();
   lshf_sptr_t get_lshf();

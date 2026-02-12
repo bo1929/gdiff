@@ -3,8 +3,10 @@
 COMPILER ?= g++
 mode ?= dynamic  # Default to dynamic linking
 
-CXXFLAGS += -std=c++17 -O3 -g # TODO: remove -g
-WFLAGS += -Wno-unused-result -Wno-unused-command-line-argument -Wno-unknown-pragmas -Wno-undefined-inline # -Wall
+# TODO: remove -g
+CXXFLAGS += -std=c++17 -O3 -g
+# -Wall
+WFLAGS += -Wno-unused-result -Wno-unused-command-line-argument -Wno-unknown-pragmas -Wno-undefined-inline
 
 # INC = -I?
 
@@ -70,10 +72,10 @@ endif
 # generic rule for compiling *.cpp -> *.o
 build/%.o: src/%.cpp
 	@mkdir -p build
-	$(COMPILER) $(WFLAGS) $(CXXFLAGS) $(LDLIBS) $(VARDEF) $(INC) -c src/$*.cpp -o build/$*.o
+	$(COMPILER) -c src/$*.cpp -o build/$*.o $(WFLAGS) $(CXXFLAGS) $(LDLIBS) $(VARDEF) $(INC)
 
 $(PROGRAM): $(OBJECTS)
-	$(COMPILER) $(WFLAGS) $(CXXFLAGS) $+ $(LDLIBS) $(VARDEF) $(LDFLAGS) $(INC) -o $@
+	$(COMPILER) -o $@ $(WFLAGS) $(CXXFLAGS) $+ $(LDLIBS) $(VARDEF) $(LDFLAGS) $(INC)
 
 clean:
 	rm -f $(PROGRAM) $(OBJECTS)

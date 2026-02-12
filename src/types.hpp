@@ -9,6 +9,8 @@
 #include "phmap.h"
 
 class SBatch; // TODO
+class LLH;
+class DIM;
 class RSeq;
 class QSeq;
 class LSHF;
@@ -18,6 +20,7 @@ class Sketch;
 
 typedef uint64_t inc_t;
 typedef uint32_t enc_t;
+typedef std::pair<uint64_t, uint64_t> interval_t;
 
 typedef std::stringstream strstream;
 
@@ -27,6 +30,7 @@ template<typename T>
 using vec = std::vector<T>;
 
 typedef std::shared_ptr<SBatch> sbatch_sptr_t; // TODO
+typedef std::shared_ptr<LLH> llh_sptr_t;
 typedef std::shared_ptr<RSeq> rseq_sptr_t;
 typedef std::shared_ptr<QSeq> qseq_sptr_t;
 typedef std::shared_ptr<LSHF> lshf_sptr_t;

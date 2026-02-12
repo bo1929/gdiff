@@ -94,7 +94,7 @@ void MapSketch::map_sequences()
   bool cont_reading = false;
   while ((cont_reading = qs->read_next_batch()) || !qs->is_batch_finished()) {
     total_qseq += qs->get_cbatch_size();
-    SBatch sb(sketch, qs, hdist_th, dist_th, min_length, chi_sq, divergent);
+    SBatch sb(sketch, qs, hdist_th, dist_th, min_length, chisq);
     {
       sb.map_sequences(*output_stream);
     }
@@ -136,14 +136,10 @@ MapSketch::MapSketch(CLI::App& sc)
   sc.add_option("-i,--sketch-path", sketch_path, "Sketch file at <path> to query.")->required()->check(CLI::ExistingFile);
   sc.add_option("-o,--output-path", output_path, "Write output to a file at <path>. [stdout]");
   sc.add_option("--hdist-th", hdist_th, "Maximum Hamming distance for a k-mer to match. [4]")->check(CLI::NonNegativeNumber);
-  sc.add_option("--chi-sq", chi_sq, "Maximum Hamming distance for a k-mer to match. [4]")->check(CLI::NonNegativeNumber);
+  sc.add_option("--chi-sq", chisq, "Maximum Hamming distance for a k-mer to match. [4]")->check(CLI::NonNegativeNumber);
   sc.add_option("-d,--dist-th", dist_th, "Maximum (or minimum) distance for an interval to match.")->required();
   sc.add_option("-l,--min-length", min_length, "Maximum (or minimum) length for an interval to match.")->required();
   sc.callback([&]() {
-    if (dist_th < 0) {
-      divergent = true;
-      dist_th = -dist_th;
-    }
     if (!output_path.empty()) {
       output_file.open(output_path);
       output_stream = &output_file;
