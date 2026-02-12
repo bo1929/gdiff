@@ -6,7 +6,10 @@
 #include "lshf.hpp"
 #include "rqseq.hpp"
 #include "sketch.hpp"
-#include "table.hpp"
+#include "hm.hpp"
+#include "enc.hpp"
+#include "types.hpp"
+#include "exthash.hpp"
 
 namespace optimize {
   class HDistHistLLH;

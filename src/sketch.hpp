@@ -1,29 +1,24 @@
-#ifndef _SKETCH_H
-#define _SKETCH_H
+#ifndef _SKETCH_HPP
+#define _SKETCH_HPP
 
-#include "common.hpp"
+#include "types.hpp"
 #include "lshf.hpp"
-#include "table.hpp"
+#include "hm.hpp"
 
 typedef std::vector<enc_t>::const_iterator vec_enc_it;
 
 class Sketch
 {
 public:
-  Sketch(std::filesystem::path sketch_path)
-    : sketch_path(sketch_path){};
+  Sketch(std::filesystem::path sketch_path);
   void load_full_sketch();
   void make_rho_partial();
+  bool check_partial(uint32_t rix);
   uint32_t search_mer(uint32_t rix, uint32_t enc_lr);
   std::pair<vec_enc_it, vec_enc_it> bucket_indices(uint32_t rix);
-  bool check_partial(uint32_t rix)
-  {
-    uint32_t rix_res = rix % m;
-    return (frac && (rix_res <= r)) || (rix_res == r);
-  }
-  sflatht_sptr_t get_sflatht_sptr() { return sflatht; };
-  lshf_sptr_t get_lshf() { return lshf; }
-  double get_rho() { return rho; }
+  sfhm_sptr_t get_sfhm_sptr();
+  lshf_sptr_t get_lshf();
+  double get_rho();
 
 private:
   uint8_t k;
@@ -35,7 +30,7 @@ private:
   double rho;
   uint32_t nrows;
   lshf_sptr_t lshf = nullptr;
-  sflatht_sptr_t sflatht = nullptr;
+  sfhm_sptr_t sfhm = nullptr;
   std::filesystem::path sketch_path;
 };
 

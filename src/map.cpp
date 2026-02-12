@@ -158,7 +158,6 @@ void SBatch::map_sequences(std::ostream& output_stream)
     vec<int> start_idx;
     vec<int> end_idx;
 
-    int ixx = rand();
     for (int a = 1; a <= n; ++a) {
       /* batch_stream << "X:" <<  a << std::endl; */
       if (prefmax[a - 1] >= prefix_sum_s[a]) {
@@ -204,7 +203,7 @@ void SBatch::map_sequences(std::ostream& output_stream)
         if ((chi_sq_b < chi_sq) && (chi_sq_b > 0) && (a < bp)) {
           a = ap;
         } else {
-          batch_stream << bix << ixx << identifer_batch[bix] << "," << ap << "," << bp - 1 << ',' << n << ","
+          batch_stream << identifer_batch[bix] << "," << ap << "," << bp - 1 << ',' << n << ","
                        << prefix_sum_s[bp] - prefix_sum_s[ap] << "," << chi_sq_b << "\n";
         }
         ap = a;
@@ -212,10 +211,10 @@ void SBatch::map_sequences(std::ostream& output_stream)
       }
       double chi_sq_b = (prefix_sum_s[bp] - prefix_sum_s[ap]) * (prefix_sum_s[bp] - prefix_sum_s[ap]) /
                         (prefix_sum_c[ap] - prefix_sum_c[bp]);
-      batch_stream << bix << ixx << identifer_batch[bix] << "," << ap << "," << bp - 1 << ',' << n << ","
+      batch_stream << identifer_batch[bix] << "," << ap << "," << bp - 1 << ',' << n << ","
                    << prefix_sum_s[bp] - prefix_sum_s[ap] << "," << chi_sq_b << "\n";
     } else {
-      batch_stream << bix << ixx << identifer_batch[bix] << "," << n << "," << n << ',' << n << "," << 0 << "," << 0 << "\n";
+      batch_stream << identifer_batch[bix] << "," << n << "," << n << ',' << n << "," << 0 << "," << 0 << "\n";
     }
   }
 #pragma omp critical
@@ -228,7 +227,7 @@ void SBatch::search_mers(const char* seq, uint64_t len, SSummary& or_summary, SS
   uint32_t orrix, rcrix;
   uint64_t orenc64_bp, orenc64_lr, rcenc64_bp;
   for (i = l = 0; i < len;) {
-    if (seq_nt4_table[seq[i]] >= 4) {
+    if (SEQ_NT4_TABLE[seq[i]] >= 4) {
       l = 0, i++;
       continue;
     }
@@ -256,7 +255,7 @@ void SBatch::search_mers(const char* seq, uint64_t len, SSummary& or_summary, SS
     } else {
       rcrix = lshf->compute_hash(rcenc64_bp);
       if (sketch->check_partial(rcrix)) {
-        hdist_rc = rc_summary.add_matching_mer(sketch, rcrix, lshf->drop_ppos_lr(conv_bp64_lr64(rcenc64_bp)));
+        hdist_rc = rc_summary.add_matching_mer(sketch, rcrix, lshf->drop_ppos_lr(bp64_to_lr64(rcenc64_bp)));
       }
     }
 #else
@@ -266,7 +265,7 @@ void SBatch::search_mers(const char* seq, uint64_t len, SSummary& or_summary, SS
     }
     rcrix = lshf->compute_hash(rcenc64_bp);
     if (sketch->check_partial(rcrix)) {
-      hdist_rc = rc_summary.add_matching_mer(sketch, rcrix, lshf->drop_ppos_lr(conv_bp64_lr64(rcenc64_bp)));
+      hdist_rc = rc_summary.add_matching_mer(sketch, rcrix, lshf->drop_ppos_lr(bp64_to_lr64(rcenc64_bp)));
     }
 #endif /* CANONICAL */
 

@@ -328,7 +328,8 @@ namespace CLI {
 
       explicit scope_guard_t(F closure_)
         : closure(closure_)
-      {}
+      {
+      }
       ~scope_guard_t() { closure(); }
     };
 
@@ -1378,24 +1379,29 @@ namespace CLI {
 protected:                                                                                                                  \
   name(std::string ename, std::string msg, int exit_code)                                                                   \
     : parent(std::move(ename), std::move(msg), exit_code)                                                                   \
-  {}                                                                                                                        \
+  {                                                                                                                         \
+  }                                                                                                                         \
   name(std::string ename, std::string msg, ExitCodes exit_code)                                                             \
     : parent(std::move(ename), std::move(msg), exit_code)                                                                   \
-  {}                                                                                                                        \
+  {                                                                                                                         \
+  }                                                                                                                         \
                                                                                                                             \
 public:                                                                                                                     \
   name(std::string msg, ExitCodes exit_code)                                                                                \
     : parent(#name, std::move(msg), exit_code)                                                                              \
-  {}                                                                                                                        \
+  {                                                                                                                         \
+  }                                                                                                                         \
   name(std::string msg, int exit_code)                                                                                      \
     : parent(#name, std::move(msg), exit_code)                                                                              \
-  {}
+  {                                                                                                                         \
+  }
 
 // This is added after the one above if a class is used directly and builds its own message
 #define CLI11_ERROR_SIMPLE(name)                                                                                            \
   explicit name(std::string msg)                                                                                            \
     : name(#name, msg, ExitCodes::name)                                                                                     \
-  {}
+  {                                                                                                                         \
+  }
 
   /// These codes are part of every error in CLI. They can be obtained from e using e.exit_code or as a quick shortcut,
   /// int values from e.get_error_code().
@@ -1443,11 +1449,13 @@ public:                                                                         
       : runtime_error(msg)
       , actual_exit_code(exit_code)
       , error_name(std::move(name))
-    {}
+    {
+    }
 
     Error(std::string name, std::string msg, ExitCodes exit_code)
       : Error(name, msg, static_cast<int>(exit_code))
-    {}
+    {
+    }
   };
 
   // Note: Using Error::Error constructors does not work on GCC 4.7
@@ -1522,7 +1530,8 @@ public:                                                                         
     CLI11_ERROR_DEF(ConstructionError, OptionAlreadyAdded)
     explicit OptionAlreadyAdded(std::string name)
       : OptionAlreadyAdded(name + " is already added", ExitCodes::OptionAlreadyAdded)
-    {}
+    {
+    }
     static OptionAlreadyAdded Requires(std::string name, std::string other)
     {
       return {name + " requires " + other, ExitCodes::OptionAlreadyAdded};
@@ -1549,7 +1558,8 @@ public:                                                                         
     CLI11_ERROR_DEF(ParseError, Success)
     Success()
       : Success("Successfully completed, should be caught and quit", ExitCodes::Success)
-    {}
+    {
+    }
   };
 
   /// -h or --help on command line
@@ -1558,7 +1568,8 @@ public:                                                                         
     CLI11_ERROR_DEF(Success, CallForHelp)
     CallForHelp()
       : CallForHelp("This should be caught in your main function, see examples", ExitCodes::Success)
-    {}
+    {
+    }
   };
 
   /// Usually something like --help-all on command line
@@ -1567,7 +1578,8 @@ public:                                                                         
     CLI11_ERROR_DEF(Success, CallForAllHelp)
     CallForAllHelp()
       : CallForAllHelp("This should be caught in your main function, see examples", ExitCodes::Success)
-    {}
+    {
+    }
   };
 
   /// -v or --version on command line
@@ -1576,7 +1588,8 @@ public:                                                                         
     CLI11_ERROR_DEF(Success, CallForVersion)
     CallForVersion()
       : CallForVersion("This should be caught in your main function, see examples", ExitCodes::Success)
-    {}
+    {
+    }
   };
 
   /// Does not output a diagnostic in CLI11_PARSE, but allows main() to return with a specific error code.
@@ -1585,7 +1598,8 @@ public:                                                                         
     CLI11_ERROR_DEF(ParseError, RuntimeError)
     explicit RuntimeError(int exit_code = 1)
       : RuntimeError("Runtime error", exit_code)
-    {}
+    {
+    }
   };
 
   /// Thrown when parsing an INI file and it is missing
@@ -1603,10 +1617,12 @@ public:                                                                         
     CLI11_ERROR_SIMPLE(ConversionError)
     ConversionError(std::string member, std::string name)
       : ConversionError("The value " + member + " is not an allowed value for " + name)
-    {}
+    {
+    }
     ConversionError(std::string name, std::vector<std::string> results)
       : ConversionError("Could not convert: " + name + " = " + detail::join(results))
-    {}
+    {
+    }
     static ConversionError TooManyInputsFlag(std::string name)
     {
       return ConversionError(name + ": too many inputs for a flag");
@@ -1624,7 +1640,8 @@ public:                                                                         
     CLI11_ERROR_SIMPLE(ValidationError)
     explicit ValidationError(std::string name, std::string msg)
       : ValidationError(name + ": " + msg)
-    {}
+    {
+    }
   };
 
   /// Thrown when a required option is missing
@@ -1633,7 +1650,8 @@ public:                                                                         
     CLI11_ERROR_DEF(ParseError, RequiredError)
     explicit RequiredError(std::string name)
       : RequiredError(name + " is required", ExitCodes::RequiredError)
-    {}
+    {
+    }
     static RequiredError Subcommand(std::size_t min_subcom)
     {
       if (min_subcom == 1) {
@@ -1676,7 +1694,8 @@ public:                                                                         
                                       : ("Expected at least " + std::to_string(-expected) + " arguments to " + name +
                                          ", got " + std::to_string(received)),
                          ExitCodes::ArgumentMismatch)
-    {}
+    {
+    }
 
     static ArgumentMismatch AtLeast(std::string name, int num, std::size_t received)
     {
@@ -1709,7 +1728,8 @@ public:                                                                         
     CLI11_ERROR_DEF(ParseError, RequiresError)
     RequiresError(std::string curname, std::string subname)
       : RequiresError(curname + " requires " + subname, ExitCodes::RequiresError)
-    {}
+    {
+    }
   };
 
   /// Thrown when an excludes option is present
@@ -1718,7 +1738,8 @@ public:                                                                         
     CLI11_ERROR_DEF(ParseError, ExcludesError)
     ExcludesError(std::string curname, std::string subname)
       : ExcludesError(curname + " excludes " + subname, ExitCodes::ExcludesError)
-    {}
+    {
+    }
   };
 
   /// Thrown when too many positionals or options are found
@@ -1730,14 +1751,16 @@ public:                                                                         
           (args.size() > 1 ? "The following arguments were not expected: " : "The following argument was not expected: ") +
             detail::join(args, " "),
           ExitCodes::ExtrasError)
-    {}
+    {
+    }
     ExtrasError(const std::string& name, std::vector<std::string> args)
       : ExtrasError(
           name,
           (args.size() > 1 ? "The following arguments were not expected: " : "The following argument was not expected: ") +
             detail::join(args, " "),
           ExitCodes::ExtrasError)
-    {}
+    {
+    }
   };
 
   /// Thrown when extra values are found in an INI file
@@ -1758,7 +1781,8 @@ public:                                                                         
     CLI11_ERROR_DEF(ParseError, InvalidError)
     explicit InvalidError(std::string name)
       : InvalidError(name + ": Too many positional arguments with unlimited expected args", ExitCodes::InvalidError)
-    {}
+    {
+    }
   };
 
   /// This is just a safety check to verify selection and parsing match - you should not ever see it
@@ -1777,7 +1801,8 @@ public:                                                                         
     CLI11_ERROR_DEF(Error, OptionNotFound)
     explicit OptionNotFound(std::string name)
       : OptionNotFound(name + " not found", ExitCodes::OptionNotFound)
-    {}
+    {
+    }
   };
 
 #undef CLI11_ERROR_DEF
@@ -1988,7 +2013,7 @@ public:                                                                         
     #pragma diag_suppress 2361
   #endif
 #endif
-        TT { std::declval<CC>() }
+                                              TT{std::declval<CC>()}
 #ifdef __CUDACC__
   #ifdef __NVCC_DIAG_PRAGMA_SUPPORT__
     #pragma nv_diag_default 2361
@@ -1996,8 +2021,8 @@ public:                                                                         
     #pragma diag_default 2361
   #endif
 #endif
-        ,
-        std::is_move_assignable<TT>());
+                                              ,
+                                              std::is_move_assignable<TT>());
 
       template<typename TT, typename CC>
       static auto test(int, std::false_type) -> std::false_type;
@@ -4199,20 +4224,23 @@ public:                                                                         
     Validator(std::string validator_desc, std::function<std::string(std::string&)> func)
       : desc_function_([validator_desc]() { return validator_desc; })
       , func_(std::move(func))
-    {}
+    {
+    }
 
   public:
     Validator() = default;
     /// Construct a Validator with just the description string
     explicit Validator(std::string validator_desc)
       : desc_function_([validator_desc]() { return validator_desc; })
-    {}
+    {
+    }
     /// Construct Validator from basic information
     Validator(std::function<std::string(std::string&)> op, std::string validator_desc, std::string validator_name = "")
       : desc_function_([validator_desc]() { return validator_desc; })
       , func_(std::move(op))
       , name_(std::move(validator_name))
-    {}
+    {
+    }
     /// Set the Validator operation function
     Validator& operation(std::function<std::string(std::string&)> op)
     {
@@ -4435,7 +4463,8 @@ public:                                                                         
     template<typename T>
     explicit Range(T max_val, const std::string& validator_name = std::string{})
       : Range(static_cast<T>(0), max_val, validator_name)
-    {}
+    {
+    }
   };
 
   /// Check for a non negative number
@@ -4831,10 +4860,12 @@ public:                                                                         
         }
         return std::string{};
       })
-    {}
+    {
+    }
     TypeValidator()
       : TypeValidator(detail::type_name<DesiredType>())
-    {}
+    {
+    }
   };
 
   /// Check for a number
@@ -4875,7 +4906,8 @@ public:                                                                         
     template<typename T>
     explicit Bound(T max_val)
       : Bound(static_cast<T>(0), max_val)
-    {}
+    {
+    }
   };
 
   // Static is not needed here, because global const implies static.
@@ -4969,8 +5001,10 @@ public:                                                                         
 
     /// A search function with a filter function
     template<typename T, typename V>
-    auto search(const T& set, const V& val, const std::function<V(V)>& filter_function)
-      -> std::pair<bool, decltype(std::begin(detail::smart_deref(set)))>
+    auto
+    search(const T& set,
+           const V& val,
+           const std::function<V(V)>& filter_function) -> std::pair<bool, decltype(std::begin(detail::smart_deref(set)))>
     {
       using element_t = typename detail::element_type<T>::type;
       // do the potentially faster first search
@@ -4989,7 +5023,7 @@ public:                                                                         
     }
 
   } // namespace detail
-    /// Verify items are in a set
+  /// Verify items are in a set
   class IsMember : public Validator
   {
   public:
@@ -4999,13 +5033,15 @@ public:                                                                         
     template<typename T, typename... Args>
     IsMember(std::initializer_list<T> values, Args&&... args)
       : IsMember(std::vector<T>(values), std::forward<Args>(args)...)
-    {}
+    {
+    }
 
     /// This checks to see if an item is in a set (empty function)
     template<typename T>
     explicit IsMember(T&& set)
       : IsMember(std::forward<T>(set), nullptr)
-    {}
+    {
+    }
 
     /// This checks to see if an item is in a set: pointer or copy version. You can pass in a function that will filter
     /// both sides of the comparison before computing the comparison.
@@ -5061,7 +5097,8 @@ public:                                                                         
           std::forward<T>(set),
           [filter_fn_1, filter_fn_2](std::string a) { return filter_fn_2(filter_fn_1(a)); },
           other...)
-    {}
+    {
+    }
   };
 
   /// definition of the default transformation object
@@ -5078,13 +5115,15 @@ public:                                                                         
     template<typename... Args>
     Transformer(std::initializer_list<std::pair<std::string, std::string>> values, Args&&... args)
       : Transformer(TransformPairs<std::string>(values), std::forward<Args>(args)...)
-    {}
+    {
+    }
 
     /// direct map of std::string to std::string
     template<typename T>
     explicit Transformer(T&& mapping)
       : Transformer(std::forward<T>(mapping), nullptr)
-    {}
+    {
+    }
 
     /// This checks to see if an item is in a set: pointer or copy version. You can pass in a function that will filter
     /// both sides of the comparison before computing the comparison.
@@ -5131,7 +5170,8 @@ public:                                                                         
           std::forward<T>(mapping),
           [filter_fn_1, filter_fn_2](std::string a) { return filter_fn_2(filter_fn_1(a)); },
           other...)
-    {}
+    {
+    }
   };
 
   /// translate named items to other or a value set
@@ -5144,13 +5184,15 @@ public:                                                                         
     template<typename... Args>
     CheckedTransformer(std::initializer_list<std::pair<std::string, std::string>> values, Args&&... args)
       : CheckedTransformer(TransformPairs<std::string>(values), std::forward<Args>(args)...)
-    {}
+    {
+    }
 
     /// direct map of std::string to std::string
     template<typename T>
     explicit CheckedTransformer(T mapping)
       : CheckedTransformer(std::move(mapping), nullptr)
-    {}
+    {
+    }
 
     /// This checks to see if an item is in a set: pointer or copy version. You can pass in a function that will filter
     /// both sides of the comparison before computing the comparison.
@@ -5215,7 +5257,8 @@ public:                                                                         
           std::forward<T>(mapping),
           [filter_fn_1, filter_fn_2](std::string a) { return filter_fn_2(filter_fn_1(a)); },
           other...)
-    {}
+    {
+    }
   };
 
   /// Helper function to allow ignore_case to be passed to IsMember or Transform
@@ -5516,7 +5559,8 @@ public:                                                                         
     return m;
   }
 
-  namespace detail {} // namespace detail
+  namespace detail {
+  } // namespace detail
   /// @}
 
 #if defined(CLI11_ENABLE_EXTRA_VALIDATORS) && CLI11_ENABLE_EXTRA_VALIDATORS != 0
@@ -5712,7 +5756,8 @@ public:                                                                         
     /// Create a FormatterLambda with a lambda function
     explicit FormatterLambda(funct_t funct)
       : lambda_(std::move(funct))
-    {}
+    {
+    }
 
     /// Adding a destructor (mostly to make GCC 4.7 happy)
     ~FormatterLambda() noexcept override {} // NOLINT(modernize-use-equals-default)
@@ -9290,8 +9335,8 @@ public:                                                                         
 
     // Empty name will simply remove the version flag
     if (!flag_name.empty()) {
-      version_ptr_ = add_flag_callback(
-        flag_name, [versionString]() { throw(CLI::CallForVersion(versionString, 0)); }, version_help);
+      version_ptr_ =
+        add_flag_callback(flag_name, [versionString]() { throw(CLI::CallForVersion(versionString, 0)); }, version_help);
       version_ptr_->configurable(false)->callback_priority(CallbackPriority::First);
     }
 
@@ -9308,8 +9353,7 @@ public:                                                                         
 
     // Empty name will simply remove the version flag
     if (!flag_name.empty()) {
-      version_ptr_ = add_flag_callback(
-        flag_name, [vfunc]() { throw(CLI::CallForVersion(vfunc(), 0)); }, version_help);
+      version_ptr_ = add_flag_callback(flag_name, [vfunc]() { throw(CLI::CallForVersion(vfunc(), 0)); }, version_help);
       version_ptr_->configurable(false)->callback_priority(CallbackPriority::First);
     }
 

@@ -206,7 +206,8 @@ namespace hll {
       , register_limit_((1 << 5) - 1)
       , c_(0.0)
       , p_(1 << b)
-    {}
+    {
+    }
 
     /**
      * Adds element to the estimator

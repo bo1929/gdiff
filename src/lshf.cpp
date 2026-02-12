@@ -9,10 +9,45 @@ LSHF::LSHF(uint8_t k, uint8_t h, uint32_t m)
   set_lshf();
 }
 
+LSHF::LSHF(uint32_t m, vec<uint8_t> ppos_v, vec<uint8_t> npos_v)
+  : m(m)
+  , ppos_v(ppos_v)
+  , npos_v(npos_v)
+{
+  k = npos_v.size() + ppos_v.size();
+  h = ppos_v.size();
+  set_lshf();
+}
+
+void LSHF::get_random_positions()
+{
+  uint8_t n;
+  assert(h <= 16);
+  assert(h < k);
+  std::uniform_int_distribution<uint8_t> distrib(0, k - 1);
+  for (uint8_t c = 0; c < h; c++) {
+    n = distrib(gen);
+    if (std::count(ppos_v.begin(), ppos_v.end(), n)) {
+      c -= 1;
+    } else {
+      ppos_v.push_back(n);
+    }
+  }
+  std::sort(ppos_v.begin(), ppos_v.end());
+  uint8_t ix_pos = 0;
+  for (uint8_t i = 0; i < k; ++i) {
+    if (i != ppos_v[ix_pos])
+      npos_v.push_back(i);
+    else
+      ix_pos++;
+  }
+  std::sort(ppos_v.begin(), ppos_v.end(), std::greater<uint8_t>());
+}
+
 void LSHF::set_lshf()
 {
-  std::vector<int8_t> v;
-  std::vector<int8_t> g;
+  vec<int8_t> v;
+  vec<int8_t> g;
   int8_t lp = 31;
   int8_t jp = 0;
   for (int8_t j = 0; j < ppos_v.size(); j++) {
@@ -50,11 +85,11 @@ void LSHF::set_lshf()
   for (uint32_t i = 2 * h + 1; i < 32; ++i) {
     mask_hash_lr += (0x0000000000000001ull << i);
   }
-  mask_drop_l = (mask_drop_lr & 0xffffffff00000000ull);
-  mask_drop_r = (mask_drop_lr & 0x00000000ffffffffull);
+  // mask_drop_l = (mask_drop_lr & 0xffffffff00000000ull);
+  // mask_drop_r = (mask_drop_lr & 0x00000000ffffffffull);
   // __builtin_cpu_init ();
   // if (!__builtin_cpu_supports("bmi2")) {
-  //   std::cerr << "BMI2 is not supported, PEXT will not be used.\n";
+  //   warn_msg("BMI2 is not supported, PEXT will not be used.");
   // }
 }
 
@@ -123,60 +158,16 @@ uint32_t LSHF::get_npos_accdiff(uint32_t& zc, uint32_t& i)
   return npos_v.rbegin()[i - 1];
 }
 
-void LSHF::get_random_positions()
-{
-  uint8_t n;
-  assert(h <= 16);
-  assert(h < k);
-  std::uniform_int_distribution<uint8_t> distrib(0, k - 1);
-  for (uint8_t c = 0; c < h; c++) {
-    n = distrib(gen);
-    if (std::count(ppos_v.begin(), ppos_v.end(), n)) {
-      c -= 1;
-    } else {
-      ppos_v.push_back(n);
-    }
-  }
-  std::sort(ppos_v.begin(), ppos_v.end());
-  uint8_t ix_pos = 0;
-  for (uint8_t i = 0; i < k; ++i) {
-    if (i != ppos_v[ix_pos])
-      npos_v.push_back(i);
-    else
-      ix_pos++;
-  }
-  std::sort(ppos_v.begin(), ppos_v.end(), std::greater<uint8_t>());
-}
+char* LSHF::npos_data() { return reinterpret_cast<char*>(npos_v.data()); }
 
-LSHF::LSHF(uint32_t m, vec<uint8_t> ppos_v, vec<uint8_t> npos_v)
-  : m(m)
-  , ppos_v(ppos_v)
-  , npos_v(npos_v)
-{
-  k = npos_v.size() + ppos_v.size();
-  h = ppos_v.size();
-  set_lshf();
-}
+char* LSHF::ppos_data() { return reinterpret_cast<char*>(ppos_v.data()); }
 
-bool LSHF::check_compatible(lshf_sptr_t lshf)
-{
-  if (!lshf) return true;
-  if (!((lshf->m == m) && (lshf->h == h) && (lshf->k == k) && (lshf->npos_v == npos_v) && (lshf->ppos_v == ppos_v))) {
-    std::cout << "m: " << static_cast<uint32_t>(m) << "/" << static_cast<uint32_t>(lshf->m) << std::endl;
-    std::cout << "h: " << static_cast<uint32_t>(h) << "/" << static_cast<uint32_t>(lshf->h) << std::endl;
-    std::cout << "k: " << static_cast<uint32_t>(k) << "/" << static_cast<uint32_t>(lshf->k) << std::endl;
-    std::cout << "ppos_v:";
-    for (uint8_t i = 0; i < h; ++i) {
-      std::cout << " " << static_cast<uint32_t>(ppos_v[i]) << "/" << static_cast<uint32_t>(lshf->ppos_v[i]);
-    }
-    std::cout << std::endl;
-    std::cout << "npos_v:";
-    for (uint8_t i = 0; i < k - h; ++i) {
-      std::cout << " " << static_cast<uint32_t>(npos_v[i]) << "/" << static_cast<uint32_t>(lshf->npos_v[i]);
-    }
-    std::cout << std::endl;
-    return false;
-  } else {
-    return true;
-  }
-}
+uint8_t LSHF::get_k() { return k; }
+
+uint8_t LSHF::get_h() { return h; }
+
+uint32_t LSHF::get_m() { return m; }
+
+vec<uint8_t> LSHF::get_npos() { return npos_v; }
+
+vec<uint8_t> LSHF::get_ppos() { return ppos_v; }

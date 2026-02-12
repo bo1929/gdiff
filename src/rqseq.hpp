@@ -1,13 +1,22 @@
-#ifndef _RQSEQ_H
-#define _RQSEQ_H
+#ifndef _RQSEQ_HPP
+#define _RQSEQ_HPP
 
-#include "common.hpp"
+#include <regex>
+#include <zlib.h>
+#include <filesystem>
+#if defined(_L_CURL) && _L_CURL == 1
+  #include <curl/curl.h>
+#endif
+#include "msg.hpp"
+#include "types.hpp"
 #include "lshf.hpp"
-#include "table.hpp"
+#include "enc.hpp"
+#include "hm.hpp"
+#include "exthash.hpp"
 #include "hyperloglog.hpp"
 
 /* #define CANONICAL */
-#define RBATCH_SIZE 512
+#define RBATCH_SIZE 1024
 #define DSEQ_LEN 150
 
 class HandlerURL
@@ -15,7 +24,7 @@ class HandlerURL
 protected:
   const std::regex url_regexp = std::regex(
     R"(^(?:(?:https?|ftp)://)(?:\S+@)?(?:(?!10(?:\.\d{1,3}){3})(?!127(?:\.\d{1,3}){3})(?!169\.254(?:\.\d{1,3}){2})(?!192\.168(?:\.\d{1,3}){2})(?!172\.(?:1[6-9]|2\d|3[0-1])(?:\.\d{1,3}){2})(?:[1-9]\d?|1\d\d|2[01]\d|22[0-3])(?:\.(?:1?\d{1,2}|2[0-4]\d|25[0-5])){2}(?:\.(?:[1-9]\d?|1\d\d|2[0-4]\d|25[0-4]))|(?:[a-z\u00a1-\uffff0-9]+-)*[a-z\u00a1-\uffff0-9]+(?:\.(?:[a-z\u00a1-\uffff0-9]+-)*[a-z\u00a1-\uffff0-9]+)*(?:\.(?:[a-z\u00a1-\uffff]{2,})))(?::\d{2,5})?(?:/\S*)?$)");
-#if defined _WLCURL && _WLCURL == 1
+#if defined _L_CURL && _L_CURL == 1
   static size_t write_data(void* ptr, size_t s, size_t nmb, FILE* fst)
   {
     size_t written = fwrite(ptr, s, nmb, fst);
@@ -28,7 +37,7 @@ protected:
     if (!std::filesystem::exists(tmp_dir) || !std::filesystem::is_directory(tmp_dir)) {
       error_exit(std::string("Failed to get temp directory: ") + tmp_dir.string());
     }
-    std::string hash_str = std::to_string(gp_hash(url));
+    std::string hash_str = std::to_string(ghhp(url));
     std::string tmp_filename = "rseq_" + hash_str + ".tmp";
     std::filesystem::path tmp_path = tmp_dir / tmp_filename;
 
@@ -64,73 +73,61 @@ KSEQ_INIT(gzFile, gzread)
 
 class RSeq : public HandlerURL
 {
-  friend class DynHT;
-
 public:
-  RSeq(std::string input, lshf_sptr_t lshf, uint8_t w, uint32_t r, bool frac, int sdust_t, int sdust_w);
+  RSeq(std::string input, lshf_sptr_t lshf, uint8_t w, uint32_t r, bool frac);
   ~RSeq();
-  bool read_next_seq() { return kseq_read(kseq) >= 0; }
-  double get_rho() { return rho; }
-  /* void compute_rho() { rho = static_cast<double>(wcix) / static_cast<double>(wnix); } */
-  void compute_rho() { rho = n2_est / n1_est; }
-  bool set_curr_seq()
-  {
-    name = kseq->name.s;
-    seq = kseq->seq.s;
-    len = kseq->seq.l;
-    return len >= w;
-  }
+  bool set_curr_seq();
+  bool read_next_seq();
+  void compute_rho();
+  double get_rho();
   template<typename T>
-  void extract_mers(vvec<T>& table, sh_t sh = 0);
+  void extract_mers(vvec<T>& table);
 
 private:
+  gzFile gfile;
+  kseq_t* kseq;
+  bool is_url;
   uint8_t k;
   uint8_t w;
   uint32_t m;
   uint32_t r;
-  char* seq;
+  bool frac;
+  char* cseq;
   char* name;
   uint64_t len;
-  bool frac;
-  bool is_url;
-  gzFile gfile;
-  kseq_t* kseq;
   lshf_sptr_t lshf;
   uint64_t mask_bp = 0;
   uint64_t mask_lr = 0;
-  double rho = 0;
   uint64_t wcix = 0;
   uint64_t wnix = 0;
   double n1_est = 0;
   double n2_est = 0;
-  std::filesystem::path input_path = "";
-  int sdust_t;
-  int sdust_w;
+  double rho = 1.0;
+  std::filesystem::path input_path;
 };
 
 class QSeq : public HandlerURL
 {
-  friend class IBatch;
   friend class SBatch;
 
 public:
   QSeq(std::string input);
   ~QSeq();
   bool read_next_batch();
-  bool is_batch_finished();
   void clear_curr_batch();
-  uint64_t get_cbatch_size() { return cbatch_size; }
+  bool is_batch_finished();
+  uint64_t get_cbatch_size();
 
 private:
-  bool is_url;
   gzFile gfile;
   kseq_t* kseq;
+  bool is_url;
   vec<std::string> seq_batch;
   vec<std::string> identifer_batch;
-  std::filesystem::path input_path;
   uint64_t bpc_limit = RBATCH_SIZE * DSEQ_LEN;
   uint64_t rbatch_size = RBATCH_SIZE;
   uint64_t cbatch_size = 0;
+  std::filesystem::path input_path;
 };
 
 #endif

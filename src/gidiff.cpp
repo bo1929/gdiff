@@ -15,6 +15,33 @@ void BaseLSH::set_nrows()
   }
 }
 
+bool BaseLSH::validate_configuration()
+{
+  bool is_invalid = true;
+  if ((is_invalid = w < k)) {
+    std::cerr << "The minimum minimizer window size (-w) is k (-k)!" << std::endl;
+  }
+  if ((is_invalid = h < 3)) {
+    std::cerr << "The minimum number of LSH positions (-h) is 3!" << std::endl;
+  }
+  if ((is_invalid = h > 15)) {
+    std::cerr << "The maximum number of LSH positions (-h) is 15!" << std::endl;
+  }
+  if ((is_invalid = k > 31)) {
+    std::cerr << "The maximum allowed k-mer length (-k) is 31!" << std::endl;
+  }
+  if ((is_invalid = k < 19)) {
+    std::cerr << "The minimum allowed k-mer length (-k) is 19!" << std::endl;
+  }
+  if ((is_invalid = (k - h) > 16)) {
+    std::cerr << "For compact k-mer encodings, h must be >= k-16!" << std::endl;
+  }
+  // if (sdust_t == 0 || sdust_w == 0) {
+  //   std::cerr << "Setting --sdust-w or --sdust-t to 0 will disable dustmasker!" << std::endl;
+  // }
+  return !is_invalid;
+}
+
 void BaseLSH::save_configuration(std::ofstream& cfg_stream)
 {
   cfg_stream.write(reinterpret_cast<char*>(&k), sizeof(uint8_t));
@@ -36,24 +63,24 @@ void MapSketch::load_sketch()
 
 void SketchTarget::create_sketch()
 {
-  rseq_sptr_t rs = std::make_shared<RSeq>(input, lshf, w, r, frac, sdust_t, sdust_w);
-  sdynht_sptr_t sdynht = std::make_shared<SDynHT>();
-  sdynht->fill_table(nrows, rs);
-  std::cout << sdynht->get_nkmers() << std::endl;
-  sketch_sflatht = std::make_shared<SFlatHT>(sdynht);
+  rseq_sptr_t rs = std::make_shared<RSeq>(input, lshf, w, r, frac);
+  sdhm_sptr_t sdhm = std::make_shared<SDHM>();
+  sdhm->fill_table(nrows, rs);
+  std::cout << sdhm->get_nkmers() << std::endl;
+  sketch_sfhm = std::make_shared<SFHM>(sdhm);
 
   rho = rs->get_rho();
-  std::cerr << "Total number of k-mers included in the sketch: " << sdynht->get_nkmers() << std::endl;
+  std::cerr << "Total number of k-mers included in the sketch: " << sdhm->get_nkmers() << std::endl;
   std::cerr << "Subsampling rate (rho) is: " << rho << std::endl;
 }
 
 void SketchTarget::save_sketch()
 {
   std::ofstream sketch_stream(sketch_path, std::ofstream::binary);
-  sketch_sflatht->save(sketch_stream);
+  sketch_sfhm->save(sketch_stream);
   save_configuration(sketch_stream);
   sketch_stream.write(reinterpret_cast<char*>(&rho), sizeof(double));
-  CHECK_STREAM_OR_EXIT(sketch_stream, "Failed to write the sketch!");
+  check_fstream(sketch_stream, "Failed to write the sketch!", sketch_path);
   sketch_stream.close();
 }
 
@@ -63,24 +90,13 @@ void MapSketch::map_sequences()
 {
   strstream dreport_stream;
   header_dreport(dreport_stream);
-  // #if defined(_OPENMP) && _WOPENMP == 1
-  //   omp_set_num_threads(num_threads);
-  // #endif
   qseq_sptr_t qs = std::make_shared<QSeq>(query);
-  // #pragma omp parallel shared(qs)
-  {
-    // #pragma omp single
+  bool cont_reading = false;
+  while ((cont_reading = qs->read_next_batch()) || !qs->is_batch_finished()) {
+    total_qseq += qs->get_cbatch_size();
+    SBatch sb(sketch, qs, hdist_th, dist_th, min_length, chi_sq, divergent);
     {
-      bool cont_reading = false;
-      while ((cont_reading = qs->read_next_batch()) || !qs->is_batch_finished()) {
-        total_qseq += qs->get_cbatch_size();
-        SBatch sb(sketch, qs, hdist_th, dist_th, min_length, chi_sq, divergent);
-        // #pragma omp task
-        {
-          sb.map_sequences(*output_stream);
-        }
-      }
-      // #pragma omp taskwait
+      sb.map_sequences(*output_stream);
     }
   }
 }
@@ -99,8 +115,8 @@ SketchTarget::SketchTarget(CLI::App& sc)
   sc.add_option("-r,--residue-lsh", r, "A k-mer x will be included only if r = LSH(x) mod m. [1]")
     ->check(CLI::NonNegativeNumber);
   sc.add_flag("--frac,!--no-frac", frac, "Include k-mers with r <= LSH(x) mod m. [true]");
-  sc.add_option("--sdust-t", sdust_t, "SDUST threshold (NCBI dustmasker: 20). [0]")->check(CLI::NonNegativeNumber);
-  sc.add_option("--sdust-w", sdust_w, "SDUST window (NCBI dustmasker: 64). [0]")->check(CLI::NonNegativeNumber);
+  // sc.add_option("--sdust-t", sdust_t, "SDUST threshold (NCBI dustmasker: 20). [0]")->check(CLI::NonNegativeNumber);
+  // sc.add_option("--sdust-w", sdust_w, "SDUST window (NCBI dustmasker: 64). [0]")->check(CLI::NonNegativeNumber);
   sc.callback([&]() {
     if (!(sc.count("-w") + sc.count("--win-len"))) {
       w = k + 6;

@@ -1,10 +1,15 @@
 #include "sketch.hpp"
 
+Sketch::Sketch(std::filesystem::path sketch_path)
+  : sketch_path(sketch_path)
+{
+}
+
 void Sketch::load_full_sketch()
 {
   std::ifstream sketch_stream(sketch_path, std::ifstream::binary);
-  sflatht = std::make_shared<SFlatHT>();
-  sflatht->load(sketch_stream);
+  sfhm = std::make_shared<SFHM>();
+  sfhm->load(sketch_stream);
   sketch_stream.read(reinterpret_cast<char*>(&k), sizeof(uint8_t));
   sketch_stream.read(reinterpret_cast<char*>(&w), sizeof(uint8_t));
   sketch_stream.read(reinterpret_cast<char*>(&h), sizeof(uint8_t));
@@ -16,7 +21,7 @@ void Sketch::load_full_sketch()
   sketch_stream.read(reinterpret_cast<char*>(ppos_v.data()), ppos_v.size() * sizeof(uint8_t));
   sketch_stream.read(reinterpret_cast<char*>(npos_v.data()), npos_v.size() * sizeof(uint8_t));
   sketch_stream.read(reinterpret_cast<char*>(&rho), sizeof(double));
-  CHECK_STREAM_OR_EXIT(sketch_stream, "Failed to read the sketch file!");
+  check_fstream(sketch_stream, "Failed to read the sketch file!", sketch_path);
   sketch_stream.close();
 
   lshf = std::make_shared<LSHF>(m, ppos_v, npos_v);
@@ -31,7 +36,19 @@ void Sketch::make_rho_partial()
   }
 }
 
-uint32_t Sketch::search_mer(uint32_t rix, uint32_t enc_lr)
+sfhm_sptr_t Sketch::get_sfhm_sptr() { return sfhm; }
+
+lshf_sptr_t Sketch::get_lshf() { return lshf; }
+
+double Sketch::get_rho() { return rho; }
+
+bool Sketch::check_partial(uint32_t rix)
+{
+  uint32_t rix_res = rix % m;
+  return (frac && (rix_res <= r)) || (rix_res == r);
+}
+
+uint32_t Sketch::search_mer(uint32_t rix, enc_t enc_lr)
 {
   uint32_t offset;
   if (frac) {
@@ -39,10 +56,10 @@ uint32_t Sketch::search_mer(uint32_t rix, uint32_t enc_lr)
   } else {
     offset = rix / m;
   }
+  vec_enc_it ix1 = sfhm->bucket_start(offset);
+  vec_enc_it ix2 = sfhm->bucket_next(offset);
   uint32_t hdist_curr;
   uint32_t hdist_min = std::numeric_limits<uint32_t>::max();
-  vec_enc_it ix1 = sflatht->bucket_start(offset);
-  vec_enc_it ix2 = sflatht->bucket_next(offset);
   for (; ix1 < ix2; ++ix1) {
     hdist_curr = popcount_lr32((*ix1) ^ enc_lr);
     if (hdist_curr < hdist_min) {
@@ -60,5 +77,5 @@ std::pair<vec_enc_it, vec_enc_it> Sketch::bucket_indices(uint32_t rix)
   } else {
     offset = rix / m;
   }
-  return std::make_pair(sflatht->bucket_start(offset), sflatht->bucket_next(offset));
+  return std::make_pair(sfhm->bucket_start(offset), sfhm->bucket_next(offset));
 }

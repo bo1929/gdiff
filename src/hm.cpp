@@ -1,26 +1,32 @@
-#include "table.hpp"
+#include "hm.hpp"
 
-SFlatHT::SFlatHT(sdynht_sptr_t source)
+SFHM::SFHM(sdhm_sptr_t source)
 {
   nkmers = source->nkmers;
   nrows = source->enc_vvec.size();
   inc_v.resize(nrows);
   enc_v.reserve(nkmers);
   inc_t limit_inc = std::numeric_limits<inc_t>::max();
-  inc_t copy_inc;
+  inc_t cpinc;
   inc_t lix = 0;
   for (uint32_t rix = 0; rix < nrows; ++rix) {
-    copy_inc = std::min(limit_inc, static_cast<inc_t>(source->enc_vvec[rix].size()));
-    for (inc_t i = 0; i < copy_inc; ++i) {
+    cpinc = std::min(limit_inc, static_cast<inc_t>(source->enc_vvec[rix].size()));
+    for (inc_t i = 0; i < cpinc; ++i) {
       enc_v.push_back(source->enc_vvec[rix][i]);
     }
-    lix += copy_inc;
+    lix += cpinc;
     inc_v[rix] = lix;
     source->enc_vvec[rix].clear();
   }
 }
 
-void SFlatHT::load(std::ifstream& sketch_stream)
+SFHM::~SFHM()
+{
+  inc_v.clear();
+  enc_v.clear();
+}
+
+void SFHM::load(std::ifstream& sketch_stream)
 {
   sketch_stream.read(reinterpret_cast<char*>(&nkmers), sizeof(uint64_t));
   enc_v.resize(nkmers);
@@ -32,7 +38,7 @@ void SFlatHT::load(std::ifstream& sketch_stream)
   assert(nrows == inc_v.size());
 }
 
-void SFlatHT::save(std::ofstream& sketch_stream)
+void SFHM::save(std::ofstream& sketch_stream)
 {
   sketch_stream.write(reinterpret_cast<const char*>(&nkmers), sizeof(uint64_t));
   sketch_stream.write(reinterpret_cast<const char*>(enc_v.data()), sizeof(enc_t) * nkmers);
@@ -40,7 +46,25 @@ void SFlatHT::save(std::ofstream& sketch_stream)
   sketch_stream.write(reinterpret_cast<const char*>(inc_v.data()), sizeof(inc_t) * nrows);
 }
 
-void SDynHT::sort_columns()
+std::vector<enc_t>::const_iterator SFHM::bucket_start(uint32_t rix)
+{
+  if ((rix != 0) && (rix <= inc_v.size())) {
+    return std::next(enc_v.begin(), inc_v[rix - 1]);
+  } else {
+    return enc_v.begin();
+  }
+}
+
+std::vector<enc_t>::const_iterator SFHM::bucket_next(uint32_t rix)
+{
+  if (rix < inc_v.size()) {
+    return std::next(enc_v.begin(), inc_v[rix]);
+  } else {
+    return enc_v.end();
+  }
+}
+
+void SDHM::sort_columns()
 {
   for (uint32_t i = 0; i < enc_vvec.size(); ++i) {
     if (!enc_vvec[i].empty()) {
@@ -49,7 +73,7 @@ void SDynHT::sort_columns()
   }
 }
 
-void SDynHT::make_unique()
+void SDHM::make_unique()
 {
   nkmers = 0;
   for (uint32_t i = 0; i < enc_vvec.size(); ++i) {
@@ -60,7 +84,7 @@ void SDynHT::make_unique()
   }
 }
 
-void SDynHT::fill_table(uint32_t nrows, rseq_sptr_t rs)
+void SDHM::fill_table(uint32_t nrows, rseq_sptr_t rs)
 {
   enc_vvec.resize(nrows);
   while (rs->read_next_seq()) {
@@ -72,3 +96,5 @@ void SDynHT::fill_table(uint32_t nrows, rseq_sptr_t rs)
   sort_columns();
   make_unique();
 }
+
+uint64_t SDHM::get_nkmers() { return nkmers; }

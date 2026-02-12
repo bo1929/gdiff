@@ -136,7 +136,8 @@ namespace phmap {
 
     template<typename AllocType>
     void SwapAlloc(AllocType& /*lhs*/, AllocType& /*rhs*/, std::false_type /* propagate_on_container_swap */)
-    {}
+    {
+    }
 
     // --------------------------------------------------------------------------
     template<size_t Width>
@@ -253,7 +254,8 @@ namespace phmap {
 
       explicit BitMask(T mask)
         : mask_(mask)
-      {}
+      {
+      }
 
       BitMask& operator++()
       {                       // ++iterator
@@ -490,7 +492,8 @@ namespace phmap {
 
       explicit GroupPortableImpl(const ctrl_t* pos)
         : ctrl(little_endian::Load64(pos))
-      {}
+      {
+      }
 
       BitMask<uint64_t, kWidth, 3> Match(h2_t hash) const
       {
@@ -751,8 +754,8 @@ namespace phmap {
       }
 
       template<class T, size_t... Is>
-      auto TupleRefImpl(T&& t, phmap::index_sequence<Is...>)
-        -> decltype(std::forward_as_tuple(std::get<Is>(std::forward<T>(t))...))
+      auto TupleRefImpl(T&& t,
+                        phmap::index_sequence<Is...>) -> decltype(std::forward_as_tuple(std::get<Is>(std::forward<T>(t))...))
       {
         return std::forward_as_tuple(std::get<Is>(std::forward<T>(t))...);
       }
@@ -1001,11 +1004,13 @@ namespace phmap {
       private:
         iterator(ctrl_t* ctrl)
           : ctrl_(ctrl)
-        {} // for end()
+        {
+        } // for end()
         iterator(ctrl_t* ctrl, slot_type* slot)
           : ctrl_(ctrl)
           , slot_(slot)
-        {}
+        {
+        }
 
         void skip_empty_or_deleted()
         {
@@ -1044,7 +1049,8 @@ namespace phmap {
         // Implicit construction from iterator.
         const_iterator(iterator i)
           : inner_(std::move(i))
-        {}
+        {
+        }
 
         reference operator*() const { return *inner_; }
         pointer operator->() const { return inner_.operator->(); }
@@ -1062,7 +1068,8 @@ namespace phmap {
       private:
         const_iterator(const ctrl_t* ctrl, const slot_type* slot)
           : inner_(const_cast<ctrl_t*>(ctrl), const_cast<slot_type*>(slot))
-        {}
+        {
+        }
 
         iterator inner_;
       };
@@ -1070,10 +1077,11 @@ namespace phmap {
       using node_type = node_handle<Policy, hash_policy_traits<Policy>, Alloc>;
       using insert_return_type = InsertReturnType<iterator, node_type>;
 
-      raw_hash_set() noexcept(
-        std::is_nothrow_default_constructible<hasher>::value&& std::is_nothrow_default_constructible<key_equal>::value&&
-          std::is_nothrow_default_constructible<allocator_type>::value)
-      {}
+      raw_hash_set() noexcept(std::is_nothrow_default_constructible<hasher>::value &&
+                              std::is_nothrow_default_constructible<key_equal>::value &&
+                              std::is_nothrow_default_constructible<allocator_type>::value)
+      {
+      }
 
       explicit raw_hash_set(size_t bucket_cnt,
                             const hasher& hashfn = hasher(),
@@ -1092,15 +1100,18 @@ namespace phmap {
 
       raw_hash_set(size_t bucket_cnt, const hasher& hashfn, const allocator_type& alloc)
         : raw_hash_set(bucket_cnt, hashfn, key_equal(), alloc)
-      {}
+      {
+      }
 
       raw_hash_set(size_t bucket_cnt, const allocator_type& alloc)
         : raw_hash_set(bucket_cnt, hasher(), key_equal(), alloc)
-      {}
+      {
+      }
 
       explicit raw_hash_set(const allocator_type& alloc)
         : raw_hash_set(0, hasher(), key_equal(), alloc)
-      {}
+      {
+      }
 
       template<class InputIter>
       raw_hash_set(InputIter first,
@@ -1117,17 +1128,20 @@ namespace phmap {
       template<class InputIter>
       raw_hash_set(InputIter first, InputIter last, size_t bucket_cnt, const hasher& hashfn, const allocator_type& alloc)
         : raw_hash_set(first, last, bucket_cnt, hashfn, key_equal(), alloc)
-      {}
+      {
+      }
 
       template<class InputIter>
       raw_hash_set(InputIter first, InputIter last, size_t bucket_cnt, const allocator_type& alloc)
         : raw_hash_set(first, last, bucket_cnt, hasher(), key_equal(), alloc)
-      {}
+      {
+      }
 
       template<class InputIter>
       raw_hash_set(InputIter first, InputIter last, const allocator_type& alloc)
         : raw_hash_set(first, last, 0, hasher(), key_equal(), alloc)
-      {}
+      {
+      }
 
       // Instead of accepting std::initializer_list<value_type> as the first
       // argument like std::unordered_set<value_type> does, we have two overloads
@@ -1157,7 +1171,8 @@ namespace phmap {
                    const key_equal& eq = key_equal(),
                    const allocator_type& alloc = allocator_type())
         : raw_hash_set(init.begin(), init.end(), bucket_cnt, hashfn, eq, alloc)
-      {}
+      {
+      }
 
       raw_hash_set(std::initializer_list<init_type> init,
                    size_t bucket_cnt = 0,
@@ -1165,41 +1180,49 @@ namespace phmap {
                    const key_equal& eq = key_equal(),
                    const allocator_type& alloc = allocator_type())
         : raw_hash_set(init.begin(), init.end(), bucket_cnt, hashfn, eq, alloc)
-      {}
+      {
+      }
 
       template<class T, RequiresNotInit<T> = 0, RequiresInsertable<T> = 0>
       raw_hash_set(std::initializer_list<T> init, size_t bucket_cnt, const hasher& hashfn, const allocator_type& alloc)
         : raw_hash_set(init, bucket_cnt, hashfn, key_equal(), alloc)
-      {}
+      {
+      }
 
       raw_hash_set(std::initializer_list<init_type> init,
                    size_t bucket_cnt,
                    const hasher& hashfn,
                    const allocator_type& alloc)
         : raw_hash_set(init, bucket_cnt, hashfn, key_equal(), alloc)
-      {}
+      {
+      }
 
       template<class T, RequiresNotInit<T> = 0, RequiresInsertable<T> = 0>
       raw_hash_set(std::initializer_list<T> init, size_t bucket_cnt, const allocator_type& alloc)
         : raw_hash_set(init, bucket_cnt, hasher(), key_equal(), alloc)
-      {}
+      {
+      }
 
       raw_hash_set(std::initializer_list<init_type> init, size_t bucket_cnt, const allocator_type& alloc)
         : raw_hash_set(init, bucket_cnt, hasher(), key_equal(), alloc)
-      {}
+      {
+      }
 
       template<class T, RequiresNotInit<T> = 0, RequiresInsertable<T> = 0>
       raw_hash_set(std::initializer_list<T> init, const allocator_type& alloc)
         : raw_hash_set(init, 0, hasher(), key_equal(), alloc)
-      {}
+      {
+      }
 
       raw_hash_set(std::initializer_list<init_type> init, const allocator_type& alloc)
         : raw_hash_set(init, 0, hasher(), key_equal(), alloc)
-      {}
+      {
+      }
 
       raw_hash_set(const raw_hash_set& that)
         : raw_hash_set(that, AllocTraits::select_on_container_copy_construction(that.alloc_ref()))
-      {}
+      {
+      }
 
       raw_hash_set(const raw_hash_set& that, const allocator_type& a)
         : raw_hash_set(0, that.hash_ref(), that.eq_ref(), a)
@@ -1218,9 +1241,9 @@ namespace phmap {
         growth_left() -= that.size();
       }
 
-      raw_hash_set(raw_hash_set&& that) noexcept(
-        std::is_nothrow_copy_constructible<hasher>::value&& std::is_nothrow_copy_constructible<key_equal>::value&&
-          std::is_nothrow_copy_constructible<allocator_type>::value)
+      raw_hash_set(raw_hash_set&& that) noexcept(std::is_nothrow_copy_constructible<hasher>::value &&
+                                                 std::is_nothrow_copy_constructible<key_equal>::value &&
+                                                 std::is_nothrow_copy_constructible<allocator_type>::value)
         : ctrl_(phmap::exchange(that.ctrl_, EmptyGroup()))
         , slots_(phmap::exchange(that.slots_, nullptr))
         , size_(phmap::exchange(that.size_, 0))
@@ -1266,9 +1289,10 @@ namespace phmap {
         return *this;
       }
 
-      raw_hash_set& operator=(raw_hash_set&& that) noexcept(
-        phmap::allocator_traits<allocator_type>::is_always_equal::value&& std::is_nothrow_move_assignable<hasher>::value&&
-          std::is_nothrow_move_assignable<key_equal>::value)
+      raw_hash_set&
+      operator=(raw_hash_set&& that) noexcept(phmap::allocator_traits<allocator_type>::is_always_equal::value &&
+                                              std::is_nothrow_move_assignable<hasher>::value &&
+                                              std::is_nothrow_move_assignable<key_equal>::value)
       {
         // TODO(sbenza): We should only use the operations from the noexcept clause
         // to make sure we actually adhere to that contract.
@@ -1561,7 +1585,8 @@ namespace phmap {
         constructor(allocator_type* a, slot_type** slot)
           : alloc_(a)
           , slot_(slot)
-        {}
+        {
+        }
 
         allocator_type* alloc_;
         slot_type** slot_;
@@ -2675,7 +2700,8 @@ namespace phmap {
 
         Inner(Params const& p)
           : set_(p.bucket_cnt, p.hashfn, p.eq, p.alloc)
-        {}
+        {
+        }
 
         bool operator==(const Inner& o) const
         {
@@ -2814,7 +2840,8 @@ namespace phmap {
         // Implicit construction from iterator.
         const_iterator(iterator i)
           : iter_(std::move(i))
-        {}
+        {
+        }
 
         reference operator*() const { return *(iter_); }
         pointer operator->() const { return iter_.operator->(); }
@@ -2832,7 +2859,8 @@ namespace phmap {
       private:
         const_iterator(const Inner* inner, const Inner* inner_end, const EmbeddedIterator& it)
           : iter_(const_cast<Inner**>(inner), const_cast<Inner**>(inner_end), const_cast<EmbeddedIterator*>(it))
-        {}
+        {
+        }
 
         iterator iter_;
       };
@@ -2842,10 +2870,9 @@ namespace phmap {
 
       // ------------------------- c o n s t r u c t o r s ------------------
 
-      parallel_hash_set() noexcept(
-        std::is_nothrow_default_constructible<hasher>::value&& std::is_nothrow_default_constructible<key_equal>::value&&
-          std::is_nothrow_default_constructible<allocator_type>::value)
-      {}
+      parallel_hash_set() noexcept(std::is_nothrow_default_constructible<hasher>::value &&
+                                   std::is_nothrow_default_constructible<key_equal>::value &&
+                                   std::is_nothrow_default_constructible<allocator_type>::value){}
 
   #if (__cplusplus >= 201703L || _MSVC_LANG >= 201402) &&                                                                   \
     (defined(_MSC_VER) || defined(__clang__) || (defined(__GNUC__) && __GNUC__ > 6))
@@ -2855,12 +2882,14 @@ namespace phmap {
                                  const allocator_type& alloc = allocator_type())
         : parallel_hash_set(typename Inner::Params{bucket_cnt, hash_param, eq, alloc},
                             phmap::make_index_sequence<num_tables>{})
-      {}
+      {
+      }
 
       template<std::size_t... i>
       parallel_hash_set(typename Inner::Params const& p, phmap::index_sequence<i...>)
         : sets_{((void)i, p)...}
-      {}
+      {
+      }
   #else
       explicit parallel_hash_set(size_t bucket_cnt,
                                  const hasher& hash_param = hasher(),
@@ -2874,15 +2903,18 @@ namespace phmap {
 
       parallel_hash_set(size_t bucket_cnt, const hasher& hash_param, const allocator_type& alloc)
         : parallel_hash_set(bucket_cnt, hash_param, key_equal(), alloc)
-      {}
+      {
+      }
 
       parallel_hash_set(size_t bucket_cnt, const allocator_type& alloc)
         : parallel_hash_set(bucket_cnt, hasher(), key_equal(), alloc)
-      {}
+      {
+      }
 
       explicit parallel_hash_set(const allocator_type& alloc)
         : parallel_hash_set(0, hasher(), key_equal(), alloc)
-      {}
+      {
+      }
 
       template<class InputIter>
       parallel_hash_set(InputIter first,
@@ -2903,17 +2935,20 @@ namespace phmap {
                         const hasher& hash_param,
                         const allocator_type& alloc)
         : parallel_hash_set(first, last, bucket_cnt, hash_param, key_equal(), alloc)
-      {}
+      {
+      }
 
       template<class InputIter>
       parallel_hash_set(InputIter first, InputIter last, size_t bucket_cnt, const allocator_type& alloc)
         : parallel_hash_set(first, last, bucket_cnt, hasher(), key_equal(), alloc)
-      {}
+      {
+      }
 
       template<class InputIter>
       parallel_hash_set(InputIter first, InputIter last, const allocator_type& alloc)
         : parallel_hash_set(first, last, 0, hasher(), key_equal(), alloc)
-      {}
+      {
+      }
 
       // Instead of accepting std::initializer_list<value_type> as the first
       // argument like std::unordered_set<value_type> does, we have two overloads
@@ -2944,7 +2979,8 @@ namespace phmap {
                         const key_equal& eq = key_equal(),
                         const allocator_type& alloc = allocator_type())
         : parallel_hash_set(init.begin(), init.end(), bucket_cnt, hash_param, eq, alloc)
-      {}
+      {
+      }
 
       parallel_hash_set(std::initializer_list<init_type> init,
                         size_t bucket_cnt = 0,
@@ -2952,7 +2988,8 @@ namespace phmap {
                         const key_equal& eq = key_equal(),
                         const allocator_type& alloc = allocator_type())
         : parallel_hash_set(init.begin(), init.end(), bucket_cnt, hash_param, eq, alloc)
-      {}
+      {
+      }
 
       template<class T, RequiresNotInit<T> = 0, RequiresInsertable<T> = 0>
       parallel_hash_set(std::initializer_list<T> init,
@@ -2960,36 +2997,43 @@ namespace phmap {
                         const hasher& hash_param,
                         const allocator_type& alloc)
         : parallel_hash_set(init, bucket_cnt, hash_param, key_equal(), alloc)
-      {}
+      {
+      }
 
       parallel_hash_set(std::initializer_list<init_type> init,
                         size_t bucket_cnt,
                         const hasher& hash_param,
                         const allocator_type& alloc)
         : parallel_hash_set(init, bucket_cnt, hash_param, key_equal(), alloc)
-      {}
+      {
+      }
 
       template<class T, RequiresNotInit<T> = 0, RequiresInsertable<T> = 0>
       parallel_hash_set(std::initializer_list<T> init, size_t bucket_cnt, const allocator_type& alloc)
         : parallel_hash_set(init, bucket_cnt, hasher(), key_equal(), alloc)
-      {}
+      {
+      }
 
       parallel_hash_set(std::initializer_list<init_type> init, size_t bucket_cnt, const allocator_type& alloc)
         : parallel_hash_set(init, bucket_cnt, hasher(), key_equal(), alloc)
-      {}
+      {
+      }
 
       template<class T, RequiresNotInit<T> = 0, RequiresInsertable<T> = 0>
       parallel_hash_set(std::initializer_list<T> init, const allocator_type& alloc)
         : parallel_hash_set(init, 0, hasher(), key_equal(), alloc)
-      {}
+      {
+      }
 
       parallel_hash_set(std::initializer_list<init_type> init, const allocator_type& alloc)
         : parallel_hash_set(init, 0, hasher(), key_equal(), alloc)
-      {}
+      {
+      }
 
       parallel_hash_set(const parallel_hash_set& that)
         : parallel_hash_set(that, AllocTraits::select_on_container_copy_construction(that.alloc_ref()))
-      {}
+      {
+      }
 
       parallel_hash_set(const parallel_hash_set& that, const allocator_type& a)
         : parallel_hash_set(0, that.hash_ref(), that.eq_ref(), a)
@@ -2998,11 +3042,12 @@ namespace phmap {
           sets_[i].set_ = {that.sets_[i].set_, a};
       }
 
-      parallel_hash_set(parallel_hash_set&& that) noexcept(
-        std::is_nothrow_copy_constructible<hasher>::value&& std::is_nothrow_copy_constructible<key_equal>::value&&
-          std::is_nothrow_copy_constructible<allocator_type>::value)
+      parallel_hash_set(parallel_hash_set&& that) noexcept(std::is_nothrow_copy_constructible<hasher>::value &&
+                                                           std::is_nothrow_copy_constructible<key_equal>::value &&
+                                                           std::is_nothrow_copy_constructible<allocator_type>::value)
         : parallel_hash_set(std::move(that), that.alloc_ref())
-      {}
+      {
+      }
 
       parallel_hash_set(parallel_hash_set&& that, const allocator_type& a)
       {
@@ -3017,9 +3062,10 @@ namespace phmap {
         return *this;
       }
 
-      parallel_hash_set& operator=(parallel_hash_set&& that) noexcept(
-        phmap::allocator_traits<allocator_type>::is_always_equal::value&& std::is_nothrow_move_assignable<hasher>::value&&
-          std::is_nothrow_move_assignable<key_equal>::value)
+      parallel_hash_set&
+      operator=(parallel_hash_set&& that) noexcept(phmap::allocator_traits<allocator_type>::is_always_equal::value &&
+                                                   std::is_nothrow_move_assignable<hasher>::value &&
+                                                   std::is_nothrow_move_assignable<key_equal>::value)
       {
         for (size_t i = 0; i < num_tables; ++i)
           sets_[i].set_ = std::move(that.sets_[i].set_);
@@ -4346,9 +4392,10 @@ namespace phmap {
     }
 
     template<class F, class S>
-    auto PairArgs(std::piecewise_construct_t, F&& f, S&& s)
-      -> decltype(std::make_pair(memory_internal::TupleRef(std::forward<F>(f)),
-                                 memory_internal::TupleRef(std::forward<S>(s))))
+    auto PairArgs(std::piecewise_construct_t,
+                  F&& f,
+                  S&& s) -> decltype(std::make_pair(memory_internal::TupleRef(std::forward<F>(f)),
+                                                    memory_internal::TupleRef(std::forward<S>(s))))
     {
       return std::make_pair(memory_internal::TupleRef(std::forward<F>(f)), memory_internal::TupleRef(std::forward<S>(s)));
     }
@@ -4805,7 +4852,7 @@ namespace phmap {
       };
 
     } // namespace hashtable_debug_internal
-  }   // namespace priv
+  } // namespace priv
 
   // -----------------------------------------------------------------------------
   // phmap::flat_hash_set

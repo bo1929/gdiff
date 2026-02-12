@@ -1,12 +1,15 @@
 #ifndef _GIDIFF_H
 #define _GIDIFF_H
 
+#include <regex>
+
 #include "common.hpp"
+#include "types.hpp"
 #include "lshf.hpp"
 #include "rqseq.hpp"
 #include "map.hpp"
 #include "sketch.hpp"
-#include "table.hpp"
+#include "hm.hpp"
 #include "CLI11.hpp"
 
 const auto url_validator = CLI::Validator(
@@ -27,44 +30,19 @@ class BaseLSH
 public:
   void set_lshf();
   void set_nrows();
+  bool validate_configuration();
   void save_configuration(std::ofstream& cfg_stream);
   void set_sketch_defaults()
   {
-    k = 26;
-    w = k + 6;
-    h = 10;
-    m = 4;
+    k = 27;
+    w = k + 5;
+    h = 12;
+    m = 2;
     r = 1;
     frac = true;
     nrows = pow(2, 2 * h - 1);
-    sdust_t = 0;
-    sdust_w = 0;
-  }
-  bool validate_configuration()
-  {
-    bool is_invalid = true;
-    if (is_invalid = w < k) {
-      std::cerr << "The minimum minimizer window size (-w) is k (-k)." << std::endl;
-    }
-    if (is_invalid = h < 3) {
-      std::cerr << "The minimum number of LSH positions (-h) is 3." << std::endl;
-    }
-    if (is_invalid = h > 15) {
-      std::cerr << "The maximum number of LSH positions (-h) is 15." << std::endl;
-    }
-    if (is_invalid = k > 31) {
-      std::cerr << "The maximum allowed k-mer length (-k) is 31." << std::endl;
-    }
-    if (is_invalid = k < 19) {
-      std::cerr << "The minimum allowed k-mer length (-k) is 19." << std::endl;
-    }
-    if (is_invalid = (k - h) > 16) {
-      std::cerr << "For compact k-mer encodings, h must be >= k-16." << std::endl;
-    }
-    if (sdust_t == 0 || sdust_w == 0) {
-      std::cerr << "Setting --sdust-w or --sdust-t to 0 will disable dustmasker." << std::endl;
-    }
-    return !is_invalid;
+    // sdust_t = 0;
+    // sdust_w = 0;
   }
 
 protected:
@@ -91,7 +69,7 @@ private:
   double rho;
   std::string input;
   std::filesystem::path sketch_path;
-  sflatht_sptr_t sketch_sflatht = nullptr;
+  sfhm_sptr_t sketch_sfhm = nullptr;
 };
 
 class MapSketch

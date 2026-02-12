@@ -1102,10 +1102,11 @@ namespace phmap {
   //       phmap::apply(user_lambda, tuple4);
   //   }
   template<typename Functor, typename Tuple>
-  auto apply(Functor&& functor, Tuple&& t) -> decltype(utility_internal::apply_helper(
-    phmap::forward<Functor>(functor),
-    phmap::forward<Tuple>(t),
-    phmap::make_index_sequence<std::tuple_size<typename std::remove_reference<Tuple>::type>::value>{}))
+  auto apply(Functor&& functor, Tuple&& t)
+    -> decltype(utility_internal::apply_helper(
+      phmap::forward<Functor>(functor),
+      phmap::forward<Tuple>(t),
+      phmap::make_index_sequence<std::tuple_size<typename std::remove_reference<Tuple>::type>::value>{}))
   {
     return utility_internal::apply_helper(
       phmap::forward<Functor>(functor),
@@ -1768,13 +1769,15 @@ namespace phmap {
       constexpr optional_data_dtor_base() noexcept
         : engaged_(false)
         , dummy_{{}}
-      {}
+      {
+      }
 
       template<typename... Args>
       constexpr explicit optional_data_dtor_base(in_place_t, Args&&... args)
         : engaged_(true)
         , data_(phmap::forward<Args>(args)...)
-      {}
+      {
+      }
 
       ~optional_data_dtor_base() { destruct(); }
     };
@@ -1805,13 +1808,15 @@ namespace phmap {
       constexpr optional_data_dtor_base() noexcept
         : engaged_(false)
         , dummy_{{}}
-      {}
+      {
+      }
 
       template<typename... Args>
       constexpr explicit optional_data_dtor_base(in_place_t, Args&&... args)
         : engaged_(true)
         , data_(phmap::forward<Args>(args)...)
-      {}
+      {
+      }
     };
 
     template<typename T>
@@ -1827,7 +1832,8 @@ namespace phmap {
       template<typename... Args>
       constexpr explicit optional_data_base(in_place_t t, Args&&... args)
         : base(t, phmap::forward<Args>(args)...)
-      {}
+      {
+      }
     #endif
 
       template<typename... Args>
@@ -1856,8 +1862,9 @@ namespace phmap {
     // Also, we should be checking is_trivially_copyable here, which is not
     // supported now, so we use is_trivially_* traits instead.
     template<typename T,
-             bool unused = phmap::is_trivially_copy_constructible<T>::value&& phmap::is_trivially_copy_assignable<
-               typename std::remove_cv<T>::type>::value&& std::is_trivially_destructible<T>::value>
+             bool unused = phmap::is_trivially_copy_constructible<T>::value &&
+                           phmap::is_trivially_copy_assignable<typename std::remove_cv<T>::type>::value &&
+                           std::is_trivially_destructible<T>::value>
     class optional_data;
 
     // Trivially copyable types
@@ -1873,7 +1880,8 @@ namespace phmap {
       template<typename... Args>
       constexpr explicit optional_data(in_place_t t, Args&&... args)
         : optional_data_base<T>(t, phmap::forward<Args>(args)...)
-      {}
+      {
+      }
     #endif
     };
 
@@ -1887,7 +1895,8 @@ namespace phmap {
       template<typename... Args>
       constexpr explicit optional_data(in_place_t t, Args&&... args)
         : optional_data_base<T>(t, phmap::forward<Args>(args)...)
-      {}
+      {
+      }
     #endif
 
       optional_data() = default;
@@ -1919,8 +1928,8 @@ namespace phmap {
         return *this;
       }
 
-      optional_data& operator=(optional_data&& rhs) noexcept(
-        std::is_nothrow_move_assignable<T>::value&& std::is_nothrow_move_constructible<T>::value)
+      optional_data& operator=(optional_data&& rhs) noexcept(std::is_nothrow_move_assignable<T>::value &&
+                                                             std::is_nothrow_move_constructible<T>::value)
       {
         if (rhs.engaged_) {
           this->assign(std::move(rhs.data_));
@@ -2017,7 +2026,7 @@ namespace phmap {
     template<typename T>
     constexpr copy_traits get_ctor_copy_traits()
     {
-      return std::is_copy_constructible<T>::value ? copy_traits::copyable
+      return std::is_copy_constructible<T>::value   ? copy_traits::copyable
              : std::is_move_constructible<T>::value ? copy_traits::movable
                                                     : copy_traits::non_movable;
     }
@@ -2025,7 +2034,7 @@ namespace phmap {
     template<typename T>
     constexpr copy_traits get_assign_copy_traits()
     {
-      return phmap::is_copy_assignable<T>::value && std::is_copy_constructible<T>::value ? copy_traits::copyable
+      return phmap::is_copy_assignable<T>::value && std::is_copy_constructible<T>::value   ? copy_traits::copyable
              : phmap::is_move_assignable<T>::value && std::is_move_constructible<T>::value ? copy_traits::movable
                                                                                            : copy_traits::non_movable;
     }
@@ -2132,7 +2141,8 @@ namespace phmap {
                phmap::conjunction<std::is_same<InPlaceT, in_place_t>, std::is_constructible<T, Args&&...>>::value>* = nullptr>
     constexpr explicit optional(InPlaceT, Args&&... args)
       : data_base(in_place_t(), phmap::forward<Args>(args)...)
-    {}
+    {
+    }
 
     // Constructs a non-empty `optional` direct-initialized value of type `T` from
     // the arguments of an initializer_list and `std::forward<Args>(args)...`.
@@ -2143,7 +2153,8 @@ namespace phmap {
              typename = typename std::enable_if<std::is_constructible<T, std::initializer_list<U>&, Args&&...>::value>::type>
     constexpr explicit optional(in_place_t, std::initializer_list<U> il, Args&&... args)
       : data_base(in_place_t(), il, phmap::forward<Args>(args)...)
-    {}
+    {
+    }
 
     // Value constructor (implicit)
     template<
@@ -2155,7 +2166,8 @@ namespace phmap {
                               bool>::type = false>
     constexpr optional(U&& v)
       : data_base(in_place_t(), phmap::forward<U>(v))
-    {}
+    {
+    }
 
     // Value constructor (explicit)
     template<
@@ -2167,7 +2179,8 @@ namespace phmap {
                               bool>::type = false>
     explicit constexpr optional(U&& v)
       : data_base(in_place_t(), phmap::forward<U>(v))
-    {}
+    {
+    }
 
     // Converting copy constructor (implicit)
     template<typename U,
@@ -2349,7 +2362,7 @@ namespace phmap {
     // Swaps
 
     // Swap, standard semantics
-    void swap(optional& rhs) noexcept(std::is_nothrow_move_constructible<T>::value&& std::is_trivial<T>::value)
+    void swap(optional& rhs) noexcept(std::is_nothrow_move_constructible<T>::value && std::is_trivial<T>::value)
     {
       if (*this) {
         if (rhs) {
@@ -2556,8 +2569,8 @@ namespace phmap {
   operator==(const optional<T>& x, const optional<U>& y) -> decltype(optional_internal::convertible_to_bool(*x == *y))
   {
     return static_cast<bool>(x) != static_cast<bool>(y) ? false
-           : static_cast<bool>(x) == false ? true
-                                           : static_cast<bool>(*x == *y);
+           : static_cast<bool>(x) == false              ? true
+                                                        : static_cast<bool>(*x == *y);
   }
 
   // Returns: If bool(x) != bool(y), true; otherwise, if bool(x) == false, false;
@@ -2567,8 +2580,8 @@ namespace phmap {
   operator!=(const optional<T>& x, const optional<U>& y) -> decltype(optional_internal::convertible_to_bool(*x != *y))
   {
     return static_cast<bool>(x) != static_cast<bool>(y) ? true
-           : static_cast<bool>(x) == false ? false
-                                           : static_cast<bool>(*x != *y);
+           : static_cast<bool>(x) == false              ? false
+                                                        : static_cast<bool>(*x != *y);
   }
   // Returns: If !y, false; otherwise, if !x, true; otherwise *x < *y.
   template<typename T, typename U>
@@ -3188,17 +3201,20 @@ namespace phmap {
 
     constexpr Span() noexcept
       : Span(nullptr, 0)
-    {}
+    {
+    }
     constexpr Span(pointer array, size_type lgth) noexcept
       : ptr_(array)
       , len_(lgth)
-    {}
+    {
+    }
 
     // Implicit conversion constructors
     template<size_t N>
     constexpr Span(T (&a)[N]) noexcept // NOLINT(runtime/explicit)
       : Span(a, N)
-    {}
+    {
+    }
 
     // Explicit reference constructor for a mutable `Span<T>` type. Can be
     // replaced with MakeSpan() to infer the type parameter.
@@ -3207,7 +3223,8 @@ namespace phmap {
              typename = EnableIfMutableView<V>>
     explicit Span(V& v) noexcept // NOLINT(runtime/references)
       : Span(span_internal::GetData(v), v.size())
-    {}
+    {
+    }
 
     // Implicit reference constructor for a read-only `Span<const T>` type
     template<typename V,
@@ -3215,7 +3232,8 @@ namespace phmap {
              typename = EnableIfConstView<V>>
     constexpr Span(const V& v) noexcept // NOLINT(runtime/explicit)
       : Span(span_internal::GetData(v), v.size())
-    {}
+    {
+    }
 
     // Implicit constructor from an initializer list, making it possible to pass a
     // brace-enclosed initializer list to a function expecting a `Span`. Such
@@ -3256,7 +3274,8 @@ namespace phmap {
              typename = EnableIfConstView<LazyT>>
     Span(std::initializer_list<value_type> v) noexcept // NOLINT(runtime/explicit)
       : Span(v.begin(), v.size())
-    {}
+    {
+    }
 
     // Accessors
 
@@ -3937,7 +3956,8 @@ namespace phmap {
 
         constexpr explicit LayoutImpl(IntToSize<SizeSeq>... sizes)
           : size_{sizes...}
-        {}
+        {
+        }
 
         // Alignment of the layout, equal to the strictest alignment of all elements.
         // All pointers passed to the methods of layout must be aligned to this value.
@@ -4231,7 +4251,8 @@ namespace phmap {
       // not in bytes.
       constexpr explicit Layout(internal_layout::TypeToSize<Ts>... sizes)
         : internal_layout::LayoutType<sizeof...(Ts), Ts...>(sizes...)
-      {}
+      {
+      }
     };
 
   #ifdef _MSC_VER
@@ -4687,7 +4708,8 @@ namespace phmap {
       DoNothing(mutex_type&, phmap::try_to_lock_t) {}
       template<class T>
       explicit DoNothing(T&&)
-      {}
+      {
+      }
       DoNothing& operator=(const DoNothing&) { return *this; }
       DoNothing& operator=(DoNothing&&) noexcept { return *this; }
       void swap(DoNothing&) noexcept {}
@@ -4708,7 +4730,8 @@ namespace phmap {
       WriteLock()
         : m_(nullptr)
         , locked_(false)
-      {}
+      {
+      }
 
       explicit WriteLock(mutex_type& m)
         : m_(&m)
@@ -4720,12 +4743,14 @@ namespace phmap {
       WriteLock(mutex_type& m, adopt_lock_t) noexcept
         : m_(&m)
         , locked_(true)
-      {}
+      {
+      }
 
       WriteLock(mutex_type& m, defer_lock_t) noexcept
         : m_(&m)
         , locked_(false)
-      {}
+      {
+      }
 
       WriteLock(mutex_type& m, try_to_lock_t)
         : m_(&m)
@@ -4803,7 +4828,8 @@ namespace phmap {
       ReadLock()
         : m_(nullptr)
         , locked_(false)
-      {}
+      {
+      }
 
       explicit ReadLock(mutex_type& m)
         : m_(&m)
@@ -4815,12 +4841,14 @@ namespace phmap {
       ReadLock(mutex_type& m, adopt_lock_t) noexcept
         : m_(&m)
         , locked_(true)
-      {}
+      {
+      }
 
       ReadLock(mutex_type& m, defer_lock_t) noexcept
         : m_(&m)
         , locked_(false)
-      {}
+      {
+      }
 
       ReadLock(mutex_type& m, try_to_lock_t)
         : m_(&m)
@@ -4899,7 +4927,8 @@ namespace phmap {
         : m_(nullptr)
         , locked_(false)
         , locked_shared_(false)
-      {}
+      {
+      }
 
       explicit ReadWriteLock(mutex_type& m)
         : m_(&m)
@@ -4913,7 +4942,8 @@ namespace phmap {
         : m_(&m)
         , locked_(false)
         , locked_shared_(false)
-      {}
+      {
+      }
 
       ReadWriteLock(ReadWriteLock&& o) noexcept
         : m_(std::move(o.m_))
