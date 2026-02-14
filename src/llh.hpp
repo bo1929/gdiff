@@ -47,12 +47,12 @@ public:
       const double fdc = compute_fdc_v(d);
       const double sdc = compute_sdc_v(d);
       fdc_v[d] = opposite ? -fdc : fdc;
-      sdc_v[d] = opposite ? -sdc : sdc;
+      sdc_v[d] = sdc;
     }
     const double fdc = compute_fdc_u();
     const double sdc = compute_sdc_u();
     fdc_u = opposite ? -fdc : fdc;
-    sdc_u = opposite ? -sdc : sdc;
+    sdc_u = sdc;
   }
 
   void set_counts(uint64_t* v_r, uint64_t u_r)

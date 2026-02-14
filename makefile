@@ -4,7 +4,7 @@ COMPILER ?= g++
 mode ?= dynamic  # Default to dynamic linking
 
 # TODO: remove -g
-CXXFLAGS += -std=c++17 -O3 -g
+CXXFLAGS += -std=c++17 -O3
 # -Wall
 WFLAGS += -Wno-unused-result -Wno-unused-command-line-argument -Wno-unknown-pragmas -Wno-undefined-inline
 
