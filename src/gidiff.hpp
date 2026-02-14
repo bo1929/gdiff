@@ -2,6 +2,8 @@
 #define _GIDIFF_H
 
 #include <regex>
+#include <chrono>
+#include <ctime>
 #include "types.hpp"
 #include "lshf.hpp"
 #include "rqseq.hpp"

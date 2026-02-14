@@ -5,6 +5,7 @@
 #include <vector>
 #include <string>
 #include <memory>
+#include <cstdint>
 #include "btree.h"
 #include "phmap.h"
 
