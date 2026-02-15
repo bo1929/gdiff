@@ -1,17 +1,24 @@
 #ifndef _TYPES_HPP
 #define _TYPES_HPP
 
+#include <array>
 #include <cstdint>
-#include <vector>
-#include <string>
 #include <memory>
-#include <cstdint>
+#include <sstream>
+#include <string>
+#include <utility>
+#include <vector>
 #include "btree.h"
 #include "phmap.h"
 
-class QIE;
+#define RWIDTH 8
+
+template<typename T>
 class LLH;
+template<typename T>
 class DIM;
+template<typename T>
+class QIE;
 class RSeq;
 class QSeq;
 class LSHF;
@@ -21,17 +28,8 @@ class Sketch;
 
 typedef uint64_t inc_t;
 typedef uint32_t enc_t;
-typedef std::pair<uint64_t, uint64_t> interval_t;
-
 typedef std::stringstream strstream;
-
-template<typename T>
-using vvec = std::vector<std::vector<T>>;
-template<typename T>
-using vec = std::vector<T>;
-
-typedef std::shared_ptr<QIE> sbatch_sptr_t;
-typedef std::shared_ptr<LLH> llh_sptr_t;
+typedef std::pair<uint64_t, uint64_t> interval_t;
 typedef std::shared_ptr<RSeq> rseq_sptr_t;
 typedef std::shared_ptr<QSeq> qseq_sptr_t;
 typedef std::shared_ptr<LSHF> lshf_sptr_t;
@@ -39,17 +37,36 @@ typedef std::shared_ptr<SDHM> sdhm_sptr_t;
 typedef std::shared_ptr<SFHM> sfhm_sptr_t;
 typedef std::shared_ptr<Sketch> sketch_sptr_t;
 
+template<typename T, size_t WIDTH>
+using arr = std::array<T, WIDTH>;
+
+template<typename T>
+using vec = std::vector<T>;
+
+template<typename T>
+using vvec = std::vector<std::vector<T>>;
+
+template<typename T>
+using llh_sptr_t = std::shared_ptr<LLH<T>>;
+
 struct hmer_t
 {
   uint64_t x, y, z;
 };
 
+template<typename T>
 struct params_t
 {
+  size_t n;
+  T dist_th;
   uint32_t hdist_th;
   uint64_t min_length;
-  double dist_th;
   double chisq;
+};
+
+struct alignas(64) pd_t
+{
+  arr<double, RWIDTH> v{};
 };
 
 #define EXTRAARGS                                                                                                           \

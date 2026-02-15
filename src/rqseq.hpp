@@ -108,7 +108,8 @@ private:
 
 class QSeq : public HandlerURL
 {
-  friend class QIE;
+  friend class QIE<double>;
+  friend class QIE<pd_t>;
 
 public:
   QSeq(std::string input);

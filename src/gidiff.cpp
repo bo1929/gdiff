@@ -92,11 +92,18 @@ void MapSketch::map_sequences()
   header_dreport(dreport_stream);
   qseq_sptr_t qs = std::make_shared<QSeq>(query);
   bool cont_reading = false;
-  params_t params = {hdist_th, min_length, dist_th, chisq};
+  params_t<double> params_single = {dist_th.size(), *dist_th.data(), hdist_th, min_length, chisq};
+  params_t<pd_t> params_multiple = {dist_th.size(), {}, hdist_th, min_length, chisq};
+  std::copy(dist_th.begin(), dist_th.end(), params_multiple.dist_th.v.begin());
   while ((cont_reading = qs->read_next_batch()) || !qs->is_batch_finished()) {
     total_qseq += qs->get_cbatch_size();
-    QIE qie(sketch, sketch->get_lshf(), qs, params);
-    qie.map_sequences(*output_stream);
+    if (dist_th.size() == 1) {
+      QIE<double> qie(sketch, sketch->get_lshf(), qs, params_single);
+      qie.map_sequences(*output_stream);
+    } else {
+      QIE<pd_t> qie(sketch, sketch->get_lshf(), qs, params_multiple);
+      qie.map_sequences(*output_stream);
+    }
   }
 }
 
@@ -135,10 +142,14 @@ MapSketch::MapSketch(CLI::App& sc)
   sc.add_option("-i,--sketch-path", sketch_path, "Sketch file at <path> to query.")->required()->check(CLI::ExistingFile);
   sc.add_option("-o,--output-path", output_path, "Write output to a file at <path>. [stdout]");
   sc.add_option("--hdist-th", hdist_th, "Maximum Hamming distance for a k-mer to match. [4]")->check(CLI::NonNegativeNumber);
-  sc.add_option("--chi-sq", chisq, "Maximum Hamming distance for a k-mer to match. [4]")->check(CLI::NonNegativeNumber);
-  sc.add_option("-d,--dist-th", dist_th, "Maximum (or minimum) distance for an interval to match.")->required();
-  sc.add_option("-l,--min-length", min_length, "Maximum (or minimum) length for an interval to match.")->required();
+  sc.add_option("--chisq", chisq, "Chi-square threshold. [3.841]")->check(CLI::NonNegativeNumber);
+  sc.add_option("-d,--dist-th", dist_th, "Distance threshold(s) - provide exactly 1 or 8 values")->required()->expected(1, 8);
+  sc.add_option("-l,--min-length", min_length, "Minimum interval length.")->required();
   sc.callback([&]() {
+    if (dist_th.size() != 1 && dist_th.size() != 8) {
+      std::cerr << "Error: Must provide exactly 1 or 8 -d (--dist-th) values, got " << dist_th.size() << std::endl;
+      std::exit(1);
+    }
     if (!output_path.empty()) {
       output_file.open(output_path);
       output_stream = &output_file;
@@ -176,7 +187,9 @@ int main(int argc, char** argv)
   for (int i = 0; i < argc; ++i) {
     invocation += std::string(argv[i]) + " ";
   }
-  invocation.pop_back();
+  if (!invocation.empty()) {
+    invocation.pop_back();
+  }
 
   auto tstart = std::chrono::system_clock::now();
   std::time_t tstart_f = std::chrono::system_clock::to_time_t(tstart);
@@ -201,7 +214,7 @@ int main(int argc, char** argv)
     std::chrono::duration<float> es_b = std::chrono::system_clock::now() - tstart;
     krepp_map.map_sequences();
     std::chrono::duration<float> es_s = std::chrono::system_clock::now() - tstart - es_b;
-    std::cerr << "Done maping sequences, elapsed: " << es_s.count() << " sec" << std::endl;
+    std::cerr << "Done mapping sequences, elapsed: " << es_s.count() << " sec" << std::endl;
     std::cerr << "Total number of sequences queried: " << krepp_map.get_total_qseq() << std::endl;
   }
 

@@ -12,8 +12,8 @@
 #include "hm.hpp"
 #include "CLI11.hpp"
 
-#define VERSION "v0.6.0"
-#define PRINT_VERSION std::cerr << "krepp version: " << VERSION << std::endl;
+#define VERSION "v0.0.0"
+#define PRINT_VERSION std::cerr << "??? version: " << VERSION << std::endl;
 #define STRSTREAM_PRECISION 4
 
 extern uint32_t num_threads;
@@ -110,8 +110,8 @@ private:
   uint32_t hdist_th = 4;
   uint64_t total_qseq = 0;
   uint64_t min_length = 0;
-  double dist_th = 0;
   double chisq = 3.841; // 95%
+  std::vector<double> dist_th;
 };
 
 #endif
