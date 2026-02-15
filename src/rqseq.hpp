@@ -109,7 +109,7 @@ private:
 class QSeq : public HandlerURL
 {
   friend class QIE<double>;
-  friend class QIE<pd_t>;
+  friend class QIE<cm512_t>;
 
 public:
   QSeq(std::string input);

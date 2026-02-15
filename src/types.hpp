@@ -49,6 +49,7 @@ using vvec = std::vector<std::vector<T>>;
 template<typename T>
 using llh_sptr_t = std::shared_ptr<LLH<T>>;
 
+using cm512_t = std::array<double, RWIDTH>;
 struct hmer_t
 {
   uint64_t x, y, z;
@@ -64,10 +65,10 @@ struct params_t
   double chisq;
 };
 
-struct alignas(64) pd_t
-{
-  arr<double, RWIDTH> v{};
-};
+// struct alignas(64) cm512_t
+// {
+//   arr<double, RWIDTH> v{};
+// };
 
 #define EXTRAARGS                                                                                                           \
   phmap::priv::hash_default_hash<K>, phmap::priv::hash_default_eq<K>, std::allocator<std::pair<const K, V>>, 4

@@ -4,12 +4,14 @@ COMPILER ?= g++
 mode ?= dynamic  # Default to dynamic linking
 
 # TODO: remove -g
-CXXFLAGS += -std=c++17 -O3 \
+CXXFLAGS += -g -std=c++17 -O3 \
 						-fopenmp-simd \
 						-funroll-loops \
 						-ftree-vectorize \
-						-flto # -fno-trapping-math \
-						# -ffast-math \
+						-flto
+						# -fno-trapping-math \
+						# -ffast-math
+# Keep it fun?
 # -Wall
 WFLAGS += -Wno-unused-result -Wno-unused-command-line-argument -Wno-unknown-pragmas -Wno-undefined-inline
 

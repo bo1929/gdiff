@@ -17,14 +17,14 @@ class DIM
   static constexpr size_t WIDTH = std::is_same_v<T, double> ? 1 : RWIDTH;
 
 public:
-  DIM(llh_sptr_t<T> llhf, uint64_t en_mers);
+  DIM(llh_sptr_t<T> llhf, uint32_t hdist_th, uint64_t en_mers);
   T get_fdt() const { return fdt; }
   T get_sdt() const { return sdt; }
+  static inline double at(T v, size_t idx);
   T fdt_at(uint64_t i) const { return fdc_v[i]; }
   T sdt_at(uint64_t i) const { return sdc_v[i]; }
-  static inline double at(T v, size_t idx);
   void inclusive_scan();
-  void optimize_loglikelihood();
+  // void optimize_loglikelihood();
   void extract_intervals(uint64_t tau, size_t idx = 0);
   uint64_t expand_intervals(double chisq_th, size_t idx = 0);
   void report_intervals(std::ostream& output_stream, const std::string& identifer, size_t idx = 0);
@@ -32,7 +32,7 @@ public:
   // void skip_mer(uint64_t i); // TODO: Anything better?
 
 private:
-  llh_sptr_t<T> llhf;
+  const llh_sptr_t<T> llhf;
   const uint64_t en_mers;
   const uint32_t hdist_th;
   uint64_t merhit_count = 0;

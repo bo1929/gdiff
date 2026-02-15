@@ -7,8 +7,6 @@
 #include <vector>
 #include "types.hpp"
 
-class PLLH;
-
 class PLLH
 {
 public:
@@ -46,7 +44,7 @@ template<typename T>
 class LLH : public PLLH
 {
   static constexpr size_t WIDTH = std::is_same_v<T, double> ? 1 : RWIDTH;
-  static_assert(std::is_same_v<T, double> || std::is_same_v<T, pd_t>, "LLH supports only double or pd_t");
+  static_assert(std::is_same_v<T, double> || std::is_same_v<T, cm512_t>, "LLH supports only double or cm512_t");
 
 public:
   const T extrema;
@@ -66,24 +64,24 @@ public:
       }
       fdc_u = sign * compute_fdc_u(axtrema);
       sdc_u = compute_sdc_u(axtrema);
-    } else if constexpr (std::is_same_v<T, pd_t>) {
+    } else if constexpr (std::is_same_v<T, cm512_t>) {
       alignas(64) double axtrema[WIDTH];
       for (uint32_t i = 0; i < WIDTH; ++i) {
-        sign.v[i] = extrema.v[i] < 0 ? -1.0 : 1.0;
-        axtrema[i] = extrema.v[i] * sign.v[i];
+        sign[i] = extrema[i] < 0 ? -1.0 : 1.0;
+        axtrema[i] = extrema[i] * sign[i];
       }
       for (uint32_t d = 0; d <= hdist_th; ++d) {
         for (uint32_t i = 0; i < WIDTH; ++i) {
-          fdc_v[d].v[i] = sign.v[i] * compute_fdc_v(axtrema[i], d);
-          sdc_v[d].v[i] = compute_sdc_v(axtrema[i], d);
+          fdc_v[d][i] = sign[i] * compute_fdc_v(axtrema[i], d);
+          sdc_v[d][i] = compute_sdc_v(axtrema[i], d);
         }
       }
       for (uint32_t i = 0; i < WIDTH; ++i) {
-        fdc_u.v[i] = sign.v[i] * compute_fdc_u(axtrema[i]);
-        sdc_u.v[i] = compute_sdc_u(axtrema[i]);
+        fdc_u[i] = sign[i] * compute_fdc_u(axtrema[i]);
+        sdc_u[i] = compute_sdc_u(axtrema[i]);
       }
     } else {
-      static_assert(std::is_same_v<T, double> || std::is_same_v<T, pd_t>, "LLH supports only double or pd_t");
+      static_assert(std::is_same_v<T, double> || std::is_same_v<T, cm512_t>, "LLH supports only double or cm512_t");
     }
   }
 

@@ -1,23 +1,34 @@
 #include "map.hpp"
 
 template<typename T>
-DIM<T>::DIM(llh_sptr_t<T> llhf, uint64_t en_mers)
+DIM<T>::DIM(llh_sptr_t<T> llhf, uint32_t hdist_th, uint64_t en_mers)
   : llhf(llhf)
+  , hdist_th(hdist_th)
   , en_mers(en_mers)
-  , hdist_th(llhf->hdist_th)
 {
   hdisthist_v.resize(hdist_th + 1, 0);
-  fdc_v.resize(en_mers);
-  sdc_v.resize(en_mers);
+
   // fdc_v.reserve(en_mers);
   // sdc_v.reserve(en_mers);
+  fdc_v.resize(en_mers);
+  sdc_v.resize(en_mers);
+  fdps_v.reserve(en_mers + 1);
+  sdps_v.reserve(en_mers + 1);
+  fdpmax_v.reserve(en_mers + 2);
+  fdsmin_v.reserve(en_mers + 2);
+
   if constexpr (std::is_same_v<T, double>) {
     fdt = 0.0;
     sdt = 0.0;
   } else {
-    fdt.v.fill(0.0);
-    sdt.v.fill(0.0);
+    fdt.fill(0.0);
+    sdt.fill(0.0);
   }
+  // for (size_t i = 0; i < WIDTH; ++i) {
+  //   rintervals_v[i].clear();
+  //   eintervals_v[i].clear();
+  //   chisq_v[i].clear();
+  // }
 }
 
 template<typename T>
@@ -26,7 +37,7 @@ inline double DIM<T>::at(T v, const size_t idx)
   if constexpr (std::is_same_v<T, double>) {
     return v;
   } else {
-    return v.v[idx];
+    return v[idx];
   }
 }
 
@@ -34,6 +45,7 @@ template<typename T>
 void DIM<T>::aggregate_mer(sketch_sptr_t sketch, uint32_t rix, enc_t enc_lr, uint64_t i)
 {
   const uint32_t hdist_min = sketch->search_mer(rix, enc_lr);
+
   if (hdist_min <= hdist_th) {
     merhit_count++;
     hdisthist_v[hdist_min]++;
@@ -48,20 +60,21 @@ void DIM<T>::aggregate_mer(sketch_sptr_t sketch, uint32_t rix, enc_t enc_lr, uin
     sdc_v[i] = llhf->get_sdc();
     fdc_v[i] = llhf->get_fdc();
   }
+
   if constexpr (std::is_same_v<T, double>) {
     // fdt += fdc_v.back();
     // sdt += sdc_v.back();
     fdt += fdc_v[i];
     sdt += sdc_v[i];
   } else {
-    simde__m512d vfdt = simde_mm512_load_pd(fdt.v.data());
-    simde__m512d vsdt = simde_mm512_load_pd(sdt.v.data());
-    simde__m512d fdc = simde_mm512_load_pd(fdc_v[i].v.data());
-    simde__m512d sdc = simde_mm512_load_pd(sdc_v[i].v.data());
+    simde__m512d vfdt = simde_mm512_load_pd(fdt.data());
+    simde__m512d vsdt = simde_mm512_load_pd(sdt.data());
+    simde__m512d fdc = simde_mm512_load_pd(fdc_v[i].data());
+    simde__m512d sdc = simde_mm512_load_pd(sdc_v[i].data());
     vfdt = simde_mm512_add_pd(vfdt, fdc);
     vsdt = simde_mm512_add_pd(vsdt, sdc);
-    simde_mm512_store_pd(fdt.v.data(), vfdt);
-    simde_mm512_store_pd(sdt.v.data(), vsdt);
+    simde_mm512_store_pd(fdt.data(), vfdt);
+    simde_mm512_store_pd(sdt.data(), vsdt);
   }
 }
 
@@ -70,6 +83,7 @@ void DIM<T>::inclusive_scan()
 {
   assert(en_mers > 0);
   const uint64_t s = en_mers + 1;
+
   fdps_v.resize(s);
   sdps_v.resize(s);
   fdpmax_v.resize(s + 1);
@@ -82,40 +96,45 @@ void DIM<T>::inclusive_scan()
       fdps_v[i] = fdps_v[i - 1] + fdc_v[i - 1];
       sdps_v[i] = sdps_v[i - 1] + sdc_v[i - 1];
     }
+
     fdpmax_v.front() = -std::numeric_limits<double>::max();
     std::inclusive_scan(
       fdps_v.begin(), fdps_v.end(), fdpmax_v.begin() + 1, [](double a, double b) { return std::max(a, b); });
+
+    fdsmin_v.back() = std::numeric_limits<double>::max();
     std::inclusive_scan(
       fdps_v.rbegin(), fdps_v.rend(), fdsmin_v.rbegin() + 1, [](double a, double b) { return std::min(a, b); });
-    fdsmin_v.back() = std::numeric_limits<double>::max();
+
   } else {
-    fdps_v[0].v.fill(0.0);
-    sdps_v[0].v.fill(0.0);
+    fdps_v[0].fill(0.0);
+    sdps_v[0].fill(0.0);
     simde__m512d fdps_acc = simde_mm512_setzero_pd();
     simde__m512d sdps_acc = simde_mm512_setzero_pd();
     for (uint64_t i = 1; i < s; ++i) {
-      const simde__m512d fdc = simde_mm512_load_pd(fdc_v[i - 1].v.data());
-      const simde__m512d sdc = simde_mm512_load_pd(sdc_v[i - 1].v.data());
+      const simde__m512d fdc = simde_mm512_load_pd(fdc_v[i - 1].data());
+      const simde__m512d sdc = simde_mm512_load_pd(sdc_v[i - 1].data());
       fdps_acc = simde_mm512_add_pd(fdps_acc, fdc);
       sdps_acc = simde_mm512_add_pd(sdps_acc, sdc);
-      simde_mm512_store_pd(fdps_v[i].v.data(), fdps_acc);
-      simde_mm512_store_pd(sdps_v[i].v.data(), sdps_acc);
+      simde_mm512_store_pd(fdps_v[i].data(), fdps_acc);
+      simde_mm512_store_pd(sdps_v[i].data(), sdps_acc);
     }
-    fdpmax_v[0].v.fill(-std::numeric_limits<double>::max());
-    simde__m512d fdpmax_acc = simde_mm512_load_pd(fdpmax_v[0].v.data());
+
+    fdpmax_v[0].fill(-std::numeric_limits<double>::max());
+    simde__m512d fdpmax_acc = simde_mm512_load_pd(fdpmax_v[0].data());
     for (uint64_t i = 0; i < s; ++i) {
-      const simde__m512d fdps = simde_mm512_load_pd(fdps_v[i].v.data());
+      const simde__m512d fdps = simde_mm512_load_pd(fdps_v[i].data());
       fdpmax_acc = simde_mm512_max_pd(fdpmax_acc, fdps);
-      simde_mm512_store_pd(fdpmax_v[i + 1].v.data(), fdpmax_acc);
+      simde_mm512_store_pd(fdpmax_v[i + 1].data(), fdpmax_acc);
     }
+
     uint64_t j = s;
-    fdsmin_v[j].v.fill(std::numeric_limits<double>::max());
-    simde__m512d fdsmin_acc = simde_mm512_load_pd(fdsmin_v[j].v.data());
+    fdsmin_v[j].fill(std::numeric_limits<double>::max());
+    simde__m512d fdsmin_acc = simde_mm512_load_pd(fdsmin_v[j].data());
     for (uint64_t i = 0; i < s; ++i) {
       j = s - i - 1;
-      const simde__m512d fdps = simde_mm512_load_pd(fdps_v[j].v.data());
+      const simde__m512d fdps = simde_mm512_load_pd(fdps_v[j].data());
       fdsmin_acc = simde_mm512_min_pd(fdsmin_acc, fdps);
-      simde_mm512_store_pd(fdsmin_v[j].v.data(), fdsmin_acc);
+      simde_mm512_store_pd(fdsmin_v[j].data(), fdsmin_acc);
     }
   }
 }
@@ -126,18 +145,22 @@ void DIM<T>::extract_intervals(const uint64_t tau, const size_t idx)
   for (uint64_t a = 1, b = 1; a <= en_mers; ++a) {
     const double fdpmax_a = at(fdpmax_v[a - 1], idx);
     const double fdps_a = at(fdps_v[a], idx);
+
     if (fdpmax_a >= fdps_a) {
       continue;
     }
+
     if (b < (a + tau)) {
       b = a + tau - 1;
     }
     if (__builtin_expect(b > en_mers, 0)) {
       break;
     }
+
     if (at(fdsmin_v[b + 1], idx) >= at(fdps_v[a], idx)) {
       continue;
     }
+
     b++;
     while (b <= en_mers) {
       const double fdps_b = at(fdps_v[b], idx);
@@ -159,32 +182,36 @@ uint64_t DIM<T>::expand_intervals(const double chisq_th, const size_t idx)
   if (rintervals_v[idx].empty()) {
     return 0;
   }
+
   double fdiff, sdiff, chisq_val;
   uint64_t a, ap, b, bp;
   ap = rintervals_v[idx][0].first;
   bp = rintervals_v[idx][0].second;
+
   for (uint64_t i = 1; i < rintervals_v[idx].size(); ++i) {
     a = rintervals_v[idx][i].first;
     b = rintervals_v[idx][i].second;
     fdiff = at(fdps_v[b], idx) - at(fdps_v[ap], idx);
     sdiff = at(sdps_v[ap], idx) - at(sdps_v[b], idx);
     chisq_val = (fdiff * fdiff) / sdiff;
-    assert(chisq_val > 0);
+
     if ((chisq_val < chisq_th) && (a < bp)) {
       a = ap;
     } else {
       eintervals_v[idx].emplace_back(ap, bp);
       chisq_v[idx].push_back(chisq_val);
     }
+
     ap = a;
     bp = b;
   }
+
   fdiff = at(fdps_v[bp], idx) - at(fdps_v[ap], idx);
   sdiff = at(sdps_v[ap], idx) - at(sdps_v[bp], idx);
   chisq_val = (fdiff * fdiff) / sdiff;
-  assert(chisq_val > 0);
   eintervals_v[idx].emplace_back(ap, bp);
   chisq_v[idx].push_back(chisq_val);
+
   return eintervals_v[idx].size();
 }
 
@@ -203,14 +230,14 @@ void DIM<T>::report_intervals(std::ostream& output_stream, const std::string& id
   }
 }
 
-template<typename T>
-void DIM<T>::optimize_loglikelihood()
-{
-  llhf->set_counts(hdisthist_v.data(), mermiss_count);
-  /* std::pair<double, double> sol_r = boost::math::tools::brent_find_minima((*llhf), 1e-10, 0.5, 16); */
-  /* d_llh = sol_r.first; */
-  /* v_llh = sol_r.second; */
-}
+// template<typename T>
+// void DIM<T>::optimize_loglikelihood()
+// {
+//   llhf->set_counts(hdisthist_v.data(), mermiss_count);
+//   /* std::pair<double, double> sol_r = boost::math::tools::brent_find_minima((*llhf), 1e-10, 0.5, 16); */
+//   /* d_llh = sol_r.first; */
+//   /* v_llh = sol_r.second; */
+// }
 
 template<typename T>
 QIE<T>::QIE(sketch_sptr_t sketch, lshf_sptr_t lshf, qseq_sptr_t qs, params_t<T> params)
@@ -243,8 +270,8 @@ void QIE<T>::map_sequences(std::ostream& output_stream)
     onmers = 0;
     en_mers = len - k + 1;
 
-    DIM<T> dim_or(llhf, en_mers);
-    DIM<T> dim_rc(llhf, en_mers);
+    DIM<T> dim_or(llhf, params.hdist_th, en_mers);
+    DIM<T> dim_rc(llhf, params.hdist_th, en_mers);
     search_mers(cseq, len, dim_or, dim_rc);
 
     if constexpr (std::is_same_v<T, double>) {
@@ -259,8 +286,7 @@ void QIE<T>::map_sequences(std::ostream& output_stream)
       dim_or.inclusive_scan();
       dim_rc.inclusive_scan();
       for (size_t i = 0; i < WIDTH; ++i) {
-        const bool use_rc =
-          ((llhf->get_sign()).v[i] * (dim_or.get_fdt()).v[i]) >= ((llhf->get_sign()).v[i] * (dim_rc.get_fdt()).v[i]);
+        const bool use_rc = (llhf->get_sign()[i] * dim_or.get_fdt()[i]) >= (llhf->get_sign()[i] * dim_rc.get_fdt()[i]);
         DIM<T>& dim = use_rc ? dim_rc : dim_or;
         dim.extract_intervals(std::min(min_length, en_mers) - 1, i);
         dim.expand_intervals(chisq, i);
@@ -322,10 +348,10 @@ void QIE<T>::search_mers(const char* cseq, uint64_t len, DIM<T>& dim_or, DIM<T>&
 }
 
 template class QIE<double>;
-template class QIE<pd_t>;
+template class QIE<cm512_t>;
 
 template class DIM<double>;
-template class DIM<pd_t>;
+template class DIM<cm512_t>;
 
 template class LLH<double>;
-template class LLH<pd_t>;
+template class LLH<cm512_t>;

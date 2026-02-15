@@ -93,15 +93,15 @@ void MapSketch::map_sequences()
   qseq_sptr_t qs = std::make_shared<QSeq>(query);
   bool cont_reading = false;
   params_t<double> params_single = {dist_th.size(), *dist_th.data(), hdist_th, min_length, chisq};
-  params_t<pd_t> params_multiple = {dist_th.size(), {}, hdist_th, min_length, chisq};
-  std::copy(dist_th.begin(), dist_th.end(), params_multiple.dist_th.v.begin());
+  params_t<cm512_t> params_multiple = {dist_th.size(), {0}, hdist_th, min_length, chisq};
+  std::copy(dist_th.begin(), dist_th.end(), params_multiple.dist_th.begin());
   while ((cont_reading = qs->read_next_batch()) || !qs->is_batch_finished()) {
     total_qseq += qs->get_cbatch_size();
     if (dist_th.size() == 1) {
       QIE<double> qie(sketch, sketch->get_lshf(), qs, params_single);
       qie.map_sequences(*output_stream);
     } else {
-      QIE<pd_t> qie(sketch, sketch->get_lshf(), qs, params_multiple);
+      QIE<cm512_t> qie(sketch, sketch->get_lshf(), qs, params_multiple);
       qie.map_sequences(*output_stream);
     }
   }
