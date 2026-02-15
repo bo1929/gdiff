@@ -124,7 +124,7 @@ private:
   kseq_t* kseq;
   bool is_url;
   vec<std::string> seq_batch;
-  vec<std::string> identifer_batch;
+  vec<std::string> identifier_batch;
   uint64_t bpc_limit = RBATCH_SIZE * DSEQ_LEN;
   uint64_t rbatch_size = RBATCH_SIZE;
   uint64_t cbatch_size = 0;

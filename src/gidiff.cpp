@@ -162,6 +162,8 @@ int main(int argc, char** argv)
 {
   PRINT_VERSION
   std::ios::sync_with_stdio(false);
+  std::cin.tie(nullptr);
+
   CLI::App app{"gidiff"};
   app.set_help_flag("--help");
   app.fallthrough();

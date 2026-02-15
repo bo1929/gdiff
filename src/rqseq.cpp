@@ -175,16 +175,16 @@ QSeq::~QSeq()
 bool QSeq::read_next_batch()
 {
   seq_batch.clear();
-  identifer_batch.clear();
+  identifier_batch.clear();
   seq_batch.reserve(rbatch_size);
-  identifer_batch.reserve(rbatch_size);
+  identifier_batch.reserve(rbatch_size);
   bool cont_reading = false;
   uint64_t ix = 0, bpc = 0;
   // Alternatively, use (ix < rbatch_size).
   while ((bpc < bpc_limit) && (cont_reading = kseq_read(kseq) >= 0)) {
     bpc += kseq->seq.l;
     seq_batch.emplace_back(kseq->seq.s);
-    identifer_batch.emplace_back(kseq->name.s);
+    identifier_batch.emplace_back(kseq->name.s);
     ix++;
   }
   cbatch_size = ix;
@@ -193,14 +193,14 @@ bool QSeq::read_next_batch()
 
 bool QSeq::is_batch_finished()
 {
-  assert(seq_batch.size() == identifer_batch.size());
-  return seq_batch.empty() && identifer_batch.empty();
+  assert(seq_batch.size() == identifier_batch.size());
+  return seq_batch.empty() && identifier_batch.empty();
 }
 
 void QSeq::clear_curr_batch()
 {
   seq_batch.clear();
-  identifer_batch.clear();
+  identifier_batch.clear();
 }
 
 uint64_t QSeq::get_cbatch_size() { return cbatch_size; }

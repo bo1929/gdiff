@@ -23,13 +23,13 @@ public:
   static inline double at(T v, size_t idx);
   T fdt_at(uint64_t i) const { return fdc_v[i]; }
   T sdt_at(uint64_t i) const { return sdc_v[i]; }
-  void inclusive_scan();
   // void optimize_loglikelihood();
+  void inclusive_scan();
+  // void skip_mer(uint64_t i); // TODO: Anything better?
+  void aggregate_mer(sketch_sptr_t sketch, uint32_t rix, enc_t enc_lr, uint64_t i);
   void extract_intervals(uint64_t tau, size_t idx = 0);
   uint64_t expand_intervals(double chisq_th, size_t idx = 0);
-  void report_intervals(std::ostream& output_stream, const std::string& identifer, size_t idx = 0);
-  void aggregate_mer(sketch_sptr_t sketch, uint32_t rix, enc_t enc_lr, uint64_t i);
-  // void skip_mer(uint64_t i); // TODO: Anything better?
+  interval_t get_interval(uint64_t i, size_t idx = 0);
 
 private:
   const llh_sptr_t<T> llhf;
@@ -65,6 +65,8 @@ public:
 
 private:
   void search_mers(const char* cseq, uint64_t len, DIM<T>& or_summary, DIM<T>& rc_summary);
+  void report_intervals(std::ostream& output_stream, DIM<T>& dim, size_t idx = 0);
+  static inline double at(T v, size_t idx);
 
   const sketch_sptr_t sketch;
   const lshf_sptr_t lshf;
@@ -82,7 +84,9 @@ private:
   uint64_t bix;
   llh_sptr_t<T> llhf;
   vec<std::string> seq_batch;
-  vec<std::string> identifer_batch;
+  vec<std::string> identifier_batch;
 };
+
+#define WRITE_CINTERVAL(identifier, a, b, n, dist_th) identifier << '\t' << a << '\t' << b << '\t' << n << '\t' << dist_th
 
 #endif

@@ -215,21 +215,6 @@ uint64_t DIM<T>::expand_intervals(const double chisq_th, const size_t idx)
   return eintervals_v[idx].size();
 }
 
-template<typename T>
-void DIM<T>::report_intervals(std::ostream& output_stream, const std::string& identifier, const size_t idx)
-{ // TODO: Revisit.
-  if (eintervals_v[idx].empty()) {
-    output_stream << identifier << ',' << en_mers << ',' << en_mers << ',' << en_mers << ",0,0\n";
-  } else {
-    for (uint64_t i = 0; i < eintervals_v[idx].size(); ++i) {
-      const uint64_t a = eintervals_v[idx][i].first;
-      const uint64_t b = eintervals_v[idx][i].second;
-      output_stream << identifier << ',' << a << ',' << b - 1 << ',' << en_mers << ','
-                    << (at(fdps_v[b], idx) - at(fdps_v[a], idx)) << ',' << chisq_v[idx][i] << '\n';
-    }
-  }
-}
-
 // template<typename T>
 // void DIM<T>::optimize_loglikelihood()
 // {
@@ -238,6 +223,16 @@ void DIM<T>::report_intervals(std::ostream& output_stream, const std::string& id
 //   /* d_llh = sol_r.first; */
 //   /* v_llh = sol_r.second; */
 // }
+
+template<typename T>
+interval_t DIM<T>::get_interval(uint64_t i, size_t idx)
+{
+  if ((idx < eintervals_v.size()) && (i < eintervals_v[idx].size())) {
+    return eintervals_v[idx][i];
+  } else {
+    return {en_mers, en_mers};
+  }
+}
 
 template<typename T>
 QIE<T>::QIE(sketch_sptr_t sketch, lshf_sptr_t lshf, qseq_sptr_t qs, params_t<T> params)
@@ -252,7 +247,7 @@ QIE<T>::QIE(sketch_sptr_t sketch, lshf_sptr_t lshf, qseq_sptr_t qs, params_t<T> 
   , chisq(params.chisq)
 {
   std::swap(qs->seq_batch, seq_batch);
-  std::swap(qs->identifer_batch, identifer_batch);
+  std::swap(qs->identifier_batch, identifier_batch);
   llhf = std::make_shared<LLH<T>>(k, h, sketch->get_rho(), params.hdist_th, params.dist_th);
   const uint64_t u64m = std::numeric_limits<uint64_t>::max();
   mask_lr = ((u64m >> (64 - k)) << 32) + ((u64m << 32) >> (64 - k));
@@ -280,7 +275,7 @@ void QIE<T>::map_sequences(std::ostream& output_stream)
       dim.inclusive_scan();
       dim.extract_intervals(std::min(min_length, en_mers) - 1);
       dim.expand_intervals(chisq);
-      dim.report_intervals(batch_stream, identifer_batch[bix]);
+      report_intervals(batch_stream, dim);
     } else {
       // TODO: Do not do this twice?
       dim_or.inclusive_scan();
@@ -290,7 +285,7 @@ void QIE<T>::map_sequences(std::ostream& output_stream)
         DIM<T>& dim = use_rc ? dim_rc : dim_or;
         dim.extract_intervals(std::min(min_length, en_mers) - 1, i);
         dim.expand_intervals(chisq, i);
-        dim.report_intervals(batch_stream, identifer_batch[bix], i);
+        report_intervals(batch_stream, dim, i);
       }
     }
   }
@@ -344,6 +339,33 @@ void QIE<T>::search_mers(const char* cseq, uint64_t len, DIM<T>& dim_or, DIM<T>&
       dim_rc.aggregate_mer(sketch, rcrix, lshf->drop_ppos_lr(bp64_to_lr64(rcenc64_bp)), j);
     }
 #endif /* CANONICAL */
+  }
+}
+
+template<typename T>
+void QIE<T>::report_intervals(std::ostream& output_stream, DIM<T>& dim, size_t idx)
+{ // TODO: Revisit.
+  double dist_th = at(params.dist_th, idx);
+  uint64_t n = en_mers + k - 1;
+  interval_t x;
+  uint64_t i = 0;
+  x = dim.get_interval(i, idx);
+  if (x.first == en_mers) {
+    output_stream << WRITE_CINTERVAL(identifier_batch[bix], n, n, n, dist_th) << '\n';
+  }
+  while (x.first < en_mers) {
+    output_stream << WRITE_CINTERVAL(identifier_batch[bix], x.first, x.second + k - 1, n, dist_th) << '\n';
+    x = dim.get_interval(++i, idx);
+  }
+}
+
+template<typename T>
+inline double QIE<T>::at(T v, const size_t idx)
+{
+  if constexpr (std::is_same_v<T, double>) {
+    return v;
+  } else {
+    return v[idx];
   }
 }
 
