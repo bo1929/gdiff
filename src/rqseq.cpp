@@ -39,7 +39,6 @@ RSeq::~RSeq()
   }
 }
 
-/* void RSeq::compute_rho() { rho = static_cast<double>(wcix) / static_cast<double>(wnix); } */
 void RSeq::compute_rho() { rho = n2_est / n1_est; }
 
 bool RSeq::read_next_seq() { return kseq_read(kseq) >= 0; }
@@ -71,10 +70,9 @@ void RSeq::extract_mers(vvec<T>& table)
   uint64_t kix = 0, klix = 0;
   uint64_t orenc64_bp, orenc64_lr, rcenc64_bp;
   std::vector<hmer_t> winenc_v(ldiff);
-  hmer_t cminimizer, pminimizer;
+  hmer_t cminimizer;
   uint32_t mrs = 0, mre = len;
   int mn = 0, mi = 0;
-  uint64_t* rgs;
   for (i = l = 0; i < len;) {
     if (SEQ_NT4_TABLE[cseq[i]] >= 4) {
       l = 0, i++;
@@ -110,11 +108,6 @@ void RSeq::extract_mers(vvec<T>& table)
     if (frac ? rix_res <= r : rix_res == r) {
       rix = frac ? rix / m * (r + 1) + rix_res : rix / m;
       table[rix].push_back(lshf->drop_ppos_lr(cminimizer.y));
-      wnix++;
-      if (cminimizer.x != pminimizer.x) {
-        wcix++;
-      }
-      pminimizer = cminimizer;
     }
   }
   n1_est += c1.estimate();

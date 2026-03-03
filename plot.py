@@ -966,7 +966,7 @@ def create_app(input_path, tree_path, query=None):
         )
 
     retained_l = get_retained_leaves(df)
-    has_pruned_tree = len(retained_l) > 0 and len(retained_l) < len(leaf_names)
+    has_pruned_tree = len(retained_l) > 0  # and len(retained_l) < len(leaf_names)
     pruned_tree = prune_tree(full_tree, retained_l) if has_pruned_tree else None
 
     def compute_tree_data(tree, query):

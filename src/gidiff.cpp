@@ -65,7 +65,6 @@ void MapSC::map()
   params_t<cm512_t> params_multiple = {dist_th.size(), {0}, hdist_th, min_length, chisq};
   std::copy(dist_th.begin(), dist_th.end(), params_multiple.dist_th.begin());
 
-  strstream sout;
   for (uint32_t i = 0; i < nsketches; ++i) {
     sketch_sptr_t sketch = std::make_shared<Sketch>(sketch_path);
     sketch->load_from_offset(sketch_stream, 0);
@@ -197,9 +196,10 @@ void MergeSC::merge()
   uint32_t nsketches = sketch_paths.size();
   sout.write(reinterpret_cast<char*>(&nsketches), sizeof(uint32_t));
 
+  constexpr size_t buffer_size = 10 * 1024 * 1024;
+  std::vector<char> buffer(buffer_size);
+
   for (size_t i = 0; i < sketch_paths.size(); ++i) {
-    constexpr size_t buffer_size = 10 * 1024 * 1024;
-    std::vector<char> buffer(buffer_size);
     std::ifstream sin;
     sin.rdbuf()->pubsetbuf(buffer.data(), buffer_size);
     sin.open(sketch_paths[i], std::ifstream::binary);

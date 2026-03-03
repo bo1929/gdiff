@@ -1,5 +1,7 @@
 #include "map.hpp"
 
+#define EPS 1e-10
+
 template<typename T>
 DIM<T>::DIM(llh_sptr_t<T> llhf, uint32_t hdist_th, uint64_t enmers)
   : llhf(llhf)
@@ -193,7 +195,8 @@ uint64_t DIM<T>::expand_intervals(const double chisq_th, const size_t idx)
     b = rintervals_v[idx][i].second;
     fdiff = at(fdps_v[b], idx) - at(fdps_v[ap], idx);
     sdiff = at(sdps_v[ap], idx) - at(sdps_v[b], idx);
-    chisq_val = (fdiff * fdiff) / sdiff;
+    // chisq_val = (sdiff > 0.0) ? (fdiff * fdiff) / sdiff : std::numeric_limits<double>::infinity();
+    chisq_val = (fdiff * fdiff) / (sdiff + EPS);
 
     if ((chisq_val < chisq_th) && (a < bp)) {
       a = ap;
@@ -208,7 +211,8 @@ uint64_t DIM<T>::expand_intervals(const double chisq_th, const size_t idx)
 
   fdiff = at(fdps_v[bp], idx) - at(fdps_v[ap], idx);
   sdiff = at(sdps_v[ap], idx) - at(sdps_v[bp], idx);
-  chisq_val = (fdiff * fdiff) / sdiff;
+  // chisq_val = (sdiff > 0.0) ? (fdiff * fdiff) / sdiff : std::numeric_limits<double>::infinity();
+  chisq_val = (fdiff * fdiff) / (sdiff + EPS);
   eintervals_v[idx].emplace_back(ap, bp);
   chisq_v[idx].push_back(chisq_val);
 
@@ -261,8 +265,14 @@ void QIE<T>::map_sequences(std::ostream& sout, const str& rid)
     const char* cseq = seq_batch[bix].data();
     const uint64_t len = seq_batch[bix].size();
     onmers = 0;
-    if (len < (len - k + 1)) {
-      // TODO: too short? do something?
+    if (len < static_cast<uint64_t>(k)) {
+      // const uint64_t n = len;
+      // if constexpr (std::is_same_v<T, double>) {
+      //   sout << WRITE_CINTERVAL(qid_batch[bix], n, n, n, "+", rid, at(params.dist_th, 0)) << '\n';
+      // } else {
+      //   for (size_t idx = 0; idx < WIDTH; ++idx)
+      //     sout << WRITE_CINTERVAL(qid_batch[bix], n, n, n, "+", rid, at(params.dist_th, idx)) << '\n';
+      // }
       continue;
     }
     enmers = len - k + 1;

@@ -95,8 +95,6 @@ private:
   lshf_sptr_t lshf;
   uint64_t mask_bp = 0;
   uint64_t mask_lr = 0;
-  uint64_t wcix = 0;
-  uint64_t wnix = 0;
   double n1_est = 0;
   double n2_est = 0;
   double rho = 1.0;

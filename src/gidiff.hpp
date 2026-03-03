@@ -73,7 +73,6 @@ private:
   str input_path;
   std::filesystem::path sketch_path;
   sfhm_sptr_t sketch_sfhm = nullptr;
-  sketch_sptr_t sketch = nullptr;
 };
 
 class MapSC
@@ -81,7 +80,7 @@ class MapSC
 public:
   MapSC(CLI::App& sc);
   void map();
-  uint32_t get_total_qseq() { return total_qseq; }
+  uint64_t get_total_qseq() { return total_qseq; }
 
 private:
   str query_path;
