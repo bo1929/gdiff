@@ -14,7 +14,7 @@ public:
   void fill_table(uint32_t nrows, rseq_sptr_t rs);
   void make_unique();
   void sort_columns();
-  uint64_t get_nkmers();
+  uint64_t get_nmers();
 
 protected:
   uint64_t nkmers = 0;

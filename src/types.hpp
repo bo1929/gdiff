@@ -8,8 +8,8 @@
 #include <string>
 #include <utility>
 #include <vector>
-#include "btree.h"
-#include "phmap.h"
+// #include "btree.h"
+// #include "phmap.h"
 
 #define RWIDTH 8
 
@@ -72,28 +72,28 @@ struct params_t
 //   arr<double, RWIDTH> v{};
 // };
 
-#define EXTRAARGS                                                                                                           \
-  phmap::priv::hash_default_hash<K>, phmap::priv::hash_default_eq<K>, std::allocator<std::pair<const K, V>>, 4
+// #define EXTRAARGS                                                                                                           \
+//   phmap::priv::hash_default_hash<K>, phmap::priv::hash_default_eq<K>, std::allocator<std::pair<const K, V>>, 4
 
-template<class K, class V>
-using parallel_flat_phmap = phmap::parallel_flat_hash_map<K, V, EXTRAARGS, std::mutex>;
+// template<class K, class V>
+// using parallel_flat_phmap = phmap::parallel_flat_hash_map<K, V, EXTRAARGS, std::mutex>;
 
-template<class K, class V>
-using parallel_node_phmap = phmap::parallel_node_hash_map<K, V, EXTRAARGS, std::mutex>;
+// template<class K, class V>
+// using parallel_node_phmap = phmap::parallel_node_hash_map<K, V, EXTRAARGS, std::mutex>;
 
-template<class K, class V>
-using fparallel_flat_phmap = phmap::parallel_flat_hash_map<K, V, EXTRAARGS>;
+// template<class K, class V>
+// using fparallel_flat_phmap = phmap::parallel_flat_hash_map<K, V, EXTRAARGS>;
 
-template<class K, class V>
-using fparallel_node_phmap = phmap::parallel_node_hash_map<K, V, EXTRAARGS>;
+// template<class K, class V>
+// using fparallel_node_phmap = phmap::parallel_node_hash_map<K, V, EXTRAARGS>;
 
-template<class K, class V>
-using flat_phmap = phmap::flat_hash_map<K, V>;
+// template<class K, class V>
+// using flat_phmap = phmap::flat_hash_map<K, V>;
 
-template<class K, class V>
-using btree_phmap = phmap::btree_map<K, V>;
+// template<class K, class V>
+// using btree_phmap = phmap::btree_map<K, V>;
 
-template<class K, class V>
-using node_phmap = phmap::node_hash_map<K, V>;
+// template<class K, class V>
+// using node_phmap = phmap::node_hash_map<K, V>;
 
 #endif

@@ -97,4 +97,4 @@ void SDHM::fill_table(uint32_t nrows, rseq_sptr_t rs)
   make_unique();
 }
 
-uint64_t SDHM::get_nkmers() { return nkmers; }
+uint64_t SDHM::get_nmers() { return nkmers; }

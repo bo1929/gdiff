@@ -36,12 +36,11 @@ class BaseLSH
 public:
   void set_lshf();
   void set_nrows();
-  bool validate_configuration();
   void set_sketch_defaults()
   {
     k = 27;
-    w = k + 5;
-    h = 12;
+    w = k + 6;
+    h = 11;
     m = 2;
     r = 1;
     frac = true;
@@ -65,6 +64,7 @@ public:
   SketchSC(CLI::App& sc);
   void create();
   void save();
+  bool validate_configuration();
   void write_header(std::ofstream& stream);
   void write_config(std::ofstream& stream);
 

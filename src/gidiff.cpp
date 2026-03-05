@@ -15,32 +15,18 @@ void BaseLSH::set_nrows()
   }
 }
 
-bool BaseLSH::validate_configuration()
+bool MapSC::validate_configuration()
 {
   bool is_invalid = false;
-  if (w < k) {
+  if (dist_th.size() != 1 && dist_th.size() != 8) {
     is_invalid = true;
-    std::cerr << "The minimum minimizer window size (-w) is k (-k)!" << std::endl;
+    std::cerr << "Exactly 1 or 8 -d (--dist-th) thresholds must be provided, got " << dist_th.size() << std::endl;
   }
-  if (h < 3) {
-    is_invalid = true;
-    std::cerr << "The minimum number of LSH positions (-h) is 3!" << std::endl;
-  }
-  if (h > 15) {
-    is_invalid = true;
-    std::cerr << "The maximum number of LSH positions (-h) is 15!" << std::endl;
-  }
-  if (k > 31) {
-    is_invalid = true;
-    std::cerr << "The maximum allowed k-mer length (-k) is 31!" << std::endl;
-  }
-  if (k < 19) {
-    is_invalid = true;
-    std::cerr << "The minimum allowed k-mer length (-k) is 19!" << std::endl;
-  }
-  if ((k - h) > 16) {
-    is_invalid = true;
-    std::cerr << "For compact k-mer encodings, h must be >= k-16!" << std::endl;
+  for (size_t i = 0; i < dist_th.size(); ++i) {
+    if (std::abs(dist_th[i]) < 1e-6) {
+      is_invalid = true;
+      std::cerr << "One of the distance thresholds is too close to zero: " << dist_th[i] << std::endl;
+    }
   }
   return !is_invalid;
 }
@@ -96,6 +82,36 @@ void MapSC::map()
   sketch_stream.close();
 }
 
+bool SketchSC::validate_configuration()
+{
+  bool is_invalid = false;
+  if (w < k) {
+    is_invalid = true;
+    std::cerr << "The minimum minimizer window size (-w) is k (-k)!" << std::endl;
+  }
+  if (h < 3) {
+    is_invalid = true;
+    std::cerr << "The minimum number of LSH positions (-h) is 3!" << std::endl;
+  }
+  if (h > 16) {
+    is_invalid = true;
+    std::cerr << "The maximum number of LSH positions (-h) is 16!" << std::endl;
+  }
+  if (k > 32) {
+    is_invalid = true;
+    std::cerr << "The maximum allowed k-mer length (-k) is 32!" << std::endl;
+  }
+  if (k < 19) {
+    is_invalid = true;
+    std::cerr << "The minimum allowed k-mer length (-k) is 19!" << std::endl;
+  }
+  if ((k - h) > 16) {
+    is_invalid = true;
+    std::cerr << "For compact k-mer encodings, h must be >= k-16!" << std::endl;
+  }
+  return !is_invalid;
+}
+
 void SketchSC::create()
 {
   rseq_sptr_t rs = std::make_shared<RSeq>(input_path, lshf, w, r, frac);
@@ -104,7 +120,7 @@ void SketchSC::create()
   sketch_sfhm = std::make_shared<SFHM>(sdhm);
   rho = rs->get_rho();
 
-  std::cerr << "Total number of k-mers included in the sketch: " << sdhm->get_nkmers() << std::endl;
+  std::cerr << "Total number of k-mers included in the sketch: " << sdhm->get_nmers() << std::endl;
   std::cerr << "Subsampling rate (rho) is: " << rho << std::endl;
 }
 
@@ -154,10 +170,10 @@ SketchSC::SketchSC(CLI::App& sc)
     ->required()
     ->check(url_validator | CLI::ExistingFile);
   sc.add_option("-o,--output-path", sketch_path, "Path to store the resulting binary sketch file.")->required();
-  sc.add_option("-k,--kmer-len", k, "Length of k-mers. [26]")->check(CLI::Range(19, 31));
-  sc.add_option("-w,--win-len", w, "Length of minimizer window (w>=k). [k+6]");
-  sc.add_option("-h,--num-positions", h, "Number of positions for the LSH. [k-16]");
-  sc.add_option("-m,--modulo-lsh", m, "Modulo value to partition LSH space. [4]")->check(CLI::PositiveNumber);
+  sc.add_option("-k,--mer-len", k, "Length of k-mers. [27]")->check(CLI::Range(19, 32))->check(CLI::PositiveNumber);
+  sc.add_option("-w,--win-len", w, "Length of the minimizer window (w>=k). [k+6]")->check(CLI::PositiveNumber);
+  sc.add_option("-h,--num-positions", h, "Number of positions for the LSH. [k-16]")->check(CLI::PositiveNumber);
+  sc.add_option("-m,--modulo-lsh", m, "Modulo value to partition LSH space. [2]")->check(CLI::PositiveNumber);
   sc.add_option("-r,--residue-lsh", r, "A k-mer x will be included only if r = LSH(x) mod m. [1]")
     ->check(CLI::NonNegativeNumber);
   sc.add_flag("--frac,!--no-frac", frac, "Include k-mers with r <= LSH(x) mod m. [true]");
@@ -182,11 +198,10 @@ MapSC::MapSC(CLI::App& sc)
   sc.add_option("--hdist-th", hdist_th, "Maximum Hamming distance for a k-mer to match. [4]")->check(CLI::NonNegativeNumber);
   sc.add_option("--chisq", chisq, "Chi-square threshold. [3.841]")->check(CLI::NonNegativeNumber);
   sc.add_option("-d,--dist-th", dist_th, "Distance threshold(s) - provide exactly 1 or 8 values")->required()->expected(1, 8);
-  sc.add_option("-l,--min-length", min_length, "Minimum interval length.")->required()->check(CLI::NonNegativeNumber);
+  sc.add_option("-l,--min-length", min_length, "Minimum interval length.")->required()->check(CLI::PositiveNumber);
   sc.callback([&]() {
-    if (dist_th.size() != 1 && dist_th.size() != 8) {
-      std::cerr << "Error: Must provide exactly 1 or 8 -d (--dist-th) values, got " << dist_th.size() << std::endl;
-      std::exit(1);
+    if (!validate_configuration()) {
+      error_exit("Invalid configuration!");
     }
     if (!output_path.empty()) {
       output_file.open(output_path);
