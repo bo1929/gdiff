@@ -65,6 +65,7 @@ struct params_t
   uint32_t hdist_th;
   uint64_t min_length;
   double chisq;
+  uint64_t bin_shift;
 };
 
 // struct alignas(64) cm512_t

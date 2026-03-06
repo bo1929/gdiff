@@ -3,33 +3,29 @@
 #define EPS 1e-10
 
 template<typename T>
-DIM<T>::DIM(llh_sptr_t<T> llhf, uint32_t hdist_th, uint64_t enmers)
+DIM<T>::DIM(llh_sptr_t<T> llhf, uint32_t hdist_th, uint64_t n)
   : llhf(llhf)
   , hdist_th(hdist_th)
-  , enmers(enmers)
+  , n(n)
 {
   hdisthist_v.resize(hdist_th + 1, 0);
 
-  // fdc_v.reserve(enmers);
-  // sdc_v.reserve(enmers);
-  fdc_v.resize(enmers);
-  sdc_v.resize(enmers);
-  fdps_v.reserve(enmers + 1);
-  sdps_v.reserve(enmers + 1);
-  fdpmax_v.reserve(enmers + 2);
-  fdsmin_v.reserve(enmers + 2);
+  // fdc_v.reserve(n);
+  // sdc_v.reserve(n);
+  fdc_v.resize(n);
+  sdc_v.resize(n);
+  fdps_v.reserve(n + 1);
+  sdps_v.reserve(n + 1);
+  fdpmax_v.reserve(n + 2);
+  fdsmin_v.reserve(n + 2);
 
+  // This is for deciding between fw and rc.
   // if constexpr (std::is_same_v<T, double>) {
   //   fdt = 0.0;
   //   sdt = 0.0;
   // } else {
   //   fdt.fill(0.0);
   //   sdt.fill(0.0);
-  // }
-  // for (size_t i = 0; i < WIDTH; ++i) {
-  //   rintervals_v[i].clear();
-  //   eintervals_v[i].clear();
-  //   chisq_v[i].clear();
   // }
 }
 
@@ -45,24 +41,23 @@ inline double DIM<T>::at(T v, const size_t idx)
 
 template<typename T>
 void DIM<T>::aggregate_mer(sketch_sptr_t sketch, uint32_t rix, enc_t enc_lr, uint64_t i)
-{ // TODO: Consider binning positions and parameterizing this, should be easy enough.
+{
+  // This is binned, and i is the bin index.
+  // Multiple k-mers that fall in the same bin all accumulate here.
   const uint32_t hdist_min = sketch->search_mer(rix, enc_lr);
 
   if (hdist_min <= hdist_th) {
     merhit_count++;
     hdisthist_v[hdist_min]++;
-    // sdc_v.push_back(llhf->get_sdc(hdist_min));
-    // fdc_v.push_back(llhf->get_fdc(hdist_min));
-    sdc_v[i] = llhf->get_sdc(hdist_min);
-    fdc_v[i] = llhf->get_fdc(hdist_min);
+    add_to(sdc_v[i], llhf->get_sdc(hdist_min));
+    add_to(fdc_v[i], llhf->get_fdc(hdist_min));
   } else {
     mermiss_count++;
-    // sdc_v.push_back(llhf->get_sdc());
-    // fdc_v.push_back(llhf->get_fdc());
-    sdc_v[i] = llhf->get_sdc();
-    fdc_v[i] = llhf->get_fdc();
+    add_to(sdc_v[i], llhf->get_sdc());
+    add_to(fdc_v[i], llhf->get_fdc());
   }
 
+  // This is for deciding between fw and rc.
   // if constexpr (std::is_same_v<T, double>) {
   //   // fdt += fdc_v.back();
   //   // sdt += sdc_v.back();
@@ -83,8 +78,8 @@ void DIM<T>::aggregate_mer(sketch_sptr_t sketch, uint32_t rix, enc_t enc_lr, uin
 template<typename T>
 void DIM<T>::inclusive_scan()
 {
-  assert(enmers > 0);
-  const uint64_t s = enmers + 1;
+  assert(n > 0);
+  const uint64_t s = n + 1;
 
   fdps_v.resize(s);
   sdps_v.resize(s);
@@ -144,7 +139,7 @@ void DIM<T>::inclusive_scan()
 template<typename T>
 void DIM<T>::extract_intervals(const uint64_t tau, const size_t idx)
 {
-  for (uint64_t a = 1, b = 1; a <= enmers; ++a) {
+  for (uint64_t a = 1, b = 1; a <= n; ++a) {
     const double fdpmax_a = at(fdpmax_v[a - 1], idx);
     const double fdps_a = at(fdps_v[a], idx);
 
@@ -155,7 +150,7 @@ void DIM<T>::extract_intervals(const uint64_t tau, const size_t idx)
     if (b < (a + tau)) {
       b = a + tau - 1;
     }
-    if (__builtin_expect(b > enmers, 0)) {
+    if (__builtin_expect(b > n, 0)) {
       break;
     }
 
@@ -164,7 +159,7 @@ void DIM<T>::extract_intervals(const uint64_t tau, const size_t idx)
     }
 
     b++;
-    while (b <= enmers) {
+    while (b <= n) {
       const double fdps_b = at(fdps_v[b], idx);
       const bool negative_sum = fdps_b < fdps_a;
       const bool left_maximal = fdpmax_a <= fdps_b;
@@ -234,7 +229,7 @@ interval_t DIM<T>::get_interval(uint64_t i, size_t idx)
   if ((idx < eintervals_v.size()) && (i < eintervals_v[idx].size())) {
     return eintervals_v[idx][i];
   } else {
-    return {enmers, enmers};
+    return {n, n};
   }
 }
 
@@ -248,6 +243,8 @@ QIE<T>::QIE(sketch_sptr_t sketch, lshf_sptr_t lshf, const vec<str>& seq_batch, c
   , batch_size(seq_batch.size())
   , params(params)
   , min_length(params.min_length)
+  , bin_shift(params.bin_shift)
+  , bin_size(1 << params.bin_shift)
   , chisq(params.chisq)
   , seq_batch(seq_batch)
   , qid_batch(qid_batch)
@@ -276,16 +273,20 @@ void QIE<T>::map_sequences(std::ostream& sout, const str& rid)
       continue;
     }
     enmers = len - k + 1;
+    nbins = (enmers + bin_size - 1) >> bin_shift;
 
-    DIM<T> dim_fw(llhf, params.hdist_th, enmers);
-    DIM<T> dim_rc(llhf, params.hdist_th, enmers);
+    DIM<T> dim_fw(llhf, params.hdist_th, nbins);
+    DIM<T> dim_rc(llhf, params.hdist_th, nbins);
     search_mers(cseq, len, dim_fw, dim_rc);
+
+    // Convert min_length (in base-pairs / k-mer units) to bin units for tau
+    const uint64_t tau_bins = (min_length + bin_size - 1) >> bin_shift;
 
     if constexpr (std::is_same_v<T, double>) {
       dim_fw.inclusive_scan();
       dim_rc.inclusive_scan();
-      dim_fw.extract_intervals(std::min(min_length, enmers) - 1);
-      dim_rc.extract_intervals(std::min(min_length, enmers) - 1);
+      dim_fw.extract_intervals(std::min(tau_bins, nbins) - 1);
+      dim_rc.extract_intervals(std::min(tau_bins, nbins) - 1);
       dim_fw.expand_intervals(chisq);
       dim_rc.expand_intervals(chisq);
       report_intervals(sout, rid, dim_fw, false);
@@ -295,11 +296,11 @@ void QIE<T>::map_sequences(std::ostream& sout, const str& rid)
       dim_fw.inclusive_scan();
       dim_rc.inclusive_scan();
       for (size_t i = 0; i < WIDTH; ++i) {
-        dim_fw.extract_intervals(std::min(min_length, enmers) - 1, i);
-        dim_rc.extract_intervals(std::min(min_length, enmers) - 1, i);
+        dim_fw.extract_intervals(std::min(tau_bins, nbins) - 1, i);
+        dim_rc.extract_intervals(std::min(tau_bins, nbins) - 1, i);
         dim_fw.expand_intervals(chisq, i);
         dim_rc.expand_intervals(chisq, i);
-        report_intervals(sout, rid, dim_fw, true, i);
+        report_intervals(sout, rid, dim_fw, false, i);
         report_intervals(sout, rid, dim_rc, true, i);
       }
     }
@@ -331,26 +332,27 @@ void QIE<T>::search_mers(const char* cseq, uint64_t len, DIM<T>& dim_fw, DIM<T>&
     orenc64_lr &= mask_lr;
     rcenc64_bp = revcomp_bp64(orenc64_bp, k);
     onmers++;
+    const uint64_t bix_j = j >> bin_shift; // The bin index for this k-mer position
 #ifdef CANONICAL
     if (rcenc64_bp < orenc64_bp) {
       orrix = lshf->compute_hash(orenc64_bp);
       if (__builtin_expect(sketch->check_partial(orrix), 1)) {
-        dim_fw.aggregate_mer(sketch, orrix, lshf->drop_ppos_lr(orenc64_lr), j);
+        dim_fw.aggregate_mer(sketch, orrix, lshf->drop_ppos_lr(orenc64_lr), bix_j);
       }
     } else {
       rcrix = lshf->compute_hash(rcenc64_bp);
       if (__builtin_expect(sketch->check_partial(rcrix), 1)) {
-        dim_rc.aggregate_mer(sketch, rcrix, lshf->drop_ppos_lr(bp64_to_lr64(rcenc64_bp)), j);
+        dim_rc.aggregate_mer(sketch, rcrix, lshf->drop_ppos_lr(bp64_to_lr64(rcenc64_bp)), bix_j);
       }
     }
 #else
     orrix = lshf->compute_hash(orenc64_bp);
     if (__builtin_expect(sketch->check_partial(orrix), 1)) {
-      dim_fw.aggregate_mer(sketch, orrix, lshf->drop_ppos_lr(orenc64_lr), j);
+      dim_fw.aggregate_mer(sketch, orrix, lshf->drop_ppos_lr(orenc64_lr), bix_j);
     }
     rcrix = lshf->compute_hash(rcenc64_bp);
     if (__builtin_expect(sketch->check_partial(rcrix), 1)) {
-      dim_rc.aggregate_mer(sketch, rcrix, lshf->drop_ppos_lr(bp64_to_lr64(rcenc64_bp)), j);
+      dim_rc.aggregate_mer(sketch, rcrix, lshf->drop_ppos_lr(bp64_to_lr64(rcenc64_bp)), bix_j);
     }
 #endif /* CANONICAL */
   }
@@ -365,8 +367,10 @@ void QIE<T>::report_intervals(std::ostream& sout, const str& rid, DIM<T>& dim, b
   interval_t x;
   uint64_t i = 0;
   x = dim.get_interval(i, idx);
-  while (x.first < enmers) {
-    sout << WRITE_CINTERVAL(qid_batch[bix], n, x.first, x.second + k - 1, strand, rid, dist_th) << '\n';
+  while (x.first < nbins) {
+    const uint64_t start = x.first << bin_shift;
+    const uint64_t end = std::min(((x.second + 1) << bin_shift) - 1, enmers - 1) + k - 1;
+    sout << WRITE_CINTERVAL(qid_batch[bix], n, start, end, strand, rid, dist_th) << '\n';
     x = dim.get_interval(++i, idx);
   }
 }

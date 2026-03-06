@@ -1,8 +1,11 @@
 #ifndef _GIDIFF_H
 #define _GIDIFF_H
 
+#include <atomic>
 #include <chrono>
 #include <ctime>
+#include <mutex>
+#include <thread>
 #include "msg.hpp"
 #include "common.hpp"
 #include "types.hpp"
@@ -81,6 +84,7 @@ public:
   MapSC(CLI::App& sc);
   void map();
   void write_header();
+  bool validate_configuration();
   uint64_t get_total_qseq() { return total_qseq; }
 
 private:
@@ -92,6 +96,7 @@ private:
   uint32_t hdist_th = 4;
   uint64_t total_qseq = 0;
   uint64_t min_length = 0;
+  uint64_t bin_shift = 0;
   double chisq = 3.841; // 95%
   std::vector<double> dist_th;
 };
@@ -105,6 +110,16 @@ public:
 private:
   std::filesystem::path output_path;
   std::vector<str> sketch_paths;
+};
+
+class InfoSC
+{
+public:
+  InfoSC(CLI::App& sc);
+  void info();
+
+private:
+  std::filesystem::path sketch_path;
 };
 
 #endif

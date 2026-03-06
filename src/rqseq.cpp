@@ -67,7 +67,7 @@ void RSeq::extract_mers(vvec<T>& table)
   }
   hll::HyperLogLog c1(12);
   hll::HyperLogLog c2(12);
-  uint64_t kix = 0, klix = 0;
+  uint64_t klix = 0;
   uint64_t orenc64_bp, orenc64_lr, rcenc64_bp;
   std::vector<hmer_t> winenc_v(ldiff);
   hmer_t cminimizer;
@@ -87,10 +87,9 @@ void RSeq::extract_mers(vvec<T>& table)
     } else {
       update_encoding(cseq + i - 1, orenc64_lr, orenc64_bp);
     }
-    klix = kix % ldiff;
     winenc_v[klix] = {orenc64_bp & mask_bp, orenc64_lr & mask_lr, xhur64(orenc64_bp & mask_bp)};
     c1.add(winenc_v[klix].z);
-    kix++;
+    if (++klix == ldiff) klix = 0;
     if ((l < w) && (i != len)) {
       continue;
     }

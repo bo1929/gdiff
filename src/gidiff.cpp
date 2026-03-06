@@ -28,6 +28,10 @@ bool MapSC::validate_configuration()
       std::cerr << "One of the distance thresholds is too close to zero: " << dist_th[i] << std::endl;
     }
   }
+  if ((1 << bin_shift) > min_length) {
+    is_invalid = true;
+    std::cerr << "The given bin size (2^b) is too large for the minimum length threshold, b: " << bin_shift << std::endl;
+  }
   return !is_invalid;
 }
 
@@ -41,6 +45,7 @@ void MapSC::map()
   *(output_stream) << std::setprecision(10);
   write_header();
 
+  // Load all query sequences once? Might be inefficient
   qseq_sptr_t qs = std::make_shared<QSeq>(query_path);
 
   bool cont_reading;
@@ -54,32 +59,74 @@ void MapSC::map()
 
   uint32_t nsketches;
   sketch_stream.read(reinterpret_cast<char*>(&nsketches), sizeof(uint32_t));
-  std::cerr << "Processing " << nsketches << " sketches..." << std::endl;
+  uint32_t nct = std::max(1u, std::min(num_threads, nsketches));
+  std::cerr << "Processing " << nsketches << " sketches w/ " << nct << " thread(s)..." << std::endl;
 
-  params_t<double> params_single = {dist_th.size(), dist_th.front(), hdist_th, min_length, chisq};
-  params_t<cm512_t> params_multiple = {dist_th.size(), {0}, hdist_th, min_length, chisq};
+  std::vector<uint64_t> sketch_offsets(nsketches);
+  for (uint32_t i = 0; i < nsketches; ++i) {
+    sketch_offsets[i] = static_cast<uint64_t>(sketch_stream.tellg());
+    sketch_sptr_t tmp = std::make_shared<Sketch>(sketch_path);
+    tmp->load_from_offset(sketch_stream, 0); // Advances stream past this sketch
+  }
+  sketch_stream.close();
+
+  params_t<double> params_single = {dist_th.size(), dist_th.front(), hdist_th, min_length, chisq, bin_shift};
+  params_t<cm512_t> params_multiple = {dist_th.size(), {0}, hdist_th, min_length, chisq, bin_shift};
   std::copy(dist_th.begin(), dist_th.end(), params_multiple.dist_th.begin());
 
-  for (uint32_t i = 0; i < nsketches; ++i) {
-    sketch_sptr_t sketch = std::make_shared<Sketch>(sketch_path);
-    sketch->load_from_offset(sketch_stream, 0);
-    sketch->make_rho_partial();
+  // Per-sketch result buffers
+  std::vector<strstream> results(nsketches);
 
-    strstream sout;
-    if (dist_th.size() == 1) {
-      QIE<double> qie(sketch, sketch->get_lshf(), qs->get_seq_batch(), qs->get_qid_batch(), params_single);
-      qie.map_sequences(sout, sketch->get_rid());
-    } else {
-      QIE<cm512_t> qie(sketch, sketch->get_lshf(), qs->get_seq_batch(), qs->get_qid_batch(), params_multiple);
-      qie.map_sequences(sout, sketch->get_rid());
+  // Work-stealing thread pool
+  const uint32_t nthreads = std::max(1u, std::min(num_threads, nsketches));
+  std::atomic<uint32_t> next_idx{0};
+  std::atomic<uint32_t> done_count{0};
+  std::mutex cerr_mtx;
+
+  auto worker = [&]() {
+    uint32_t i;
+    while ((i = next_idx.fetch_add(1, std::memory_order_relaxed)) < nsketches) {
+      // Each worker opens its own file handle so no stream sharing occurs
+      std::ifstream sketch_stream(sketch_path, std::ifstream::binary);
+      sketch_sptr_t sketch = std::make_shared<Sketch>(sketch_path);
+      sketch->load_from_offset(sketch_stream, sketch_offsets[i]);
+      sketch_stream.close();
+      sketch->make_rho_partial();
+
+      strstream sout;
+      sout << std::setprecision(5);
+      if (dist_th.size() == 1) {
+        QIE<double> qie(sketch, sketch->get_lshf(), qs->get_seq_batch(), qs->get_qid_batch(), params_single);
+        qie.map_sequences(sout, sketch->get_rid());
+      } else {
+        QIE<cm512_t> qie(sketch, sketch->get_lshf(), qs->get_seq_batch(), qs->get_qid_batch(), params_multiple);
+        qie.map_sequences(sout, sketch->get_rid());
+      }
+
+      // Store result at its reserved slot (no aliasing between threads)
+      results[i] = std::move(sout);
+
+      uint32_t done = done_count.fetch_add(1, std::memory_order_relaxed) + 1;
+      {
+        std::lock_guard<std::mutex> lock(cerr_mtx);
+        std::cerr << "\rProcessed sketch " << done << "/" << nsketches << std::flush;
+        if (done == nsketches) std::cerr << std::endl;
+      }
     }
+  };
 
-    if (sout.tellp() > 0) *(output_stream) << sout.rdbuf();
-    std::cerr << "\rProcessed sketch " << (i + 1) << "/" << nsketches << std::flush;
-    if (i == nsketches - 1) std::cerr << std::endl;
+  std::vector<std::thread> threads;
+  threads.reserve(nthreads);
+  for (uint32_t t = 0; t < nthreads; ++t) {
+    threads.emplace_back(worker);
+  }
+  for (auto& t : threads) {
+    t.join();
   }
 
-  sketch_stream.close();
+  for (uint32_t i = 0; i < nsketches; ++i) {
+    if (results[i].tellp() > 0) *(output_stream) << results[i].rdbuf();
+  }
 }
 
 bool SketchSC::validate_configuration()
@@ -199,6 +246,8 @@ MapSC::MapSC(CLI::App& sc)
   sc.add_option("--chisq", chisq, "Chi-square threshold. [3.841]")->check(CLI::NonNegativeNumber);
   sc.add_option("-d,--dist-th", dist_th, "Distance threshold(s) - provide exactly 1 or 8 values")->required()->expected(1, 8);
   sc.add_option("-l,--min-length", min_length, "Minimum interval length.")->required()->check(CLI::PositiveNumber);
+  sc.add_option("-b,--bin-shift", bin_shift, "Group consecutive k-mers into bins of size 2^b. [0]")
+    ->check(CLI::NonNegativeNumber);
   sc.callback([&]() {
     if (!validate_configuration()) {
       error_exit("Invalid configuration!");
@@ -212,12 +261,14 @@ MapSC::MapSC(CLI::App& sc)
 
 void MergeSC::merge()
 {
-  std::cerr << "Preparing to merge " << sketch_paths.size() << " sketches" << std::endl;
+  std::cerr << "Preparing to merge " << sketch_paths.size() << " sketch file(s)" << std::endl;
 
   std::ofstream sout(output_path, std::ofstream::binary);
+  check_fstream(sout, "Cannot open output file", output_path);
 
-  uint32_t nsketches = sketch_paths.size();
-  sout.write(reinterpret_cast<char*>(&nsketches), sizeof(uint32_t));
+  // Writing a placeholder
+  uint32_t total_sketches = 0;
+  sout.write(reinterpret_cast<const char*>(&total_sketches), sizeof(uint32_t));
 
   constexpr size_t buffer_size = 10 * 1024 * 1024;
   std::vector<char> buffer(buffer_size);
@@ -228,27 +279,99 @@ void MergeSC::merge()
     sin.open(sketch_paths[i], std::ifstream::binary);
     check_fstream(sin, "Cannot open sketch file", sketch_paths[i]);
 
-    uint32_t nsketches;
+    uint32_t nsketches = 0;
     sin.read(reinterpret_cast<char*>(&nsketches), sizeof(uint32_t));
-
-    if (nsketches != 1) {
-      error_exit("Expected single sketch file, but found multi-sketch file: " + sketch_paths[i]);
-    }
+    total_sketches += nsketches;
 
     sout << sin.rdbuf();
     sin.close();
   }
 
+  // Seek back and patch the real count into the header
+  sout.seekp(0, std::ios::beg);
+  sout.write(reinterpret_cast<const char*>(&total_sketches), sizeof(uint32_t));
+
   check_fstream(sout, "Failed to write the merged sketch file!", output_path);
   sout.close();
 
-  std::cerr << "Merged sketch saved with " << sketch_paths.size() << " sketches" << std::endl;
+  std::cerr << "Merged sketch saved to " << output_path << " with " << total_sketches << " sketch(es)" << std::endl;
 }
 
 MergeSC::MergeSC(CLI::App& sc)
 {
   sc.add_option("-i,--sketch-paths", sketch_paths, "Input sketch files to merge.")->required()->check(CLI::ExistingFile);
   sc.add_option("-o,--output-path", output_path, "Path to store the merged sketch file.")->required();
+}
+
+void InfoSC::info()
+{
+  std::ifstream stream(sketch_path, std::ifstream::binary);
+  check_fstream(stream, "Cannot open sketch file: ", sketch_path.string());
+
+  uint32_t nsketches = 0;
+  stream.read(reinterpret_cast<char*>(&nsketches), sizeof(uint32_t));
+
+  std::cout << "File:             " << sketch_path.string() << "\n";
+  std::cout << "Number of sketches: " << nsketches << "\n";
+
+  for (uint32_t i = 0; i < nsketches; ++i) {
+    uint64_t rid_len = 0;
+    stream.read(reinterpret_cast<char*>(&rid_len), sizeof(uint64_t));
+    std::string rid(rid_len, '\0');
+    stream.read(&rid[0], static_cast<std::streamsize>(rid_len));
+
+    uint64_t timestamp = 0;
+    stream.read(reinterpret_cast<char*>(&timestamp), sizeof(uint64_t));
+
+    uint8_t k = 0, w = 0, h = 0;
+    uint32_t m = 0, r = 0, nrows = 0;
+    bool frac = false;
+    stream.read(reinterpret_cast<char*>(&k), sizeof(uint8_t));
+    stream.read(reinterpret_cast<char*>(&w), sizeof(uint8_t));
+    stream.read(reinterpret_cast<char*>(&h), sizeof(uint8_t));
+    stream.read(reinterpret_cast<char*>(&m), sizeof(uint32_t));
+    stream.read(reinterpret_cast<char*>(&r), sizeof(uint32_t));
+    stream.read(reinterpret_cast<char*>(&frac), sizeof(bool));
+    stream.read(reinterpret_cast<char*>(&nrows), sizeof(uint32_t));
+
+    stream.seekg(static_cast<std::streamoff>(h) + static_cast<std::streamoff>(k - h), std::ios::cur);
+
+    double rho = 0.0;
+    stream.read(reinterpret_cast<char*>(&rho), sizeof(double));
+
+    uint64_t nkmers = 0;
+    stream.read(reinterpret_cast<char*>(&nkmers), sizeof(uint64_t));
+    stream.seekg(static_cast<std::streamoff>(nkmers) * static_cast<std::streamoff>(sizeof(enc_t)), std::ios::cur);
+    uint32_t sfhm_nrows = 0;
+    stream.read(reinterpret_cast<char*>(&sfhm_nrows), sizeof(uint32_t));
+    stream.seekg(static_cast<std::streamoff>(sfhm_nrows) * static_cast<std::streamoff>(sizeof(inc_t)), std::ios::cur);
+
+    std::time_t ts = static_cast<std::time_t>(timestamp);
+    std::string ts_str = std::ctime(&ts);
+    if (!ts_str.empty() && ts_str.back() == '\n') ts_str.pop_back();
+
+    std::cout << "\n[Sketch " << (i + 1) << "/" << nsketches << "]\n";
+    std::cout << "  Name:        " << rid << "\n";
+    std::cout << "  Date:        " << ts_str << "\n";
+    std::cout << "  k (mer len): " << static_cast<int>(k) << "\n";
+    std::cout << "  w (win len): " << static_cast<int>(w) << "\n";
+    std::cout << "  h (LSH pos): " << static_cast<int>(h) << "\n";
+    std::cout << "  m (modulo):  " << m << "\n";
+    std::cout << "  r (residue): " << r << "\n";
+    std::cout << "  frac:        " << (frac ? "true" : "false") << "\n";
+    std::cout << "  nrows:       " << nrows << "\n";
+    std::cout << "  rho:         " << rho << "\n";
+    std::cout << "  k-mers:      " << nkmers << "\n";
+  }
+
+  stream.close();
+}
+
+InfoSC::InfoSC(CLI::App& sc)
+{
+  sc.add_option("-i,--sketch-path", sketch_path, "Sketch file (single or multi) to inspect.")
+    ->required()
+    ->check(CLI::ExistingFile);
 }
 
 int main(int argc, char** argv)
@@ -270,15 +393,17 @@ int main(int argc, char** argv)
       gen.seed(seed);
     }
   });
-  app.add_option("--num-threads", num_threads, "Number of threads to use in OpenMP-based parallelism. [1]");
+  app.add_option("--num-threads", num_threads, "Number of threads for parallel sketch processing. [1]");
 
   auto& sc_sketch = *app.add_subcommand("sketch", "Create sketches from FASTA/FASTQ files.");
   auto& sc_map = *app.add_subcommand("map", "Map queries and extract distance-based patterns from sketches.");
   auto& sc_merge = *app.add_subcommand("merge", "Merge multiple sketches into a single sketch file.");
+  auto& sc_info = *app.add_subcommand("info", "Show metadata for all sketches in a sketch file.");
 
   SketchSC krepp_sketch(sc_sketch);
   MapSC krepp_map(sc_map);
   MergeSC krepp_merge(sc_merge);
+  InfoSC krepp_info(sc_info);
 
   CLI11_PARSE(app, argc, argv);
   for (int i = 0; i < argc; ++i) {
@@ -321,6 +446,10 @@ int main(int argc, char** argv)
     std::chrono::duration<float> es_s = std::chrono::system_clock::now() - tstart - es_b;
     std::cerr << "Done mapping sequences, elapsed: " << es_s.count() << " sec" << std::endl;
     std::cerr << "Total number of sequences queried: " << krepp_map.get_total_qseq() << std::endl;
+  }
+
+  if (sc_info.parsed()) {
+    krepp_info.info();
   }
 
   auto tend = std::chrono::system_clock::now();
