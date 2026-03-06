@@ -74,6 +74,15 @@ void DIM<T>::aggregate_mer(uint32_t hdist_min, uint64_t i)
 }
 
 template<typename T>
+void DIM<T>::release_accumulators() noexcept
+{
+  fdc_v.clear();
+  fdc_v.shrink_to_fit();
+  sdc_v.clear();
+  sdc_v.shrink_to_fit();
+}
+
+template<typename T>
 void DIM<T>::inclusive_scan()
 {
   assert(n > 0);
@@ -282,7 +291,9 @@ void QIE<T>::map_sequences(std::ostream& sout, const str& rid)
 
     if constexpr (std::is_same_v<T, double>) {
       dim_fw.inclusive_scan();
+      // dim_fw.release_accumulators();
       dim_rc.inclusive_scan();
+      // dim_rc.release_accumulators();
       dim_fw.extract_intervals(std::min(tau_bins, nbins) - 1);
       dim_rc.extract_intervals(std::min(tau_bins, nbins) - 1);
       dim_fw.expand_intervals(chisq);
@@ -290,9 +301,10 @@ void QIE<T>::map_sequences(std::ostream& sout, const str& rid)
       report_intervals(sout, rid, dim_fw, false);
       report_intervals(sout, rid, dim_rc, true);
     } else {
-      // TODO: Do not do this twice?
       dim_fw.inclusive_scan();
+      // dim_fw.release_accumulators();
       dim_rc.inclusive_scan();
+      // dim_rc.release_accumulators();
       for (size_t i = 0; i < WIDTH; ++i) {
         dim_fw.extract_intervals(std::min(tau_bins, nbins) - 1, i);
         dim_rc.extract_intervals(std::min(tau_bins, nbins) - 1, i);

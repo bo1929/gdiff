@@ -26,6 +26,7 @@ class SDHM;
 class SFHM;
 class Sketch;
 
+// typedef uint32_t inc_t; // This might be just OK...
 typedef uint64_t inc_t;
 typedef uint32_t enc_t;
 typedef std::string str;

@@ -24,6 +24,7 @@ public:
   T fdt_at(uint64_t i) const { return fdc_v[i]; }
   T sdt_at(uint64_t i) const { return sdc_v[i]; }
   // void optimize_loglikelihood(); // TODO: Is ever needed? If so, correct?
+  void release_accumulators() noexcept;
   void inclusive_scan();
   // void skip_mer(uint64_t i); // TODO: Anything better than ignoring?
   void aggregate_mer(uint32_t hdist_min, uint64_t i);
