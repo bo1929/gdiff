@@ -1,6 +1,7 @@
 #ifndef _LSHF_HPP
 #define _LSHF_HPP
 
+#include <algorithm>
 #include "enc.hpp"
 #include "msg.hpp"
 #include "types.hpp"
