@@ -1,23 +1,60 @@
 import argparse
-import pandas as pd
-import numpy as np
-from ete3 import Tree
-from dash import Dash, dcc, html, Input, Output, State, no_update, ctx
-import plotly.graph_objects as go
-import plotly.express as px
-import plotly.io as pio
-from plotly.subplots import make_subplots
 import base64
-from functools import lru_cache
+import importlib.metadata
+import traceback
+import webbrowser
 from collections import defaultdict
+from functools import lru_cache
+
+import numpy as np
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+import plotly.io as pio
+from dash import Dash, ctx, dcc, html, Input, Output, State, no_update
+from ete3 import Tree
+from plotly.subplots import make_subplots
 
 # =============================================================================
-# COLORS
+# CONFIGURATION
 # =============================================================================
 
+# Layout
+FIG_HEIGHT = 700
+FIG_MARGIN = dict(l=10, r=100, t=40, b=50)
+FIG_FONT = "Segoe UI, Arial, sans-serif"
+FIG_SIZE = 13
+
+PANEL_TREE_WIDTH = 0.30
+PANEL_INTERVAL_WIDTH = 0.70
+PANEL_SPACING = 0.001
+
+# Axes
+AXIS_LINE_WIDTH = 2.2
+AXIS_TITLE_SIZE = 20
+AXIS_TICK_SIZE = 16
+AXIS_X_NTICKS = 12
+AXIS_GRID_WIDTH = 2.5
+AXIS_Y_PAD = 1.8
+AXIS_X_PAD = 0.99
+AXIS_Y_MAX_TICKS = 30
+
+# Tree
+TREE_LINE_MIN = 0.5
+TREE_LINE_MAX = 2.5
+TREE_ROW_FILL = 0.20
+TREE_X_MARGIN = 1.01
+
+# Intervals
+INTERVAL_ROW_FILL = 0.65
+INTERVAL_LINE_MIN = 0.01
+INTERVAL_LINE_MAX = 25
+INTERVAL_LINE_MAX_RATIO = 0.85
+
+# Colors
 COLORS = {
-    "tree_line": "#2c3e50",
-    "axis_line": "#34495e",
+    "tree": "#2c3e50",
+    "axis": "#34495e",
     "grid": "rgba(0,0,0,0.15)",
     "plot_bg": "#fbfbfb",
     "paper_bg": "#fafafa",
@@ -25,231 +62,458 @@ COLORS = {
     "button_bg": "#ecf0f1",
     "button_bg_inactive": "#e8f4f8",
     "button_border": "#7f8c8d",
-    "button_text": "#000",
 }
 
-# =============================================================================
-# FIGURE
-# =============================================================================
-
-FIG_HEIGHT = 700
-FIG_MARGIN = dict(l=10, r=100, t=40, b=50)
-FIG_FONT_FAMILY = "Segoe UI, Arial, sans-serif"
-FIG_FONT_SIZE = 13
-
-# =============================================================================
-# PANELS (subplots)
-# =============================================================================
-
-PANEL_TREE_WIDTH = 0.30
-PANEL_INTERVAL_WIDTH = 0.70
-PANEL_SPACING = 0.001
-
-# =============================================================================
-# TREE RENDERING
-# =============================================================================
-
-TREE_LINE_WIDTH_MIN = 0.5
-TREE_LINE_WIDTH_MAX = 3.5
-TREE_ROW_FILL = 0.20
-TREE_X_MARGIN = 1.01
-TREE_X_TITLE = "Branch length"
-
-# =============================================================================
-# INTERVAL RENDERING
-# =============================================================================
-
-INTERVAL_ROW_FILL = 0.65
-INTERVAL_LINE_WIDTH_MIN = 0.01
-INTERVAL_LINE_WIDTH_MAX = 25
-INTERVAL_LINE_WIDTH_MAX_RATIO = 0.85
-INTERVAL_X_TITLE = "Genomic Position (bp)"
-
-# =============================================================================
-# AXES
-# =============================================================================
-
-AXIS_LINE_WIDTH = 2.2
-AXIS_TITLE_FONT_SIZE = 20
-AXIS_TICK_FONT_SIZE = 16
-AXIS_Y_MAX_TICKS = 30
-AXIS_X_NTICKS = 12
-AXIS_GRID_WIDTH = 2.5
-AXIS_Y_PAD = 1.8  # extra space so top/bottom branches don't touch the axis lines
-AXIS_X_PAD = 0.99
-
-# =============================================================================
-# COLORBAR & COLORSCALE
-# =============================================================================
-
+# Colorbar
 COLORBAR_LEN = 0.75
 COLORBAR_X = 1.02
 COLORBAR_THICKNESS = 24
-COLORBAR_TITLE_FONT_SIZE = 20
-COLORBAR_TICK_FONT_SIZE = 16
+COLORBAR_TITLE_SIZE = 20
+COLORBAR_TICK_SIZE = 16
 COLORSCALE_DEFAULT = "viridis"
 COLORSCALE_OPTIONS = ["viridis", "plasma", "inferno", "magma", "cividis"]
 
-# =============================================================================
-# UI: CONTROL PANEL
-# =============================================================================
-
-UI_PANEL_PADDING = "6px 10px"
-UI_PANEL_GAP = 10
-UI_PANEL_BORDER_RADIUS = 4
-UI_PANEL_MARGIN_BOTTOM = 24
-UI_PANEL_BOX_SHADOW = "0 2px 4px rgba(0,0,0,0.1)"
-
-# =============================================================================
-# UI: LABELS & TITLE
-# =============================================================================
-
-UI_LABEL_FONT_SIZE = 16
-UI_LABEL_MARGIN_RIGHT = 8
-UI_TITLE_FONT_SIZE = 20
-UI_TITLE_MARGIN_BOTTOM = 4
-
-# =============================================================================
-# UI: TOGGLE BUTTONS
-# =============================================================================
-
-UI_TOGGLE_PADDING = "6px 14px"
-UI_TOGGLE_FONT_SIZE = 16
-UI_TOGGLE_BORDER_WIDTH = 2
-UI_TOGGLE_MARGIN_LEFT = 10
-
-# =============================================================================
-# UI: NAV BUTTONS (prev/next query)
-# =============================================================================
-
-UI_NAV_PADDING = "4px 8px"
-UI_NAV_FONT_SIZE = 16
-UI_NAV_BORDER_WIDTH = 1
-
-# =============================================================================
-# UI: CONTROLS (dropdowns, slider)
-# =============================================================================
-
-UI_QUERY_DROPDOWN_WIDTH = 200
-UI_QUERY_MARGIN_RIGHT = 10
-UI_SLIDER_MIN_WIDTH = 280
-UI_SLIDER_GAP = 3
-UI_COLORSCALE_DROPDOWN_WIDTH = 110
-UI_COLORSCALE_GAP = 4
-UI_COLORSCALE_MARGIN_LEFT = 10
-
-# =============================================================================
-# UI: GRAPH CONTAINER
-# =============================================================================
-
-UI_GRAPH_HEIGHT = "78vh"
-UI_CONTAINER_HEIGHT = "80vh"
-UI_APP_PADDING = 5
-
-# =============================================================================
-# ZOOM CONSTRAINTS & CACHE
-# =============================================================================
-
+# Zoom constraints
 ZOOM_MIN_Y_SPAN = 10
 ZOOM_MIN_X_SPAN = 10000
-LRU_CACHE_SIZE = 256
+CACHE_SIZE = 256
 
-# =============================================================================
-# ANNOTATION PANEL
-# =============================================================================
+# UI styling — control panel
+UI_PANEL_PADDING = "7px 12px"
+UI_PANEL_GAP = 10
+UI_PANEL_RADIUS = 6
+UI_PANEL_MARGIN_BOTTOM = 20
+UI_PANEL_SHADOW = "0 1px 4px rgba(0,0,0,0.12)"
 
-PANEL_ANNOTATION_HEIGHT = 0.175  # fraction of figure height for annotation row
-PANEL_TREE_INTERVAL_HEIGHT = 0.75  # fraction for tree+interval row
-PANEL_VERTICAL_SPACING = 0.05  # gap between rows
-PANEL_ANNOTATION_TRACK_HEIGHT = 0.20  # body half-height of gene arrows (track units ≤ 0.5)
+# Labels
+UI_LABEL_SIZE = 14
+UI_LABEL_MARGIN = 6
+UI_LABEL_COLOR = "#34495e"
+UI_TITLE_SIZE = 18
+UI_TITLE_COLOR = "#2c3e50"
 
-# Arrow rendering
-# Head occupies the last 25 % of each gene (body fills the first 75 %).
-ARROW_HEAD_RATIO = 0.2  # fraction of gene length reserved for the arrowhead
-ARROW_SIZE_MIN = 4  # minimum arrowhead size in bp (guards tiny features)
+# Toggle buttons (phylo/clado, focus/overlap, strand, prune)
+UI_TOGGLE_PADDING = "5px 12px"
+UI_TOGGLE_SIZE = 14
+UI_TOGGLE_BORDER = 1
+UI_TOGGLE_COLOR_ACTIVE = "#2c3e50"
+UI_TOGGLE_COLOR_INACTIVE = "#6c7a89"
 
-# Feature type colors — earthy/muted palette, no blue
+# Navigation buttons (◀ ▶)
+UI_NAV_PADDING = "4px 8px"
+UI_NAV_SIZE = 14
+UI_NAV_BORDER = 1
+
+# Export buttons and inputs
+UI_EXPORT_PADDING = "5px 11px"
+UI_EXPORT_FONT_SIZE = 13
+UI_EXPORT_INPUT_WIDTH_W = 62
+UI_EXPORT_INPUT_WIDTH_H = 54
+UI_EXPORT_W_DEFAULT = 1600
+UI_EXPORT_H_DEFAULT = 900
+
+# Dropdowns and sliders
+UI_QUERY_DROPDOWN_WIDTH = 210
+UI_SLIDER_MIN_WIDTH = 270
+UI_COLORSCALE_DROPDOWN_WIDTH = 115
+
+# Graph sizing
+UI_GRAPH_HEIGHT = "78vh"
+UI_CONTAINER_HEIGHT = "80vh"
+
+# Annotation panel
+ANNOTATION_ROW_HEIGHT = 0.175
+ANNOTATION_TRACK_HEIGHT = 0.20
+ARROW_HEAD_RATIO = 0.2
+ARROW_SIZE_MIN = 4
+ARROW_HEIGHT_MAX = 0.35  # maximum arrow half-height in track units (0.5 max)
+
 FEATURE_COLORS = {
-    "CDS": "#A0522D",  # Sienna
-    "gene": "#4A7C4E",  # Forest green
-    "rRNA": "#B44040",  # Brick red
-    "tRNA": "#CC8800",  # Amber
-    "misc_RNA": "#7B5EA7",  # Dusty purple
-    "ncRNA": "#7B5EA7",  # Dusty purple
-    "regulatory": "#C06020",  # Burnt orange
-    "exon": "#7A8040",  # Olive
-    "intron": "#909090",  # Gray
-    "repeat": "#AA6688",  # Mauve
-    "default": "#606060",  # Dark gray
+    "CDS": "#A0522D",
+    "ann": "#4A7C4E",
+    "rRNA": "#B44040",
+    "tRNA": "#CC8800",
+    "misc_RNA": "#7B5EA7",
+    "ncRNA": "#7B5EA7",
+    "regulatory": "#C06020",
+    "exon": "#7A8040",
+    "intron": "#909090",
+    "repeat": "#AA6688",
+    "default": "#606060",
 }
 
 
 # =============================================================================
-# DATA HANDLING
+# DATA LOADING & FILTERING
 # =============================================================================
 
 
-def get_sequence_identifiers(df):
-    return sorted(df["QUERY_ID"].unique())
+def load_tree(path: str) -> Tree:
+    """Load Newick tree and ladderize."""
+    tree = Tree(path, format=1)
+    tree.ladderize()
+    return tree
 
 
-def get_distance_thresholds(df):
+def prune_tree(tree: Tree, retained: set) -> Tree:
+    """Return a pruned copy of tree keeping only retained leaf names."""
+    if not retained:
+        return tree
+    pruned = tree.copy()
+    keep = [leaf for leaf in pruned.iter_leaves() if leaf.name in retained]
+    if keep:
+        pruned.prune(keep, preserve_branch_length=True)
+    return pruned
+
+
+def get_tip_order(tree: Tree) -> list[str]:
+    return [leaf.name for leaf in tree.iter_leaves()]
+
+
+def get_retained_leaves(df: pd.DataFrame) -> set:
+    """Leaves that have intervals with different start/end."""
+    matched = df[df["INTERVAL_START"] != df["INTERVAL_END"]]
+    return set(matched["REF_ID"].unique())
+
+
+def get_distance_thresholds(df: pd.DataFrame) -> list:
     return sorted(df["DIST_TH"].unique())
 
 
-def get_retained_leaves(df):
-    df_with_matches = df[df["INTERVAL_START"] != df["INTERVAL_END"]]
-    return set(df_with_matches["REF_ID"].unique())
+def get_sequence_identifiers(df: pd.DataFrame) -> list:
+    return sorted(df["QUERY_ID"].unique())
 
 
-def get_seq_len(df):
-    return df["SEQ_LEN"].iloc[0] if not df.empty else None
+def get_seq_len(df: pd.DataFrame) -> int | None:
+    return int(df["SEQ_LEN"].iloc[0]) if not df.empty else None
 
 
-def add_tip_order(df, tip_order):
+def add_tip_order(df: pd.DataFrame, tip_order: list[str]) -> pd.DataFrame:
     ref_to_y = {name: i for i, name in enumerate(tip_order)}
     df = df.copy()
     df["y"] = df["REF_ID"].map(ref_to_y)
     return df
 
 
-def filter_data(df, seq_id, tip_order, dist_th_max=None, dist_th_min=None, strand=None):
+def filter_intervals(
+    df: pd.DataFrame,
+    seq_id: str,
+    tip_order: list[str],
+    dist_hi: float,
+    dist_lo: float | None = None,
+    strand: str | None = None,
+) -> pd.DataFrame:
+    """Filter intervals by query, distance threshold, and strand."""
     df_q = df[df["QUERY_ID"] == seq_id].copy()
-    # Filter by strand before aggregation so we never mix + and - intervals
-    if strand is not None and "STRAND" in df_q.columns:
+
+    if strand and strand != "both" and "STRAND" in df_q.columns:
         df_q = df_q[df_q["STRAND"] == strand]
+
+    # Aggregate to unique intervals
     df_q = df_q.groupby(
         ["REF_ID", "y", "QUERY_ID", "INTERVAL_START", "INTERVAL_END", "SEQ_LEN"], as_index=False
     )["DIST_TH"].min()
 
-    if dist_th_max is not None:
-        df_q = df_q[df_q["DIST_TH"] <= dist_th_max]
-    if dist_th_min is not None:
-        df_q = df_q[df_q["DIST_TH"] >= dist_th_min]
-    df_q = df_q.dropna(subset=["y"]).sort_values("y")
-    return df_q
+    df_q = df_q[df_q["DIST_TH"] <= dist_hi]
+    if dist_lo is not None:
+        df_q = df_q[df_q["DIST_TH"] >= dist_lo]
+
+    return df_q.dropna(subset=["y"]).sort_values("y")
 
 
-def make_cached_filter(df):
-    @lru_cache(maxsize=LRU_CACHE_SIZE)
-    def cached(seq_id, tip_order_tuple, dist_th_max, dist_th_min=None, strand=None):
-        return filter_data(df, seq_id, list(tip_order_tuple), dist_th_max, dist_th_min, strand)
+def make_cached_filter(df: pd.DataFrame):
+    @lru_cache(maxsize=CACHE_SIZE)
+    def cached(seq_id, tip_order_tuple, dist_hi, dist_lo, strand):
+        return filter_intervals(df, seq_id, list(tip_order_tuple), dist_hi, dist_lo, strand)
 
     return cached
 
 
 # =============================================================================
-# ANNOTATION HANDLING
+# TREE LAYOUT
 # =============================================================================
 
 
-def _parse_gff_attributes(attr_str):
-    """Parse a GFF3 or GTF attribute string into a dict.
+def compute_path_distances(tree: Tree, query_name: str) -> dict:
+    """Compute tree distance from query leaf to all nodes."""
+    query_leaf = next((leaf for leaf in tree.iter_leaves() if leaf.name == query_name), None)
+    if query_leaf is None:
+        return {}
+    return {node: query_leaf.get_distance(node) for node in tree.traverse()}
 
-    GFF3 uses ``key=value`` pairs separated by ``;``.
-    GTF uses ``key "value"`` pairs separated by ``;``.
-    Handles both transparently.
+
+def compute_tree_layout(tree: Tree, mode: str = "phylogeny", distances: dict = None):
+    """Compute plotly-ready tree data, tip order, and max coordinates."""
+    data = defaultdict(list)
+    tip_order = get_tip_order(tree)
+    y_pos = {name: i for i, name in enumerate(tip_order)}
+
+    for leaf in tree.iter_leaves():
+        leaf.add_feature("y", y_pos[leaf.name])
+    for node in tree.traverse("postorder"):
+        if not node.is_leaf():
+            node.add_feature("y", np.mean([c.y for c in node.children]))
+
+    if mode == "cladogram":
+        max_depth = 0
+        for node in tree.traverse("postorder"):
+            depth = 0 if node.is_leaf() else max(c.depth for c in node.children) + 1
+            node.add_feature("depth", depth)
+            max_depth = max(max_depth, depth)
+        for node in tree.traverse("preorder"):
+            node.add_feature("x", float(max_depth - node.depth))
+        max_x = float(max_depth)
+        count_offset = 1
+    else:
+        max_x = 0.0
+        for node in tree.traverse("preorder"):
+            x = 0.0 if node.is_root() else node.up.x + (node.dist or 0)
+            node.add_feature("x", x)
+            max_x = max(max_x, x)
+        count_offset = 0
+
+    for node in tree.traverse():
+        if node.is_root():
+            continue
+        hover_text = _node_hover(node, distances, count_offset)
+        data["x"].extend([node.up.x, node.x, None])
+        data["y"].extend([node.y, node.y, None])
+        data["text"].extend([hover_text, hover_text, None])
+
+    for node in tree.traverse():
+        if len(node.children) < 2:
+            continue
+        child_ys = [c.y for c in node.children]
+        imin, imax = int(np.argmin(child_ys)), int(np.argmax(child_ys))
+        data["x"].extend([node.x, node.x, None])
+        data["y"].extend([node.children[imin].y, node.children[imax].y, None])
+        data["text"].extend(
+            [
+                _node_hover(node.children[imin], distances, count_offset),
+                _node_hover(node.children[imax], distances, count_offset),
+                None,
+            ]
+        )
+    return data, tip_order, (max_x, len(tip_order) - 1)
+
+
+def _node_hover(node, distances, count_offset=0) -> str:
+    """Build hover text for a tree node."""
+    branch_len = node.dist or 0.0
+    if node.is_leaf():
+        return f"{node.name}<br>Branch length: {branch_len:.4f}"
+
+    name = node.name or "(internal)"
+    size = len(node.get_leaves()) + count_offset
+    text = f"{name}<br>Subtree size: {size}<br>Branch length: {branch_len:.4f}"
+    if distances and node in distances:
+        text += f"<br>Distance to query: {distances[node]:.4f}"
+    return text
+
+
+# =============================================================================
+# ZOOM & RANGE ENFORCEMENT
+# =============================================================================
+
+
+def enforce_min_span(
+    v_range: list | tuple | None, min_span: float, bounds: tuple | None = None
+) -> list | None:
+    """Clamp zoom range to enforce minimum span and respect bounds.
+
+    Ensures that:
+    1. The span is at least min_span
+    2. The range stays within the specified bounds
+    3. Extreme zoom values are gracefully handled
     """
+    if v_range is None:
+        return None
+
+    lo, hi = sorted(v_range)
+    span = hi - lo
+
+    # Handle edge cases
+    if span <= 0 or np.isnan(span) or np.isinf(span):
+        if bounds:
+            return [int(bounds[0]), int(bounds[1])]
+        return None
+
+    # Enforce minimum span
+    if span < min_span:
+        center = (lo + hi) / 2
+        lo = center - min_span / 2
+        hi = center + min_span / 1.9999  # Slightly offset to handle rounding
+
+    # Enforce bounds
+    if bounds is not None:
+        b_lo, b_hi = bounds
+        b_span = b_hi - b_lo
+
+        # If zoomed range is larger than bounds, reset to bounds
+        if hi - lo > b_span:
+            lo, hi = float(b_lo), float(b_hi)
+        else:
+            # Clamp to bounds while respecting min_span
+            if lo < b_lo:
+                lo = float(b_lo)
+                hi = min(float(b_hi), lo + (hi - sorted(v_range)[0]))
+            if hi > b_hi:
+                hi = float(b_hi)
+                lo = max(float(b_lo), hi - (sorted(v_range)[1] - sorted(v_range)[0]))
+
+            # Final enforcement of minimum span within bounds
+            if hi - lo < min_span:
+                mid = (lo + hi) / 2
+                lo = max(float(b_lo), mid - min_span / 2)
+                hi = min(float(b_hi), mid + min_span / 2)
+
+    # Ensure values are valid floats
+    lo = float(np.clip(lo, -1e10, 1e10))
+    hi = float(np.clip(hi, -1e10, 1e10))
+
+    return [int(np.floor(lo)), int(np.ceil(hi))]
+
+
+def visible_rows(y_range, total):
+    return max(1, abs(int(y_range[1] - y_range[0]))) if y_range else total
+
+
+def scaled_interval_width(y_range, total):
+    visible = visible_rows(y_range, total)
+    thickness = (FIG_HEIGHT / visible) * INTERVAL_ROW_FILL
+    thickness = min(thickness, (FIG_HEIGHT / visible) * INTERVAL_LINE_MAX_RATIO)
+    return min(max(INTERVAL_LINE_MIN, thickness), INTERVAL_LINE_MAX)
+
+
+def scaled_tree_width(y_range, total):
+    visible = visible_rows(y_range, total)
+    width = (FIG_HEIGHT / visible) * TREE_ROW_FILL
+    return min(max(TREE_LINE_MIN, width), TREE_LINE_MAX)
+
+
+# =============================================================================
+# COLOR MAPPING
+# =============================================================================
+
+
+@lru_cache(maxsize=CACHE_SIZE)
+def get_binned_colors(thresholds: tuple, scheme: str):
+    """Return bin edges and sampled colors for the colorscale."""
+    n_bins = len(thresholds)
+    frac = [i / max(n_bins - 1, 1) for i in range(n_bins)]
+    colors = tuple(px.colors.sample_colorscale(scheme, frac))
+    return (0.0,) + thresholds, colors
+
+
+def assign_color_indices(distances, bin_edges, n_colors):
+    indices = np.searchsorted(bin_edges, distances, side="left") - 1
+    return np.clip(indices, 0, n_colors - 1)
+
+
+def batch_by_color(df, bin_edges, colors, leaf_distances=None):
+    """Group intervals by color bin for efficient trace creation."""
+    if df.empty:
+        return {}
+    mask = df["INTERVAL_START"].values != df["INTERVAL_END"].values
+    if not mask.any():
+        return {}
+
+    starts = df["INTERVAL_START"].values[mask]
+    ends = df["INTERVAL_END"].values[mask]
+    ys = df["y"].values[mask]
+    dists = df["DIST_TH"].values[mask]
+    refs = df["REF_ID"].values[mask]
+    cidx = assign_color_indices(dists, bin_edges, len(colors))
+
+    hovers = [
+        f"{rid}<br>Pos: {s:,}-{e:,}<br>Dist: {d:.3f}"
+        + (
+            f"<br>Distance to query: {leaf_distances[rid]:.4f}"
+            if leaf_distances and rid in leaf_distances
+            else ""
+        )
+        for rid, s, e, d in zip(refs, starts, ends, dists)
+    ]
+
+    traces = {}
+    for ci in np.unique(cidx)[::-1]:
+        sel = cidx == ci
+        n = sel.sum()
+        x = np.empty(n * 3, dtype=object)
+        x[0::3], x[1::3], x[2::3] = starts[sel], ends[sel], None
+
+        y = np.empty(n * 3, dtype=object)
+        y[0::3], y[1::3], y[2::3] = ys[sel], ys[sel], None
+
+        sh = np.array(hovers, dtype=object)[sel]
+        text = np.empty(n * 3, dtype=object)
+        text[0::3], text[1::3], text[2::3] = sh, sh, None
+
+        traces[colors[ci]] = {"x": x.tolist(), "y": y.tolist(), "text": text.tolist()}
+    return traces
+
+
+def make_colorbar(bin_edges, colors, y_center=0.5, length=None):
+    """Create a colorbar trace for the interval panel."""
+    n = len(colors)
+    edges = np.linspace(0, 1, n + 1)
+    scale = [[edges[i + j], colors[i]] for i in range(n) for j in (0, 1)]
+    ticks = [f"≤{bin_edges[i+1]:.3f}" for i in range(n)]
+    dummy_y = np.linspace(0, 1, n)
+
+    return go.Scatter(
+        x=[None],
+        y=[None],
+        mode="markers",
+        marker=dict(
+            colorscale=scale,
+            showscale=True,
+            cmin=0,
+            cmax=1,
+            color=dummy_y,
+            colorbar=dict(
+                title="Distance",
+                tickvals=[(edges[i] + edges[i + 1]) / 2 for i in range(n)],
+                ticktext=ticks,
+                len=length or COLORBAR_LEN,
+                x=COLORBAR_X,
+                y=y_center,
+                yanchor="middle",
+                thickness=COLORBAR_THICKNESS,
+                title_font=dict(size=COLORBAR_TITLE_SIZE),
+                tickfont=dict(size=COLORBAR_TICK_SIZE),
+            ),
+        ),
+        hoverinfo="skip",
+        showlegend=False,
+    )
+
+
+def compute_y_ticks(tip_order, y_range=None, max_ticks=AXIS_Y_MAX_TICKS):
+    """Compute y-axis tick positions and labels."""
+    n = len(tip_order)
+    if y_range is None:
+        step = max(1, n // max_ticks)
+        indices = list(range(0, n, step))
+        if indices[-1] != n - 1:
+            indices.append(n - 1)
+    else:
+        lo, hi = sorted(y_range)
+        i_lo = max(0, min(int(round(lo)), n - 1))
+        i_hi = max(0, min(int(round(hi)), n - 1))
+        indices = list(range(i_lo, i_hi + 1))
+        if len(indices) > max_ticks:
+            indices = indices[:: len(indices) // max_ticks]
+    return indices, [tip_order[i] for i in indices]
+
+
+# =============================================================================
+# ANNOTATIONS (GFF/GTF/TSV)
+# =============================================================================
+
+
+def _parse_gff_attrs(attr_str: str) -> dict:
+    """Parse GFF3 (key=value) or GTF (key "value") attributes."""
     attrs = {}
     if pd.isna(attr_str) or not str(attr_str).strip():
         return attrs
@@ -258,19 +522,16 @@ def _parse_gff_attributes(attr_str):
         if not field:
             continue
         if "=" in field:
-            # GFF3: key=value
             key, _, val = field.partition("=")
             attrs[key.strip()] = val.strip()
         elif " " in field:
-            # GTF: key "value"
             key, _, val = field.partition(" ")
             attrs[key.strip()] = val.strip().strip('"')
     return attrs
 
 
-def _is_gff_format(path):
-    """Heuristic: file is GFF/GTF if the first non-comment data line has >= 8
-    tab-separated columns and column 4/5 look numeric (start/end)."""
+def _is_gff_format(path: str) -> bool:
+    """Heuristic: file is GFF/GTF if first non-comment line has ≥8 columns."""
     with open(path) as fh:
         for line in fh:
             line = line.strip()
@@ -288,8 +549,8 @@ def _is_gff_format(path):
     return False
 
 
-def _load_gff(path):
-    """Load a GFF3 or GTF2.2 file and normalise it to the internal schema."""
+def _load_gff(path: str) -> pd.DataFrame | None:
+    """Load and normalize GFF3/GTF to internal schema."""
     rows = []
     with open(path) as fh:
         for line in fh:
@@ -299,23 +560,23 @@ def _load_gff(path):
             cols = line.split("\t")
             if len(cols) < 8:
                 continue
+
             seqname, source, feature, start, end, score, strand, frame = cols[:8]
-            attr_str = cols[8] if len(cols) > 8 else ""
             try:
                 start_i, end_i = int(start), int(end)
             except ValueError:
                 continue
-            attrs = _parse_gff_attributes(attr_str)
-            # Derive locus_tag — prefer ID, then locus_tag, then Name, then gene_id
+
+            attrs = _parse_gff_attrs(cols[8]) if len(cols) > 8 else {}
+
             locus_tag = (
                 attrs.get("ID")
                 or attrs.get("locus_tag")
                 or attrs.get("Name")
-                or attrs.get("gene_id")
+                or attrs.get("ann_id")
                 or f"{seqname}_{start_i}_{end_i}"
             )
-            gene_name = attrs.get("gene") or attrs.get("gene_name") or attrs.get("Name")
-            product = attrs.get("product") or attrs.get("description") or attrs.get("note")
+
             rows.append(
                 {
                     "contig_id": seqname,
@@ -324,35 +585,31 @@ def _load_gff(path):
                     "start": min(start_i, end_i),
                     "stop": max(start_i, end_i),
                     "strand": strand if strand in ("+", "-") else "+",
-                    "gene_name": gene_name,
-                    "product": product,
-                    "ec_number": attrs.get("ec_number") or attrs.get("EC_number"),
+                    "ann_name": attrs.get("ann") or attrs.get("ann_name") or attrs.get("Name"),
+                    "product": attrs.get("product") or attrs.get("description"),
+                    "ec_number": attrs.get("ec_number"),
                     "source": source,
+                    "score": score if score != "." else None,
+                    "frame": frame if frame != "." else None,
                 }
             )
-    if not rows:
-        return None
-    return pd.DataFrame(rows)
+
+    return pd.DataFrame(rows) if rows else None
 
 
-def load_annotations(annotation_path):
-    """Load annotations from GFF3, GTF, or custom TSV format.
-
-    Detects format automatically.  Returns a DataFrame with at least
-    ``contig_id, locus_tag, ftype, start, stop, strand`` or ``None``.
-    """
-    if annotation_path is None:
+def load_annotations(path: str | None) -> pd.DataFrame | None:
+    """Load annotations from GFF, GTF, or custom TSV."""
+    if path is None:
         return None
 
     try:
-        # ── Try GFF/GTF first ────────────────────────────────────────────
-        if _is_gff_format(annotation_path):
-            return _load_gff(annotation_path)
+        if _is_gff_format(path):
+            return _load_gff(path)
 
-        # ── Fallback: custom TSV ─────────────────────────────────────────
-        df = pd.read_csv(annotation_path, sep="\t", na_values=["."], keep_default_na=True)
+        # Custom TSV fallback
+        df = pd.read_csv(path, sep="\t", na_values=["."], keep_default_na=True)
 
-        # Drop a leading unnamed index column produced by tools like `cat -n`
+        # Drop unnamed index column from tools like `cat -n`
         first_col = df.columns[0]
         if str(first_col) not in {"contig_id", "locus_tag", "ftype", "start", "stop", "strand"}:
             try:
@@ -361,22 +618,20 @@ def load_annotations(annotation_path):
             except (ValueError, TypeError):
                 pass
 
-        required_cols = {"contig_id", "locus_tag", "ftype", "start", "stop", "strand"}
-        missing = required_cols - set(df.columns)
+        required = {"contig_id", "locus_tag", "ftype", "start", "stop", "strand"}
+        missing = required - set(df.columns)
         if missing:
-            raise ValueError(
-                f"Annotation file missing required columns: {', '.join(sorted(missing))}"
-            )
+            raise ValueError(f"Missing columns: {', '.join(sorted(missing))}")
 
         df = df.copy()
         df["start"] = df[["start", "stop"]].min(axis=1)
         df["stop"] = df[["start", "stop"]].max(axis=1)
 
-        # Coalesce product / EC / gene_name from multiple possible columns
+        # Coalesce common column variants
         for target, candidates in [
             ("product", ["prokka_product", "swissprot_product", "product"]),
             ("ec_number", ["prokka_EC_number", "swissprot_EC_number", "ec_number"]),
-            ("gene_name", ["prokka_gene", "swissprot_gene", "gene_name", "gene"]),
+            ("ann_name", ["prokka_ann", "swissprot_ann", "ann_name", "ann"]),
         ]:
             cols = [c for c in candidates if c in df.columns]
             if cols:
@@ -390,488 +645,194 @@ def load_annotations(annotation_path):
 
     except Exception as e:
         print(f"Warning: Could not load annotation file: {e}")
+        traceback.print_exc()
         return None
 
 
-def filter_annotations(df_annotations, query_id, x_range=None):
-    """
-    Filter annotations for a specific query and optional x-range.
-
-    Args:
-        df_annotations: Full annotation DataFrame
-        query_id: Query sequence ID (contig_id)
-        x_range: Optional [x_min, x_max] to filter by position
-
-    Returns:
-        Filtered annotation DataFrame
-    """
-    if df_annotations is None:
+def filter_annotations(
+    df: pd.DataFrame | None, query_id: str, x_range: tuple | None = None
+) -> pd.DataFrame | None:
+    """Filter annotations by contig and optionally by genomic position."""
+    if df is None:
         return None
 
-    # Filter by contig_id
-    df_filtered = df_annotations[df_annotations["contig_id"] == query_id].copy()
-
-    if df_filtered.empty:
+    df_filt = df[df["contig_id"] == query_id].copy()
+    if df_filt.empty:
         return None
 
-    # Filter by x-range if provided
     if x_range is not None:
         x_min, x_max = sorted(x_range)
-        df_filtered = df_filtered[
-            (df_filtered["stop"] >= x_min) & (df_filtered["start"] <= x_max)
-        ].copy()
+        df_filt = df_filt[(df_filt["stop"] >= x_min) & (df_filt["start"] <= x_max)].copy()
 
-    return df_filtered if not df_filtered.empty else None
+    return df_filt if not df_filt.empty else None
 
 
 # =============================================================================
-# TREE & LAYOUT
+# GENE ARROWS (IGV-style)
 # =============================================================================
 
 
-def prune_tree(tree, retained_l):
-    if retained_l is None or len(retained_l) == 0:
-        return tree
-    pruned_tree = tree.copy()
-    leaves_to_keep = [leaf for leaf in pruned_tree.iter_leaves() if leaf.name in retained_l]
-    if not leaves_to_keep:
-        return tree
-    pruned_tree.prune(leaves_to_keep, preserve_branch_length=True)
-    return pruned_tree
+def create_ann_arrow(start, end, strand, y_center, height=None):
+    """Create polygon vertices for a direction-aware ann arrow.
 
-
-def load_tree(newick_file):
-    tree = Tree(newick_file, format=1)
-    tree.ladderize()
-    return tree
-
-
-def compute_path_distances(tree, query_leaf_name):
-    """Compute tree path distance from query leaf to all nodes."""
-    query_leaf = None
-    for leaf in tree.iter_leaves():
-        if leaf.name == query_leaf_name:
-            query_leaf = leaf
-            break
-    if query_leaf is None:
-        return {}
-    return {node: query_leaf.get_distance(node) for node in tree.traverse()}
-
-
-def _node_hover(node, query_distances, count_offset=0):
-    """Build hover text for a tree node."""
-    branch_len = node.dist if node.dist is not None else 0.0
-    if node.is_leaf():
-        hover = f"{node.name}<br>Branch length: {branch_len:.4f}"
-    else:
-        name = node.name if node.name else "(internal)"
-        size = len(node.get_leaves()) + count_offset
-        hover = f"{name}<br>Subtree size: {size}<br>Branch length: {branch_len:.4f}"
-    if query_distances and node in query_distances:
-        hover += f"<br>Distance to query: {query_distances[node]:.4f}"
-    return hover
-
-
-def compute_tree_layout(tree, mode="phylogeny", query_distances=None):
-    data = defaultdict(list)
-    tip_order = [leaf.name for leaf in tree.iter_leaves()]
-    y_pos = {name: i for i, name in enumerate(tip_order)}
-
-    for leaf in tree.iter_leaves():
-        leaf.add_feature("y", y_pos[leaf.name])
-    for node in tree.traverse("postorder"):
-        if not node.is_leaf():
-            node.add_feature("y", np.mean([c.y for c in node.children]))
-
-    # Assign x coordinates
-    if mode == "cladogram":
-        max_depth = 0
-        for node in tree.traverse("postorder"):
-            if node.is_leaf():
-                node.add_feature("depth", 0)
-            else:
-                child_depths = [c.depth for c in node.children]
-                node.add_feature("depth", max(child_depths) + 1 if child_depths else 1)
-                max_depth = max(max_depth, node.depth)
-        for node in tree.traverse("preorder"):
-            node.add_feature("x", float(max_depth - node.depth))
-        max_x = float(max_depth)
-        count_offset = 1
-    else:
-        max_x = 0.0
-        for node in tree.traverse("preorder"):
-            if node.is_root():
-                node.add_feature("x", 0)
-            else:
-                node.add_feature("x", node.up.x + (node.dist or 0))
-            max_x = max(max_x, node.x)
-        count_offset = 0
-
-    max_y = len(tip_order) - 1
-
-    # Horizontal lines
-    for node in tree.traverse():
-        if not node.is_root():
-            data["x"].extend([node.up.x, node.x, None])
-            data["y"].extend([node.y, node.y, None])
-            hover = _node_hover(node, query_distances, count_offset)
-            data["text"].extend([hover, hover, None])
-
-    # Vertical lines
-    for node in tree.traverse():
-        if len(node.children) > 1:
-            child_ys = [c.y for c in node.children]
-            ix_min = int(np.argmin(child_ys))
-            ix_max = int(np.argmax(child_ys))
-            data["x"].extend([node.x, node.x, None])
-            data["y"].extend([node.children[ix_min].y, node.children[ix_max].y, None])
-            data["text"].extend(
-                [
-                    _node_hover(node.children[ix_min], query_distances, count_offset),
-                    _node_hover(node.children[ix_max], query_distances, count_offset),
-                    None,
-                ]
-            )
-
-    return data, tip_order, (max_x, max_y)
-
-
-# =============================================================================
-# ZOOM & RANGE
-# =============================================================================
-
-
-def enforce_min_span(v_range, min_span, bounds=None):
-    """Prevent zooming in beyond min_span; clamp to bounds if given."""
-    if v_range is None:
-        return None
-    lo, hi = sorted(v_range)
-    if hi - lo < min_span:
-        center = (lo + hi) / 2
-        lo = center - min_span / 2
-        hi = center + min_span / 2
-    if bounds is not None:
-        b_lo, b_hi = bounds
-        if hi - lo > b_hi - b_lo:
-            lo, hi = b_lo, b_hi
-        else:
-            lo = max(b_lo, min(lo, b_hi - (hi - lo)))
-            hi = lo + max(min_span, hi - lo)
-            hi = min(hi, b_hi)
-    lo, hi = int(np.floor(lo)), int(np.ceil(hi))
-    return [lo, hi] if v_range[0] <= v_range[1] else [hi, lo]
-
-
-def _visible_rows(y_range, total_leaves):
-    if y_range is None:
-        return total_leaves
-    return max(1, abs(int(y_range[1] - y_range[0])))
-
-
-def scaled_interval_width(y_range, total_leaves):
-    visible = _visible_rows(y_range, total_leaves)
-    row_h = FIG_HEIGHT / visible
-    thickness = row_h * INTERVAL_ROW_FILL
-    thickness = min(thickness, row_h * INTERVAL_LINE_WIDTH_MAX_RATIO)
-    return min(max(INTERVAL_LINE_WIDTH_MIN, thickness), INTERVAL_LINE_WIDTH_MAX)
-
-
-def scaled_tree_width(y_range, total_leaves):
-    visible = _visible_rows(y_range, total_leaves)
-    row_h = FIG_HEIGHT / visible
-    thickness = row_h * TREE_ROW_FILL
-    return min(max(TREE_LINE_WIDTH_MIN, thickness), TREE_LINE_WIDTH_MAX)
-
-
-# =============================================================================
-# COLOR MAPPING
-# =============================================================================
-
-
-@lru_cache(maxsize=LRU_CACHE_SIZE)
-def get_binned_colors(dist_th_t, colorscheme):
-    bin_edges = (0.0,) + dist_th_t
-    n_bins = len(dist_th_t)
-    colors = tuple(
-        px.colors.sample_colorscale(
-            colorscheme, [i / (n_bins - 1) for i in range(n_bins)] if n_bins > 1 else [0.5]
-        )
-    )
-    return np.array(bin_edges), colors
-
-
-def assign_color_indices(distances, bin_edges, n_colors):
-    indices = np.searchsorted(bin_edges, distances, side="left") - 1
-    return np.clip(indices, 0, n_colors - 1)
-
-
-def _build_hover_texts(ref_ids, starts, ends, dist_ths, leaf_distances=None):
-    """Vectorized hover text construction."""
-    texts = [
-        f"{rid}<br>Pos: {s:,}-{e:,}<br>Dist: {d:.3f}"
-        for rid, s, e, d in zip(ref_ids, starts, ends, dist_ths)
-    ]
-    if leaf_distances:
-        texts = [
-            t + f"<br>Distance to query: {leaf_distances[rid]:.4f}" if rid in leaf_distances else t
-            for t, rid in zip(texts, ref_ids)
-        ]
-    return texts
-
-
-def batch_interval_by_color(df, bin_edges, colors, leaf_distances=None):
-    if df.empty:
-        return {}
-    mask = df["INTERVAL_START"].values != df["INTERVAL_END"].values
-    if not mask.any():
-        return {}
-
-    starts = df["INTERVAL_START"].values[mask]
-    ends = df["INTERVAL_END"].values[mask]
-    ys = df["y"].values[mask]
-    dist_ths = df["DIST_TH"].values[mask]
-    ref_ids = df["REF_ID"].values[mask]
-    color_idx = assign_color_indices(dist_ths, bin_edges, len(colors))
-
-    hovers = _build_hover_texts(ref_ids, starts, ends, dist_ths, leaf_distances)
-
-    traces = {}
-    for ci in np.unique(color_idx)[::-1]:
-        sel = color_idx == ci
-        n = sel.sum()
-        # Build interleaved [start, end, None, ...] arrays
-        x = np.empty(n * 3, dtype=object)
-        x[0::3] = starts[sel]
-        x[1::3] = ends[sel]
-        x[2::3] = None
-        y = np.empty(n * 3, dtype=object)
-        y[0::3] = ys[sel]
-        y[1::3] = ys[sel]
-        y[2::3] = None
-        sel_hovers = np.array(hovers, dtype=object)[sel]
-        text = np.empty(n * 3, dtype=object)
-        text[0::3] = sel_hovers
-        text[1::3] = sel_hovers
-        text[2::3] = None
-        traces[colors[ci]] = {"x": x.tolist(), "y": y.tolist(), "text": text.tolist()}
-    return traces
-
-
-def make_colorbar(bin_edges, colors, colorbar_y=0.5, colorbar_len=None):
-    n_bins = len(colors)
-    norm_edges = np.linspace(0, 1, n_bins + 1)
-    colorscale = [[norm_edges[i + j], colors[i]] for i in range(n_bins) for j in (0, 1)]
-
-    tick_labels = [f"≤{bin_edges[i+1]:.3f}" for i in range(n_bins)]
-    dummy_y = np.linspace(0, 1, n_bins)
-    cb_len = colorbar_len if colorbar_len is not None else COLORBAR_LEN
-
-    return go.Scatter(
-        x=[None],
-        y=[None],
-        mode="markers",
-        marker=dict(
-            colorscale=colorscale,
-            showscale=True,
-            cmin=0,
-            cmax=1,
-            color=dummy_y,
-            colorbar=dict(
-                title="Distance",
-                tickvals=[(norm_edges[i] + norm_edges[i + 1]) / 2 for i in range(n_bins)],
-                ticktext=tick_labels,
-                len=cb_len,
-                x=COLORBAR_X,
-                y=colorbar_y,
-                yanchor="middle",
-                thickness=COLORBAR_THICKNESS,
-                title_font=dict(size=COLORBAR_TITLE_FONT_SIZE),
-                tickfont=dict(size=COLORBAR_TICK_FONT_SIZE),
-            ),
-        ),
-        hoverinfo="skip",
-        showlegend=False,
-    )
-
-
-def compute_y_ticks(tip_order, y_range=None, max_ticks=AXIS_Y_MAX_TICKS):
-    n = len(tip_order)
-    if y_range is None:
-        step = max(1, n // max_ticks)
-        indices = list(range(0, n, step))
-        if indices[-1] != n - 1:
-            indices.append(n - 1)
-    else:
-        lo, hi = sorted(y_range)
-        i_lo = max(0, min(int(round(lo)), n - 1))
-        i_hi = max(0, min(int(round(hi)), n - 1))
-        indices = list(range(i_lo, i_hi + 1))
-        if len(indices) > max_ticks:
-            step = len(indices) // max_ticks
-            indices = indices[::step]
-    return indices, [tip_order[i] for i in indices]
-
-
-# =============================================================================
-# GENE VISUALIZATION (IGV.js CONVENTIONS)
-# =============================================================================
-
-
-def create_gene_arrow(start, end, strand, y_position, height=PANEL_ANNOTATION_TRACK_HEIGHT):
-    """Arrow-shaped polygon for a gene at the given y_position (track index units).
-
-    The body covers the first 75 % of the gene and the arrowhead the last 25 %,
-    so the direction is obvious at every scale.  The head flares to 2.8 × the
-    body half-height.
+    For long anns, the arrow height is capped at ARROW_HEIGHT_MAX to prevent
+    arrows from exceeding track boundaries. The body remains proportionally sized.
     """
-    gene_length = max(end - start, 1)
-    arrow_size = max(ARROW_SIZE_MIN, gene_length * ARROW_HEAD_RATIO)
-    h = height * 1.5  # body half-height — noticeably thick
-    H = height * 2.0  # arrowhead half-height — wider than body but not extreme
+    if height is None:
+        height = ANNOTATION_TRACK_HEIGHT
+
+    length = max(end - start, 1)
+    arrow_size = max(ARROW_SIZE_MIN, length * ARROW_HEAD_RATIO)
+
+    # Calculate heights, but cap to prevent overflow into adjacent tracks
+    h = min(height * 1.5, ARROW_HEIGHT_MAX)  # body half-height (capped)
+    H = min(height * 2.0, ARROW_HEIGHT_MAX)  # arrowhead half-height (capped)
 
     if strand == "+":
         body_end = end - arrow_size
         if body_end <= start:
-            # Gene too short for a body — just a triangle
             x = [start, end, start, start]
-            y = [y_position - H, y_position, y_position + H, y_position - H]
+            y = [y_center - H, y_center, y_center + H, y_center - H]
         else:
             x = [start, body_end, body_end, end, body_end, body_end, start, start]
             y = [
-                y_position - h,
-                y_position - h,
-                y_position - H,
-                y_position,
-                y_position + H,
-                y_position + h,
-                y_position + h,
-                y_position - h,
+                y_center - h,
+                y_center - h,
+                y_center - H,
+                y_center,
+                y_center + H,
+                y_center + h,
+                y_center + h,
+                y_center - h,
             ]
     else:
         body_start = start + arrow_size
         if body_start >= end:
             x = [end, start, end, end]
-            y = [y_position - H, y_position, y_position + H, y_position - H]
+            y = [y_center - H, y_center, y_center + H, y_center - H]
         else:
             x = [end, body_start, body_start, start, body_start, body_start, end, end]
             y = [
-                y_position - h,
-                y_position - h,
-                y_position - H,
-                y_position,
-                y_position + H,
-                y_position + h,
-                y_position + h,
-                y_position - h,
+                y_center - h,
+                y_center - h,
+                y_center - H,
+                y_center,
+                y_center + H,
+                y_center + h,
+                y_center + h,
+                y_center - h,
             ]
 
     return {"x": x, "y": y}
 
 
-def build_gene_hover(gene_row):
-    """
-    Build hover text for a gene with comprehensive information.
+def _ann_hover(ann_row) -> str:
+    """Build rich HTML hover text for a ann showing only main fields."""
+    length = int(ann_row["stop"]) - int(ann_row["start"])
 
-    Args:
-        gene_row: Series containing gene information
+    hover_text = ""
+    hover_text += f"{ann_row['locus_tag']}"
+    hover_text += f"<br>{ann_row['ftype']}"
+    hover_text += f"<br>{int(ann_row['start']):,}–{int(ann_row['stop']):,}"
+    hover_text += f"<br>{length:,} bp · {ann_row['strand']}"
 
-    Returns:
-        Formatted hover string with gene information
-    """
-    # Calculate gene length
-    length = int(gene_row["stop"]) - int(gene_row["start"])
+    ann_name = None
+    if "ann_name" in ann_row and pd.notna(ann_row["ann_name"]):
+        ann_name = ann_row["ann_name"]
+    elif "prokka_ann" in ann_row and pd.notna(ann_row["prokka_ann"]):
+        ann_name = ann_row["prokka_ann"]
+    if ann_name:
+        hover_text += f"<br>Gene: {ann_name}"
 
-    hover = f"<b>{gene_row['locus_tag']}</b><br>"
-    hover += f"<b>Feature:</b> {gene_row['ftype']}<br>"
-    hover += f"<b>Location:</b> {int(gene_row['start']):,} - {int(gene_row['stop']):,}<br>"
-    hover += f"<b>Length:</b> {length:,} bp<br>"
-    hover += f"<b>Strand:</b> {'Forward (+)' if gene_row['strand'] == '+' else 'Reverse (-)'}<br>"
+    ec_number = None
+    if "ec_number" in ann_row and pd.notna(ann_row["ec_number"]):
+        ec_number = ann_row["ec_number"]
+    elif "prokka_EC_number" in ann_row and pd.notna(ann_row["prokka_EC_number"]):
+        ec_number = ann_row["prokka_EC_number"]
+    if ec_number:
+        hover_text += f"<br>EC: {ec_number}"
 
-    # Gene name
-    if "gene_name" in gene_row and pd.notna(gene_row["gene_name"]):
-        hover += f"<b>Gene:</b> {gene_row['gene_name']}<br>"
+    product = None
+    if "product" in ann_row and pd.notna(ann_row["product"]):
+        product = ann_row["product"]
+    elif "prokka_product" in ann_row and pd.notna(ann_row["prokka_product"]):
+        product = ann_row["prokka_product"]
+    if product:
+        if len(str(product)) > 100:
+            product = str(product)[:97] + "…"
+        hover_text += f"<br>Product: {product}"
 
-    # Product description
-    if "product" in gene_row and pd.notna(gene_row["product"]):
-        product = str(gene_row["product"])
-        if len(product) > 100:
-            product = product[:100] + "..."
-        hover += f"<b>Product:</b> {product}<br>"
-
-    # EC number
-    if "ec_number" in gene_row and pd.notna(gene_row["ec_number"]):
-        hover += f"<b>EC Number:</b> {gene_row['ec_number']}<br>"
-
-    # Additional annotation sources
-    for col, label in [
-        ("swissprot_gene", "SwissProt Gene"),
-        ("swissprot_KO", "KEGG Orthology"),
-        ("swissprot_Pfam", "Pfam"),
-        ("swissprot_CAZy", "CAZy"),
-        ("swissprot_TIGRFAMs", "TIGRFAMs"),
-    ]:
-        if col in gene_row and pd.notna(gene_row[col]):
-            val = str(gene_row[col])
-            if len(val) > 50:
-                val = val[:50] + "..."
-            hover += f"<b>{label}:</b> {val}<br>"
-
-    return hover
+    return hover_text
 
 
-def create_annotation_traces(df_annotations, x_range=None):
-    """
-    Create Plotly traces for gene annotations, one horizontal track per ftype.
-
-    Returns:
-        traces        – list of go.Scatter trace objects
-        y_tick_vals   – list of int y-positions for ftype labels
-        y_tick_text   – list of ftype name strings
-        n_tracks      – total number of ftype tracks
-    """
-    if df_annotations is None or df_annotations.empty:
+def create_annotation_traces(df, x_range=None):
+    """Create Plotly traces for annotation tracks with proper hover support."""
+    if df is None or df.empty:
         return [], [], [], 0
 
-    # Assign a vertical track to each ftype (sorted alphabetically)
-    ftypes = sorted(df_annotations["ftype"].dropna().unique())
-    n_tracks = len(ftypes)
+    ftypes = sorted(df["ftype"].dropna().unique())
     ftype_to_y = {ft: i for i, ft in enumerate(ftypes)}
 
     traces = []
-    x_min, x_max = sorted(x_range) if x_range is not None else (None, None)
+    x_min, x_max = sorted(x_range) if x_range else (None, None)
 
     for ftype in ftypes:
-        group = df_annotations[df_annotations["ftype"] == ftype].sort_values("start")
         color = FEATURE_COLORS.get(ftype, FEATURE_COLORS["default"])
         y_center = ftype_to_y[ftype]
 
-        for _, gene in group.iterrows():
-            if x_min is not None and (gene["stop"] < x_min or gene["start"] > x_max):
+        for _, ann in df[df["ftype"] == ftype].sort_values("start").iterrows():
+            if x_min is not None and (ann["stop"] < x_min or ann["start"] > x_max):
                 continue
 
-            arrow_data = create_gene_arrow(
-                int(gene["start"]), int(gene["stop"]), gene["strand"], y_position=y_center
-            )
-            hover_text = build_gene_hover(gene)
+            arrow = create_ann_arrow(int(ann["start"]), int(ann["stop"]), ann["strand"], y_center)
 
-            # Subtle edge: slightly darker shade of fill
-            edge_color = color
+            hover_text = _ann_hover(ann)
+
+            # Arrow body (filled, no hover) - remove name to avoid interference
             traces.append(
                 go.Scatter(
-                    x=arrow_data["x"],
-                    y=arrow_data["y"],
+                    x=arrow["x"],
+                    y=arrow["y"],
                     mode="lines",
                     fill="toself",
                     fillcolor=color,
-                    line=dict(color=edge_color, width=0.8),
-                    hovertemplate=f"{hover_text}<extra></extra>",
+                    line=dict(color=color, width=0.8),
+                    hoverinfo="skip",
                     showlegend=False,
-                    name=str(gene.get("locus_tag", "")),
                     opacity=0.82,
+                    name="",
                 )
             )
 
-    return traces, list(range(n_tracks)), ftypes, n_tracks
+            # Hover detection point (center of ann) - small but detectable
+            ann_center = (int(ann["start"]) + int(ann["stop"])) / 2
+            traces.append(
+                go.Scatter(
+                    x=[ann_center],
+                    y=[y_center],
+                    mode="markers",
+                    marker=dict(
+                        size=10, opacity=0.2, color=color
+                    ),  # More visible for hover detection
+                    hoverinfo="text",
+                    text=[hover_text],  # Pass as list to ensure proper formatting
+                    hoverlabel=dict(
+                        namelength=-1,
+                        bgcolor="rgba(255, 255, 255, 0.95)",
+                        font=dict(size=12, family="Arial, sans-serif", color="#1a1a1a"),
+                        bordercolor="#ccc",
+                    ),
+                    showlegend=False,
+                    name="",
+                )
+            )
+
+    return traces, list(range(len(ftypes))), ftypes, len(ftypes)
+
+
+# =============================================================================
+# FIGURE BUILDING
+# =============================================================================
 
 
 def build_figure(
@@ -883,60 +844,40 @@ def build_figure(
     colors,
     df_annotations=None,
     query_id=None,
-    interval_linewidth=3.0,
-    tree_linewidth=1.5,
+    interval_lw=3.0,
+    tree_lw=1.5,
     uirevision="base",
     y_range=None,
     x_range=None,
-    y_range_limits=None,
-    x_range_limits=None,
+    x_limits=None,
+    y_limits=None,
     leaf_distances=None,
 ):
-    """
-    Build the complete figure with tree, interval, and optional annotation panels.
+    """Assemble the complete figure with tree, intervals, and optional annotations."""
+    has_annot = df_annotations is not None and not df_annotations.empty
 
-    Args:
-        tree_data: Tree layout data
-        tip_order: Ordered list of leaf names
-        tree_max_xy: Maximum x,y coordinates for tree
-        df_intervals: Interval data
-        bin_edges: Color bin edges
-        colors: Color list for bins
-        df_annotations: Optional annotation DataFrame
-        query_id: Current query sequence ID for filtering annotations
-        interval_linewidth: Width of interval lines
-        tree_linewidth: Width of tree lines
-        uirevision: UI revision for preserving zoom state
-        y_range: Current y-axis range
-        x_range: Current x-axis range
-        y_range_limits: Y-axis limits
-        x_range_limits: X-axis limits
-        leaf_distances: Distances from query to leaves
+    # Determine colorbar position and length
+    if has_annot:
+        row1_bottom = ANNOTATION_ROW_HEIGHT + 0.05
+        row1_top = 1.0
+    else:
+        row1_bottom, row1_top = 0.0, 1.0
+    cb_y = (row1_bottom + row1_top) / 2.0
+    cb_len = (row1_top - row1_bottom) * 0.85
 
-    Returns:
-        Plotly figure object
-    """
-    # Determine if we have annotations to display
-    has_annotations = df_annotations is not None and not df_annotations.empty
-
-    if has_annotations:
-        # 2x2 layout: tree + intervals (row 1), empty + annotations (row 2)
-        # shared_yaxes: row 1 shares tree ↔ interval y-axes (row 2 shares
-        #   empty ↔ annotation — harmless, overridden below).
-        # shared_xaxes: col 2 shares interval ↔ annotation x-axes so genomic
-        #   position zoom is synchronized.
+    # Create subplot layout
+    if has_annot:
         fig = make_subplots(
             rows=2,
             cols=2,
             shared_yaxes=True,
             shared_xaxes=True,
             column_widths=[PANEL_TREE_WIDTH, PANEL_INTERVAL_WIDTH],
-            row_heights=[PANEL_TREE_INTERVAL_HEIGHT, PANEL_ANNOTATION_HEIGHT],
+            row_heights=[1 - ANNOTATION_ROW_HEIGHT, ANNOTATION_ROW_HEIGHT],
             horizontal_spacing=PANEL_SPACING,
-            vertical_spacing=PANEL_VERTICAL_SPACING,
+            vertical_spacing=0.05,
         )
     else:
-        # 1x2 layout: tree + intervals only
         fig = make_subplots(
             rows=1,
             cols=2,
@@ -945,24 +886,8 @@ def build_figure(
             horizontal_spacing=PANEL_SPACING,
         )
 
-    # Compute colorbar vertical center so it sits in the middle of the interval
-    # row regardless of whether the annotation panel is present.
-    # In paper coords: with annotations, row 1 top ≈ 1.0, row 1 bottom ≈
-    #   PANEL_ANNOTATION_HEIGHT + PANEL_VERTICAL_SPACING.  Without annotations
-    #   the single row spans [0, 1].
-    if has_annotations:
-        row1_bottom = PANEL_ANNOTATION_HEIGHT + PANEL_VERTICAL_SPACING
-        row1_top = 1.0
-    else:
-        row1_bottom = 0.0
-        row1_top = 1.0
-    cb_y = (row1_bottom + row1_top) / 2.0
-    cb_len = (row1_top - row1_bottom) * 0.85  # slightly shorter than the row
-
-    # Add colorbar (in interval panel)
-    fig.add_trace(
-        make_colorbar(bin_edges, colors, colorbar_y=cb_y, colorbar_len=cb_len), row=1, col=2
-    )
+    # Colorbar in interval panel
+    fig.add_trace(make_colorbar(bin_edges, colors, y_center=cb_y, length=cb_len), row=1, col=2)
 
     fig.update_layout(
         autosize=True,
@@ -971,34 +896,35 @@ def build_figure(
         paper_bgcolor=COLORS["paper_bg"],
         hovermode="closest",
         uirevision=uirevision,
-        font=dict(family=FIG_FONT_FAMILY, size=FIG_FONT_SIZE),
+        font=dict(family=FIG_FONT, size=FIG_SIZE),
+        dragmode="zoom",  # Enable drag-to-zoom by default
+        showlegend=False,  # Cleaner look without legend
     )
 
-    # Tree panel (left)
+    # Tree panel (col 1)
     fig.add_trace(
         go.Scattergl(
             x=tree_data["x"],
             y=tree_data["y"],
-            text=tree_data["text"],
-            hovertemplate="%{text}<extra></extra>",
+            hovertext=tree_data["text"],
+            hovertemplate="%{hovertext}<extra></extra>",
             mode="lines",
-            line=dict(color=COLORS["tree_line"], width=tree_linewidth),
+            line=dict(color=COLORS["tree"], width=tree_lw),
             showlegend=False,
         ),
         row=1,
         col=1,
     )
 
-    # Interval panel (right)
+    # Interval panel (col 2)
     if not df_intervals.empty:
-        traces_by_color = batch_interval_by_color(df_intervals, bin_edges, colors, leaf_distances)
-        for color, data in traces_by_color.items():
+        for color, data in batch_by_color(df_intervals, bin_edges, colors, leaf_distances).items():
             fig.add_trace(
                 go.Scattergl(
                     x=data["x"],
                     y=data["y"],
                     mode="lines",
-                    line=dict(width=interval_linewidth, color=color),
+                    line=dict(width=interval_lw, color=color),
                     text=data["text"],
                     hovertemplate="%{text}<extra></extra>",
                     showlegend=False,
@@ -1007,38 +933,33 @@ def build_figure(
                 col=2,
             )
 
-    # Annotation panel (row 2, col 2)
-    ann_y_tick_vals, ann_y_tick_text, ann_n_tracks = [], [], 0
-    if has_annotations:
-        query_annotations = filter_annotations(df_annotations, query_id, x_range)
-        if query_annotations is not None and not query_annotations.empty:
-            ann_traces, ann_y_tick_vals, ann_y_tick_text, ann_n_tracks = create_annotation_traces(
-                query_annotations, x_range
-            )
+    # Annotation panel (row 2)
+    ann_y_vals, ann_y_text, ann_n = [], [], 0
+    if has_annot:
+        ann_df = filter_annotations(df_annotations, query_id, x_range)
+        if ann_df is not None and not ann_df.empty:
+            ann_traces, ann_y_vals, ann_y_text, ann_n = create_annotation_traces(ann_df, x_range)
             for trace in ann_traces:
                 fig.add_trace(trace, row=2, col=2)
 
-    # ── Tree panel (row 1, col 1) ──────────────────────────────────────────────
-    tree_range_min = -(tree_max_xy[0] * (TREE_X_MARGIN - 1))
-    tree_range_max = tree_max_xy[0] * TREE_X_MARGIN
+    # ---- Axes ----
+    tree_x_range = [-(tree_max_xy[0] * (TREE_X_MARGIN - 1)), tree_max_xy[0] * TREE_X_MARGIN]
+    x_range = x_range if x_range is not None else x_limits
 
-    # Resolve x_range before configuring axes
-    if x_range is None:
-        x_range = x_range_limits
-
+    # Tree X-axis (fixed)
     fig.update_xaxes(
-        title=TREE_X_TITLE,
-        title_font=dict(size=AXIS_TITLE_FONT_SIZE),
-        range=[tree_range_min, tree_range_max],
+        title="Branch length",
+        title_font=dict(size=AXIS_TITLE_SIZE),
+        range=tree_x_range,
         fixedrange=True,
         side="bottom",
         showline=True,
         showgrid=False,
         showticklabels=True,
         linewidth=AXIS_LINE_WIDTH,
-        linecolor=COLORS["axis_line"],
+        linecolor=COLORS["axis"],
         mirror=False,
-        tickfont=dict(size=AXIS_TICK_FONT_SIZE),
+        tickfont=dict(size=AXIS_TICK_SIZE),
         ticks="outside",
         nticks=5,
         row=1,
@@ -1046,26 +967,21 @@ def build_figure(
     )
     fig.update_yaxes(
         autorange=y_range is None,
-        range=y_range if y_range else y_range_limits,
+        range=y_range if y_range else y_limits,
         showline=False,
         zeroline=False,
         showgrid=False,
         showticklabels=False,
-        minallowed=y_range_limits[0],
-        maxallowed=y_range_limits[1],
+        minallowed=y_limits[0],
+        maxallowed=y_limits[1],
         row=1,
         col=1,
     )
 
-    # ── Interval panel (row 1, col 2) ─────────────────────────────────────────
-    tickvals, ticktext = compute_y_ticks(tip_order, y_range)
-
-    # When annotations are present the shared x-axis renders tick labels at the
-    # very bottom of column 2 (below row 2).  Suppress them on row 1 here to
-    # avoid duplication; the title and ticks are set on row 2 further below.
+    # Interval X-axis
     fig.update_xaxes(
-        title=INTERVAL_X_TITLE if not has_annotations else "",
-        title_font=dict(size=AXIS_TITLE_FONT_SIZE),
+        title="Position (bp)" if not has_annot else "",
+        title_font=dict(size=AXIS_TITLE_SIZE),
         range=x_range,
         tickmode="auto",
         nticks=AXIS_X_NTICKS,
@@ -1074,44 +990,42 @@ def build_figure(
         gridwidth=AXIS_GRID_WIDTH,
         showline=True,
         linewidth=AXIS_LINE_WIDTH,
-        linecolor=COLORS["axis_line"],
+        linecolor=COLORS["axis"],
         mirror=False,
-        tickfont=dict(size=AXIS_TICK_FONT_SIZE),
-        showticklabels=not has_annotations,
-        ticks="outside" if not has_annotations else "",
-        minallowed=x_range_limits[0],
-        maxallowed=x_range_limits[1],
+        tickfont=dict(size=AXIS_TICK_SIZE),
+        showticklabels=not has_annot,
+        ticks="outside" if not has_annot else "",
+        minallowed=x_limits[0],
+        maxallowed=x_limits[1],
         row=1,
         col=2,
     )
+    tickvals, ticktext = compute_y_ticks(tip_order, y_range)
     fig.update_yaxes(
         autorange=y_range is None,
-        range=y_range if y_range else y_range_limits,
+        range=y_range if y_range else y_limits,
         tickvals=tickvals,
         ticktext=ticktext,
-        tickfont=dict(size=AXIS_TICK_FONT_SIZE),
+        tickfont=dict(size=AXIS_TICK_SIZE),
         showgrid=False,
         zeroline=False,
         showline=True,
         linewidth=AXIS_LINE_WIDTH,
-        linecolor=COLORS["axis_line"],
+        linecolor=COLORS["axis"],
         mirror=False,
-        minallowed=y_range_limits[0],
-        maxallowed=y_range_limits[1],
+        minallowed=y_limits[0],
+        maxallowed=y_limits[1],
         row=1,
         col=2,
     )
 
-    # ── Annotation panel (row 2) ─────────────────────────────────────────────
-    if has_annotations:
-        ann_y_range = [-0.5, max(ann_n_tracks - 0.5, 0.5)]
+    # Annotation panel axes
+    if has_annot:
+        ann_y_range = [-0.5, max(ann_n - 0.5, 0.5)]
 
-        # X-axis for annotation panel (row 2, col 2):
-        # This is the ONLY place the genomic-position ticks and title appear.
-        # (Row 1, col 2 has its ticks/title suppressed above.)
         fig.update_xaxes(
-            title=INTERVAL_X_TITLE,
-            title_font=dict(size=AXIS_TITLE_FONT_SIZE),
+            title="Genomic Position (bp)",
+            title_font=dict(size=AXIS_TITLE_SIZE),
             range=x_range,
             tickmode="auto",
             nticks=AXIS_X_NTICKS,
@@ -1120,24 +1034,22 @@ def build_figure(
             gridwidth=AXIS_GRID_WIDTH,
             showline=True,
             linewidth=AXIS_LINE_WIDTH,
-            linecolor=COLORS["axis_line"],
+            linecolor=COLORS["axis"],
             mirror=False,
-            tickfont=dict(size=AXIS_TICK_FONT_SIZE),
+            tickfont=dict(size=AXIS_TICK_SIZE),
             showticklabels=True,
             ticks="outside",
-            minallowed=x_range_limits[0],
-            maxallowed=x_range_limits[1],
+            minallowed=x_limits[0],
+            maxallowed=x_limits[1],
             row=2,
             col=2,
         )
-
-        # Y-axis: ftype track labels on the right, no vertical zoom
         fig.update_yaxes(
             autorange=False,
             fixedrange=True,
             range=ann_y_range,
-            tickvals=ann_y_tick_vals,
-            ticktext=list(ann_y_tick_text),
+            tickvals=ann_y_vals,
+            ticktext=list(ann_y_text),
             tickfont=dict(size=10, color="#555"),
             side="right",
             showline=False,
@@ -1149,8 +1061,7 @@ def build_figure(
             row=2,
             col=2,
         )
-
-        # Row 2, col 1 (below tree) — completely hidden
+        # Row 2, col 1 (hidden, under tree)
         fig.update_yaxes(
             showline=False,
             showgrid=False,
@@ -1173,65 +1084,124 @@ def build_figure(
     return fig
 
 
-def nearest_value(value, valid_values):
-    idx = np.searchsorted(valid_values, value)
+# =============================================================================
+# HELPERS
+# =============================================================================
+
+
+def nearest_value(value, values):
+    """Find nearest value in sorted list."""
+    idx = np.searchsorted(values, value)
     if idx == 0:
-        return valid_values[0]
-    if idx == len(valid_values):
-        return valid_values[-1]
-    left = valid_values[idx - 1]
-    right = valid_values[idx]
+        return values[0]
+    if idx == len(values):
+        return values[-1]
+    left, right = values[idx - 1], values[idx]
     return left if (value - left) < (right - value) else right
 
 
-def create_slider_marks(dist_th_l):
-    if not dist_th_l:
+def make_slider_marks(values):
+    if not values:
         return {}
-    n = len(dist_th_l)
-    marks = {dist_th_l[0]: str(dist_th_l[0]), dist_th_l[-1]: str(dist_th_l[-1])}
-    for i in range(1, n - 1):
-        marks[dist_th_l[i]] = "\u200b"
-    return marks
+    return {
+        values[0]: str(values[0]),
+        values[-1]: str(values[-1]),
+        **{v: "\u200b" for v in values[1:-1]},
+    }
 
 
 # =============================================================================
-# DASH APP
+# UI BUILDING
 # =============================================================================
 
 
 def control_label(text):
-    """Create a standardized control label."""
     return html.Label(
         text,
         style={
-            "fontWeight": "bold",
-            "marginRight": f"{UI_LABEL_MARGIN_RIGHT}px",
-            "fontSize": UI_LABEL_FONT_SIZE,
+            "fontWeight": "600",
+            "marginRight": f"{UI_LABEL_MARGIN}px",
+            "fontSize": UI_LABEL_SIZE,
+            "color": UI_LABEL_COLOR,
+            "whiteSpace": "nowrap",
         },
     )
 
 
-def get_toggle_button_style(is_active, position="middle"):
-    """
-    Get style dict for a toggle button.
-
-    Args:
-        is_active: Whether this button is the active one
-        position: "left", "right", or "middle"
-    """
-    border_radius = {"left": "4px 0 0 4px", "right": "0 4px 4px 0", "middle": "0"}[position]
-
-    return {
-        "padding": UI_TOGGLE_PADDING,
-        "fontSize": UI_TOGGLE_FONT_SIZE,
+def nav_button_style(position="middle"):
+    radius = {"left": "4px 0 0 4px", "right": "0 4px 4px 0", "middle": "4px"}[position]
+    style = {
+        "padding": UI_NAV_PADDING,
+        "fontSize": UI_NAV_SIZE,
         "cursor": "pointer",
-        "border": f"{UI_TOGGLE_BORDER_WIDTH}px solid {COLORS['button_border']}",
-        "borderRight": "none" if position != "right" else None,
-        "borderRadius": border_radius,
-        "backgroundColor": COLORS["button_bg"] if is_active else COLORS["button_bg_inactive"],
-        "fontWeight": "bold" if is_active else "normal",
-        "color": COLORS["button_text"],
+        "border": f"{UI_NAV_BORDER}px solid {COLORS['button_border']}",
+        "borderRadius": radius,
+        "backgroundColor": COLORS["button_bg"],
+        "color": UI_TOGGLE_COLOR_ACTIVE,
+        "transition": "background-color 0.12s ease",
+        "whiteSpace": "nowrap",
     }
+    if position == "left":
+        style["borderRight"] = "none"
+    return style
+
+
+def export_button_style():
+    return {
+        "padding": UI_EXPORT_PADDING,
+        "fontSize": UI_EXPORT_FONT_SIZE,
+        "cursor": "pointer",
+        "border": f"1px solid {COLORS['button_border']}",
+        "borderRadius": "4px",
+        "backgroundColor": COLORS["button_bg"],
+        "fontWeight": "600",
+        "color": UI_TOGGLE_COLOR_ACTIVE,
+        "transition": "background-color 0.12s ease",
+        "whiteSpace": "nowrap",
+    }
+
+
+def export_input_style(width):
+    return {
+        "width": width,
+        "fontSize": UI_EXPORT_FONT_SIZE,
+        "padding": "3px 5px",
+        "border": f"1px solid {COLORS['button_border']}",
+        "borderRadius": "4px",
+        "textAlign": "center",
+        "color": UI_TOGGLE_COLOR_ACTIVE,
+    }
+
+
+def toggle_style(is_active, position="middle"):
+    radius = {"left": "4px 0 0 4px", "right": "0 4px 4px 0", "middle": "0"}[position]
+    style = {
+        "padding": UI_TOGGLE_PADDING,
+        "fontSize": UI_TOGGLE_SIZE,
+        "cursor": "pointer",
+        "border": f"{UI_TOGGLE_BORDER}px solid {COLORS['button_border']}",
+        "borderRadius": radius,
+        "backgroundColor": (COLORS["button_bg"] if is_active else COLORS["button_bg_inactive"]),
+        "fontWeight": "600" if is_active else "normal",
+        "color": UI_TOGGLE_COLOR_ACTIVE if is_active else UI_TOGGLE_COLOR_INACTIVE,
+        "transition": "background-color 0.12s ease, color 0.12s ease",
+        "whiteSpace": "nowrap",
+    }
+    if position != "right":
+        style["borderRight"] = "none"
+    return style
+
+
+def divider():
+    return html.Div(
+        style={
+            "width": "1px",
+            "alignSelf": "stretch",
+            "backgroundColor": COLORS["button_border"],
+            "opacity": "0.35",
+            "margin": "0 4px",
+        }
+    )
 
 
 def control_panel(children):
@@ -1243,177 +1213,132 @@ def control_panel(children):
             "gap": UI_PANEL_GAP,
             "padding": UI_PANEL_PADDING,
             "backgroundColor": COLORS["panel_bg"],
-            "borderRadius": UI_PANEL_BORDER_RADIUS,
+            "borderRadius": UI_PANEL_RADIUS,
             "marginBottom": UI_PANEL_MARGIN_BOTTOM,
-            "boxShadow": UI_PANEL_BOX_SHADOW,
+            "boxShadow": UI_PANEL_SHADOW,
             "flexWrap": "wrap",
         },
     )
 
 
-def build_layout(seq_id_l, dist_th_l, has_pruned_tree, has_strand=False, initial_prune=True):
-    """
-    Build the application layout.
+def build_layout(seq_ids, dist_ths, has_pruned, has_strand=False, initial_prune=True):
+    dmin = dist_ths[0] if dist_ths else 0.0
+    dmax = dist_ths[-1] if dist_ths else 0.0
 
-    Args:
-        seq_id_l: List of sequence IDs
-        dist_th_l: List of distance thresholds
-        has_pruned_tree: Whether a pruned tree is available
-        initial_prune: Initial state for prune toggle (True = start with pruned view)
-    """
-    dmin = dist_th_l[0] if dist_th_l else 0.0
-    dmax = dist_th_l[-1] if dist_th_l else 0.0
     return html.Div(
         [
-            dcc.Store(id="y-range-store", data=None),
-            dcc.Store(id="x-range-store", data=None),
+            # ── Stores ──────────────────────────────────────────────────────
+            dcc.Store(id="y-range-store"),
+            dcc.Store(id="x-range-store"),
             dcc.Store(id="tree-view-store", data="phylogeny"),
-            dcc.Store(id="prune-store", data=initial_prune if has_pruned_tree else False),
-            dcc.Store(id="strand-store", data="+"),
+            dcc.Store(id="prune-store", data=initial_prune if has_pruned else False),
+            dcc.Store(id="strand-store", data="both"),
             dcc.Store(id="mode-store", data="focus"),
             dcc.Download(id="download-data"),
             dcc.Download(id="download-plot"),
+            # ── Control panel ────────────────────────────────────────────────
             control_panel(
                 [
-                    # ── Query navigator ───────────────────────────────────────
+                    # Query navigator: ◀ [dropdown] ▶
                     html.Div(
                         [
                             control_label("Query:"),
                             html.Button(
-                                "◀",
-                                id="prev-query-btn",
-                                n_clicks=0,
-                                style={
-                                    "padding": UI_NAV_PADDING,
-                                    "fontSize": UI_NAV_FONT_SIZE,
-                                    "cursor": "pointer",
-                                    "border": f"{UI_NAV_BORDER_WIDTH}px solid {COLORS['button_border']}",
-                                    "borderRadius": "4px 0 0 4px",
-                                    "backgroundColor": COLORS["button_bg"],
-                                },
+                                "◀", id="prev-query-btn", n_clicks=0, style=nav_button_style("left")
                             ),
                             dcc.Dropdown(
                                 id="query-dropdown",
-                                options=[{"label": q, "value": q} for q in seq_id_l],
-                                value=seq_id_l[0] if seq_id_l else None,
+                                options=[{"label": q, "value": q} for q in seq_ids],
+                                value=seq_ids[0] if seq_ids else None,
+                                clearable=False,
                                 style={"width": UI_QUERY_DROPDOWN_WIDTH},
                             ),
                             html.Button(
                                 "▶",
                                 id="next-query-btn",
                                 n_clicks=0,
-                                style={
-                                    "padding": UI_NAV_PADDING,
-                                    "fontSize": UI_NAV_FONT_SIZE,
-                                    "cursor": "pointer",
-                                    "border": f"{UI_NAV_BORDER_WIDTH}px solid {COLORS['button_border']}",
-                                    "borderRadius": "0 4px 4px 0",
-                                    "backgroundColor": COLORS["button_bg"],
-                                },
+                                style=nav_button_style("right"),
                             ),
                         ],
                         style={"display": "flex", "alignItems": "center", "gap": 0},
                     ),
-                    # ── Vertical divider ─────────────────────────────────────
-                    html.Div(
-                        style={
-                            "width": "1px",
-                            "alignSelf": "stretch",
-                            "backgroundColor": COLORS["button_border"],
-                            "opacity": "0.35",
-                            "margin": "0 4px",
-                        }
-                    ),
-                    # ── Distance slider + focus/overlap mode ──────────────────
+                    divider(),
+                    # Distance controls: slider + focus/overlap mode toggle
                     html.Div(
                         [
                             control_label("Distance:"),
-                            # Focus mode: single Slider (select exactly one threshold)
                             html.Div(
                                 dcc.Slider(
                                     id="dist-slider-focus",
                                     min=dmin,
                                     max=dmax,
                                     step=None,
-                                    marks=create_slider_marks(dist_th_l),
-                                    value=dist_th_l[0] if dist_th_l else dmin,
-                                    tooltip={"placement": "bottom", "always_visible": False},
+                                    marks=make_slider_marks(dist_ths),
+                                    value=dist_ths[0] if dist_ths else dmin,
+                                    tooltip={"placement": "bottom", "always_visible": True},
                                     updatemode="mouseup",
+                                    included=False,
+                                    className="focus-slider",
                                 ),
-                                id="dist-slider-focus-wrapper",
+                                id="slider-focus-wrap",
                                 style={"minWidth": UI_SLIDER_MIN_WIDTH, "flexShrink": 1},
                             ),
-                            # Overlap mode: RangeSlider (filter by range)
                             html.Div(
                                 dcc.RangeSlider(
                                     id="dist-slider-overlap",
                                     min=dmin,
                                     max=dmax,
                                     step=None,
-                                    marks=create_slider_marks(dist_th_l),
+                                    marks=make_slider_marks(dist_ths),
                                     value=[dmin, dmax],
                                     tooltip={"placement": "bottom", "always_visible": False},
                                     updatemode="mouseup",
                                     allowCross=False,
                                 ),
-                                id="dist-slider-overlap-wrapper",
+                                id="slider-overlap-wrap",
                                 style={
                                     "minWidth": UI_SLIDER_MIN_WIDTH,
                                     "flexShrink": 1,
                                     "display": "none",
                                 },
                             ),
-                            # focus | overlap toggle
                             html.Div(
                                 [
                                     html.Button(
                                         "focus",
                                         id="mode-focus-btn",
                                         n_clicks=0,
-                                        style=get_toggle_button_style(True, "left"),
+                                        style=toggle_style(True, "left"),
                                     ),
                                     html.Button(
                                         "overlap",
                                         id="mode-overlap-btn",
                                         n_clicks=0,
-                                        style=get_toggle_button_style(False, "right"),
+                                        style=toggle_style(False, "right"),
                                     ),
                                 ],
                                 style={"display": "flex", "marginLeft": 8},
                             ),
                         ],
-                        style={"display": "flex", "alignItems": "center", "gap": UI_SLIDER_GAP},
+                        style={"display": "flex", "alignItems": "center", "gap": 4},
                     ),
-                    # ── Vertical divider ─────────────────────────────────────
-                    html.Div(
-                        style={
-                            "width": "1px",
-                            "alignSelf": "stretch",
-                            "backgroundColor": COLORS["button_border"],
-                            "opacity": "0.35",
-                            "margin": "0 4px",
-                        }
-                    ),
-                    # ── Tree controls: view mode + scope ─────────────────────
-                    # Phylogeny/Cladogram and Pruned/Full are both tree-display
-                    # settings, so they share a single "Tree:" label.
+                    divider(),
+                    # Tree: phylogeny/cladogram + optional pruned/full
                     html.Div(
                         [
                             control_label("Tree:"),
-                            # view mode
                             html.Button(
                                 "phylogeny",
                                 id="phylogeny-btn",
                                 n_clicks=0,
-                                style=get_toggle_button_style(True, "left"),
+                                style=toggle_style(True, "left"),
                             ),
                             html.Button(
                                 "cladogram",
                                 id="cladogram-btn",
                                 n_clicks=0,
-                                style=get_toggle_button_style(False, "right"),
+                                style=toggle_style(False, "right"),
                             ),
-                            # scope (pruned / full) — only when pruned tree exists
                             (
                                 html.Div(
                                     [
@@ -1421,55 +1346,46 @@ def build_layout(seq_id_l, dist_th_l, has_pruned_tree, has_strand=False, initial
                                             "pruned",
                                             id="pruned-btn",
                                             n_clicks=0,
-                                            style=get_toggle_button_style(initial_prune, "left"),
+                                            style=toggle_style(initial_prune, "left"),
                                         ),
                                         html.Button(
                                             "full",
-                                            id="full-tree-btn",
+                                            id="full-btn",
                                             n_clicks=0,
-                                            style=get_toggle_button_style(
-                                                not initial_prune, "right"
-                                            ),
+                                            style=toggle_style(not initial_prune, "right"),
                                         ),
                                     ],
-                                    style={
-                                        "display": "flex" if has_pruned_tree else "none",
-                                        "marginLeft": 6,
-                                    },
+                                    style={"display": "flex", "marginLeft": 8},
                                 )
-                                if has_pruned_tree
+                                if has_pruned
                                 else html.Div()
                             ),
                         ],
                         style={"display": "flex", "alignItems": "center", "gap": 0},
                     ),
-                    # ── Strand toggle (only when STRAND column present) ────────
+                    # Strand toggle — only visible when strand data is present;
+                    # leading divider keeps separation correct whether visible or not
                     html.Div(
                         [
-                            # thin divider before strand group
-                            html.Div(
-                                style={
-                                    "width": "1px",
-                                    "alignSelf": "stretch",
-                                    "backgroundColor": COLORS["button_border"],
-                                    "opacity": "0.35",
-                                    "marginRight": 8,
-                                }
-                            ),
+                            divider(),
                             control_label("Strand:"),
                             html.Button(
                                 "+ (fw)",
                                 id="strand-fwd-btn",
                                 n_clicks=0,
-                                title="Forward strand",
-                                style=get_toggle_button_style(True, "left"),
+                                style=toggle_style(False, "left"),
+                            ),
+                            html.Button(
+                                "± (both)",
+                                id="strand-both-btn",
+                                n_clicks=0,
+                                style=toggle_style(True, "middle"),
                             ),
                             html.Button(
                                 "− (rc)",
                                 id="strand-rev-btn",
                                 n_clicks=0,
-                                title="Reverse complement strand",
-                                style=get_toggle_button_style(False, "right"),
+                                style=toggle_style(False, "right"),
                             ),
                         ],
                         style={
@@ -1478,17 +1394,8 @@ def build_layout(seq_id_l, dist_th_l, has_pruned_tree, has_strand=False, initial
                             "gap": 0,
                         },
                     ),
-                    # ── Vertical divider ─────────────────────────────────────
-                    html.Div(
-                        style={
-                            "width": "1px",
-                            "alignSelf": "stretch",
-                            "backgroundColor": COLORS["button_border"],
-                            "opacity": "0.35",
-                            "margin": "0 4px",
-                        }
-                    ),
-                    # ── Color scheme ──────────────────────────────────────────
+                    divider(),
+                    # Color scale
                     html.Div(
                         [
                             control_label("Color:"),
@@ -1499,118 +1406,84 @@ def build_layout(seq_id_l, dist_th_l, has_pruned_tree, has_strand=False, initial
                                     for cs in COLORSCALE_OPTIONS
                                 ],
                                 value=COLORSCALE_DEFAULT,
-                                style={"width": UI_COLORSCALE_DROPDOWN_WIDTH},
                                 clearable=False,
+                                style={"width": UI_COLORSCALE_DROPDOWN_WIDTH},
                             ),
                         ],
-                        style={"display": "flex", "alignItems": "center", "gap": UI_COLORSCALE_GAP},
+                        style={"display": "flex", "alignItems": "center", "gap": 4},
                     ),
-                    # ── Export (pushed to far right) ──────────────────────────
+                    # Export — pushed to the right with marginLeft: auto
                     html.Div(
                         [
-                            # vertical divider
-                            html.Div(
-                                style={
-                                    "width": "1px",
-                                    "alignSelf": "stretch",
-                                    "backgroundColor": COLORS["button_border"],
-                                    "opacity": "0.35",
-                                    "marginRight": 8,
-                                }
-                            ),
+                            divider(),
                             control_label("Export:"),
-                            # Data TSV
                             html.Button(
-                                "Data",
-                                id="export-btn",
-                                n_clicks=0,
-                                style={
-                                    "padding": "5px 10px",
-                                    "fontSize": 12,
-                                    "cursor": "pointer",
-                                    "border": f"2px solid {COLORS['button_border']}",
-                                    "borderRadius": 4,
-                                    "backgroundColor": COLORS["button_bg"],
-                                    "fontWeight": "bold",
-                                    "color": COLORS["button_text"],
-                                    "marginRight": 8,
-                                },
+                                "Data", id="export-btn", n_clicks=0, style=export_button_style()
                             ),
-                            # PDF export with W / H dimensions
                             html.Span(
-                                "W", style={"fontSize": 11, "marginRight": 2, "color": "#555"}
+                                "W",
+                                style={
+                                    "fontSize": UI_EXPORT_FONT_SIZE - 1,
+                                    "marginLeft": 6,
+                                    "marginRight": 2,
+                                    "color": "#888",
+                                },
                             ),
                             dcc.Input(
                                 id="export-width",
                                 type="number",
-                                value=1600,
+                                value=UI_EXPORT_W_DEFAULT,
                                 min=100,
                                 max=10000,
                                 step=10,
-                                style={
-                                    "width": 60,
-                                    "fontSize": 12,
-                                    "padding": "3px 4px",
-                                    "border": f"2px solid {COLORS['button_border']}",
-                                    "borderRadius": 4,
-                                    "textAlign": "center",
-                                },
+                                style=export_input_style(UI_EXPORT_INPUT_WIDTH_W),
                             ),
                             html.Span(
                                 "H",
-                                style={"fontSize": 11, "margin": "0 2px 0 5px", "color": "#555"},
+                                style={
+                                    "fontSize": UI_EXPORT_FONT_SIZE - 1,
+                                    "margin": "0 2px 0 5px",
+                                    "color": "#888",
+                                },
                             ),
                             dcc.Input(
                                 id="export-height",
                                 type="number",
-                                value=900,
+                                value=UI_EXPORT_H_DEFAULT,
                                 min=100,
                                 max=10000,
                                 step=10,
-                                style={
-                                    "width": 52,
-                                    "fontSize": 12,
-                                    "padding": "3px 4px",
-                                    "border": f"2px solid {COLORS['button_border']}",
-                                    "borderRadius": 4,
-                                    "textAlign": "center",
-                                },
+                                style=export_input_style(UI_EXPORT_INPUT_WIDTH_H),
                             ),
                             html.Button(
                                 "PDF",
                                 id="export-pdf-btn",
                                 n_clicks=0,
-                                style={
-                                    "padding": "5px 10px",
-                                    "fontSize": 12,
-                                    "cursor": "pointer",
-                                    "border": f"2px solid {COLORS['button_border']}",
-                                    "borderRadius": 4,
-                                    "backgroundColor": COLORS["button_bg"],
-                                    "fontWeight": "bold",
-                                    "color": COLORS["button_text"],
-                                    "marginLeft": 5,
-                                },
+                                style={**export_button_style(), "marginLeft": 4},
                             ),
                         ],
                         style={
                             "display": "flex",
                             "alignItems": "center",
-                            "gap": 3,
+                            "gap": 4,
                             "marginLeft": "auto",
                         },
                     ),
                 ]
             ),
+            # ── Query title ──────────────────────────────────────────────────
             html.Div(
                 id="query-title",
                 style={
                     "textAlign": "center",
-                    "fontWeight": "bold",
-                    "fontSize": UI_TITLE_FONT_SIZE,
-                    "marginBottom": UI_TITLE_MARGIN_BOTTOM,
+                    "fontWeight": "700",
+                    "fontSize": UI_TITLE_SIZE,
+                    "color": UI_TITLE_COLOR,
+                    "marginBottom": 6,
+                    "letterSpacing": "0.02em",
                 },
             ),
+            # ── Main graph ───────────────────────────────────────────────────
             html.Div(
                 dcc.Graph(
                     id="graph",
@@ -1620,49 +1493,40 @@ def build_layout(seq_id_l, dist_th_l, has_pruned_tree, has_strand=False, initial
                         "displayModeBar": True,
                         "displaylogo": False,
                         "modeBarButtonsToRemove": ["lasso2d", "select2d"],
-                        "scrollZoom": False,
+                        "scrollZoom": True,
                     },
                 ),
                 style={"overflowY": "auto", "height": UI_CONTAINER_HEIGHT},
             ),
         ],
-        style={"fontFamily": FIG_FONT_FAMILY, "padding": UI_APP_PADDING},
+        style={"fontFamily": FIG_FONT, "padding": "6px 10px"},
     )
 
 
-def extract_y_range(relayout):
-    """Extract y-axis range from relayoutData. Returns no_update if y was not changed."""
+def extract_ranges(relayout):
+    """Extract y and x ranges from relayoutData."""
     if not relayout:
-        return no_update
-    if any(key.endswith(".autorange") for key in relayout):
-        return None
+        return no_update, no_update
+
+    if any(k.endswith(".autorange") for k in relayout):
+        return None, None
+
+    # Y range
     if "yaxis.range[0]" in relayout and "yaxis.range[1]" in relayout:
-        return [relayout["yaxis.range[0]"], relayout["yaxis.range[1]"]]
-    if "yaxis.range" in relayout:
-        return relayout["yaxis.range"]
-    return no_update
+        y = [relayout["yaxis.range[0]"], relayout["yaxis.range[1]"]]
+    elif "yaxis.range" in relayout:
+        y = relayout["yaxis.range"]
+    else:
+        y = no_update
 
+    # X range (check both panel positions)
+    for key in ("xaxis2", "xaxis4"):
+        if f"{key}.range[0]" in relayout and f"{key}.range[1]" in relayout:
+            return y, [relayout[f"{key}.range[0]"], relayout[f"{key}.range[1]"]]
+        if f"{key}.range" in relayout:
+            return y, relayout[f"{key}.range"]
 
-def extract_x_range(relayout):
-    """Extract x-axis range from relayoutData. Returns no_update if x was not changed."""
-    if not relayout:
-        return no_update
-    if any(key.endswith(".autorange") for key in relayout):
-        return None
-
-    # Check interval panel (xaxis2) first
-    if "xaxis2.range[0]" in relayout and "xaxis2.range[1]" in relayout:
-        return [relayout["xaxis2.range[0]"], relayout["xaxis2.range[1]"]]
-    if "xaxis2.range" in relayout:
-        return relayout["xaxis2.range"]
-
-    # Also check annotation panel (xaxis4) - they should be synchronized
-    if "xaxis4.range[0]" in relayout and "xaxis4.range[1]" in relayout:
-        return [relayout["xaxis4.range[0]"], relayout["xaxis4.range[1]"]]
-    if "xaxis4.range" in relayout:
-        return relayout["xaxis4.range"]
-
-    return no_update
+    return y, no_update
 
 
 # =============================================================================
@@ -1671,87 +1535,67 @@ def extract_x_range(relayout):
 
 
 def create_app(input_path, tree_path, query=None, annotation_path=None):
-    """
-    Create the Dash application with support for toggling between full and pruned trees.
-
-    Args:
-        input_path: Path to TSV data file
-        tree_path: Path to Newick tree file
-        query: Optional query leaf name for distance calculations
-        annotation_path: Optional path to annotation TSV file
-    """
+    """Create and configure the Dash application."""
     df = pd.read_csv(input_path, sep="\t")
+    df_annot = load_annotations(annotation_path)
 
-    # Load annotations if provided
-    df_annotations = load_annotations(annotation_path)
-
-    required_cols = {"QUERY_ID", "REF_ID", "INTERVAL_START", "INTERVAL_END", "SEQ_LEN", "DIST_TH"}
-    missing = required_cols - set(df.columns)
+    required = {"QUERY_ID", "REF_ID", "INTERVAL_START", "INTERVAL_END", "SEQ_LEN", "DIST_TH"}
+    missing = required - set(df.columns)
     if missing:
-        raise ValueError(f"Input file missing required columns: {', '.join(sorted(missing))}")
+        raise ValueError(f"Missing columns: {', '.join(sorted(missing))}")
 
     if not (df["INTERVAL_START"] != df["INTERVAL_END"]).any():
-        raise ValueError("Input file contains no intervals (all INTERVAL_START == INTERVAL_END).")
+        raise ValueError("No intervals found (all INTERVAL_START == INTERVAL_END)")
 
+    # Tree setup
     full_tree = load_tree(tree_path)
     leaf_names = {leaf.name for leaf in full_tree.iter_leaves()}
 
-    if query is not None and query not in leaf_names:
+    if query and query not in leaf_names:
         raise ValueError(
-            f"Query '{query}' not found in tree. "
-            f"Available leaves ({len(leaf_names)}): {', '.join(sorted(leaf_names)[:10])}..."
+            f"Query '{query}' not found. Available: {', '.join(sorted(leaf_names)[:10])}..."
         )
 
-    retained_l = get_retained_leaves(df)
-    has_pruned_tree = len(retained_l) > 0  # and len(retained_l) < len(leaf_names)
-    pruned_tree = prune_tree(full_tree, retained_l) if has_pruned_tree else None
-    if pruned_tree is not None:
-        pruned_tree.ladderize()
+    retained = get_retained_leaves(df)
+    has_pruned = len(retained) > 0
+    pruned_tree = prune_tree(full_tree, retained) if has_pruned else None
 
-    def compute_tree_data(tree, query):
-        """Compute layouts, tip order, and distances for a tree."""
-        query_distances = None
-        leaf_distances = None
-        if query:
-            query_distances = compute_path_distances(tree, query)
-            leaf_distances = {
-                leaf.name: query_distances[leaf]
-                for leaf in tree.iter_leaves()
-                if leaf in query_distances
-            }
-
-        phylo_layout = compute_tree_layout(tree, "phylogeny", query_distances)
-        clado_layout = compute_tree_layout(tree, "cladogram", query_distances)
-        _, tip_order, _ = phylo_layout
-
+    def tree_data_for(t, q):
+        distances = compute_path_distances(t, q) if q else None
+        leaf_dist = (
+            {l.name: distances[l] for l in t.iter_leaves() if l in (distances or {})}
+            if distances
+            else None
+        )
+        phylo = compute_tree_layout(t, "phylogeny", distances)
+        clado = compute_tree_layout(t, "cladogram", distances)
         return {
-            "phylo_layout": phylo_layout,
-            "clado_layout": clado_layout,
-            "tip_order": tip_order,
-            "leaf_distances": leaf_distances,
+            "phylo_layout": phylo,
+            "clado_layout": clado,
+            "tip_order": phylo[1],
+            "leaf_distances": leaf_dist,
         }
 
-    full_tree_data = compute_tree_data(full_tree, query)
-    pruned_tree_data = compute_tree_data(pruned_tree, query) if has_pruned_tree else None
+    full_data = tree_data_for(full_tree, query)
+    pruned_data = tree_data_for(pruned_tree, query) if has_pruned else full_data
 
-    full_df = add_tip_order(df, full_tree_data["tip_order"])
-    pruned_df = add_tip_order(df, pruned_tree_data["tip_order"]) if has_pruned_tree else full_df
+    full_df = add_tip_order(df, full_data["tip_order"])
+    pruned_df = add_tip_order(df, pruned_data["tip_order"]) if has_pruned else full_df
 
-    dist_th_l = tuple(get_distance_thresholds(df))
-    if not dist_th_l:
-        raise ValueError("No distance thresholds found in data.")
+    dist_ths = tuple(get_distance_thresholds(df))
+    if not dist_ths:
+        raise ValueError("No distance thresholds in data.")
 
-    seq_id_l = get_sequence_identifiers(df)
+    seq_ids = get_sequence_identifiers(df)
     has_strand = "STRAND" in df.columns
 
-    obtain_filtered_full = make_cached_filter(full_df)
-    obtain_filtered_pruned = (
-        make_cached_filter(pruned_df) if has_pruned_tree else obtain_filtered_full
-    )
+    filter_full = make_cached_filter(full_df)
+    filter_pruned = make_cached_filter(pruned_df) if has_pruned else filter_full
 
     app = Dash(__name__)
-    app.layout = build_layout(seq_id_l, dist_th_l, has_pruned_tree, has_strand=has_strand)
+    app.layout = build_layout(seq_ids, dist_ths, has_pruned, has_strand=has_strand)
 
+    # ---- Navigation callbacks ----
     @app.callback(
         Output("query-dropdown", "value"),
         Input("prev-query-btn", "n_clicks"),
@@ -1759,149 +1603,161 @@ def create_app(input_path, tree_path, query=None, annotation_path=None):
         State("query-dropdown", "value"),
         prevent_initial_call=True,
     )
-    def navigate_query(prev_clicks, next_clicks, current):
-        """Cycle through queries with prev/next buttons."""
-        if current is None or not seq_id_l:
+    def navigate_query(prev, next_, current):
+        if current is None or not seq_ids:
             return no_update
-        idx = seq_id_l.index(current) if current in seq_id_l else 0
+        idx = seq_ids.index(current) if current in seq_ids else 0
         if ctx.triggered_id == "prev-query-btn":
-            idx = (idx - 1) % len(seq_id_l)
-        elif ctx.triggered_id == "next-query-btn":
-            idx = (idx + 1) % len(seq_id_l)
-        return seq_id_l[idx]
+            idx = (idx - 1) % len(seq_ids)
+        else:
+            idx = (idx + 1) % len(seq_ids)
+        return seq_ids[idx]
 
     @app.callback(Output("query-title", "children"), Input("query-dropdown", "value"))
-    def update_query_title(seq_id):
+    def update_title(seq_id):
         if seq_id is None:
             return ""
-        idx = seq_id_l.index(seq_id) if seq_id in seq_id_l else 0
-        return f"{seq_id}  ({idx + 1}/{len(seq_id_l)})"
+        idx = seq_ids.index(seq_id) if seq_id in seq_ids else 0
+        return f"{seq_id}  ({idx + 1}/{len(seq_ids)})"
 
-    @app.callback(
+    # ---- Range stores (clientside for zero-latency zoom/pan/scroll) ----
+    app.clientside_callback(
+        """
+        function(relayoutData) {
+            var no_update = window.dash_clientside.no_update;
+            if (!relayoutData) return [no_update, no_update];
+
+            var keys = Object.keys(relayoutData);
+
+            // Double-click / autorange reset → clear both stores
+            if (keys.some(function(k) { return k.endsWith('.autorange'); })) {
+                return [null, null];
+            }
+
+            // Y range (shared axis is always yaxis)
+            var y = no_update;
+            if ('yaxis.range[0]' in relayoutData && 'yaxis.range[1]' in relayoutData) {
+                y = [relayoutData['yaxis.range[0]'], relayoutData['yaxis.range[1]']];
+            } else if ('yaxis.range' in relayoutData) {
+                y = relayoutData['yaxis.range'];
+            }
+
+            // X range — check both possible axis positions (1-col vs 2-col layout)
+            var xaxes = ['xaxis2', 'xaxis4'];
+            for (var i = 0; i < xaxes.length; i++) {
+                var key = xaxes[i];
+                if ((key + '.range[0]') in relayoutData && (key + '.range[1]') in relayoutData) {
+                    return [y, [relayoutData[key + '.range[0]'], relayoutData[key + '.range[1]']]];
+                }
+                if ((key + '.range') in relayoutData) {
+                    return [y, relayoutData[key + '.range']];
+                }
+            }
+
+            return [y, no_update];
+        }
+        """,
         Output("y-range-store", "data"),
         Output("x-range-store", "data"),
         Input("graph", "relayoutData"),
-        prevent_initial_call=False,
     )
-    def update_view_stores(relayout):
-        return extract_y_range(relayout), extract_x_range(relayout)
 
+    # ---- Tree view toggle ----
     @app.callback(
         Output("tree-view-store", "data"),
         Input("phylogeny-btn", "n_clicks"),
         Input("cladogram-btn", "n_clicks"),
-        prevent_initial_call=False,
     )
-    def update_tree_view(phylogeny_clicks, cladogram_clicks):
-        """Handle tree view toggle buttons."""
-        if ctx.triggered_id == "phylogeny-btn":
-            return "phylogeny"
-        elif ctx.triggered_id == "cladogram-btn":
-            return "cladogram"
-        return "phylogeny"
+    def set_tree_view(phyl_clicks, clad_clicks):
+        return "phylogeny" if ctx.triggered_id != "cladogram-btn" else "cladogram"
 
     @app.callback(
         Output("phylogeny-btn", "style"),
         Output("cladogram-btn", "style"),
         Input("tree-view-store", "data"),
     )
-    def update_tree_view_button_styles(tree_view_mode):
-        """Update tree view button styles (phylogeny/cladogram)."""
-        return (
-            get_toggle_button_style(tree_view_mode == "phylogeny", "left"),
-            get_toggle_button_style(tree_view_mode == "cladogram", "right"),
-        )
+    def style_tree_view(mode):
+        return toggle_style(mode == "phylogeny", "left"), toggle_style(mode == "cladogram", "right")
 
-    # Add prune toggle callbacks only if pruned tree exists
-    if has_pruned_tree:
+    # ---- Prune toggle ----
+    if has_pruned:
 
         @app.callback(
             Output("prune-store", "data"),
             Output("y-range-store", "data", allow_duplicate=True),
             Output("x-range-store", "data", allow_duplicate=True),
             Input("pruned-btn", "n_clicks"),
-            Input("full-tree-btn", "n_clicks"),
+            Input("full-btn", "n_clicks"),
             prevent_initial_call=True,
         )
-        def toggle_prune(pruned_clicks, full_clicks):
-            """Handle prune/full tree toggle and reset view."""
+        def toggle_prune(pruned, full):
             if ctx.triggered_id == "pruned-btn":
                 return True, None, None
-            elif ctx.triggered_id == "full-tree-btn":
-                return False, None, None
-            return no_update, no_update, no_update
+            return False, None, None
 
         @app.callback(
-            Output("pruned-btn", "style"),
-            Output("full-tree-btn", "style"),
-            Input("prune-store", "data"),
+            Output("pruned-btn", "style"), Output("full-btn", "style"), Input("prune-store", "data")
         )
-        def update_prune_button_styles(is_pruned):
-            """Update prune button styles."""
-            return (
-                get_toggle_button_style(is_pruned, "left"),
-                get_toggle_button_style(not is_pruned, "right"),
-            )
+        def style_prune(is_pruned):
+            return toggle_style(is_pruned, "left"), toggle_style(not is_pruned, "right")
 
+    # ---- Strand toggle ----
     @app.callback(
         Output("strand-store", "data"),
         Output("y-range-store", "data", allow_duplicate=True),
         Output("x-range-store", "data", allow_duplicate=True),
         Input("strand-fwd-btn", "n_clicks"),
+        Input("strand-both-btn", "n_clicks"),
         Input("strand-rev-btn", "n_clicks"),
         prevent_initial_call=True,
     )
-    def toggle_strand(fwd_clicks, rev_clicks):
-        """Toggle between forward (+) and reverse-complement (−) strand; reset view."""
+    def toggle_strand(fwd, both, rev):
         if ctx.triggered_id == "strand-fwd-btn":
             return "+", None, None
-        elif ctx.triggered_id == "strand-rev-btn":
-            return "-", None, None
-        return no_update, no_update, no_update
+        elif ctx.triggered_id == "strand-both-btn":
+            return "both", None, None
+        return "-", None, None
 
     @app.callback(
         Output("strand-fwd-btn", "style"),
+        Output("strand-both-btn", "style"),
         Output("strand-rev-btn", "style"),
         Input("strand-store", "data"),
     )
-    def update_strand_button_styles(strand):
-        """Update strand button styles to reflect active strand."""
+    def style_strand(strand):
         return (
-            get_toggle_button_style(strand == "+", "left"),
-            get_toggle_button_style(strand == "-", "right"),
+            toggle_style(strand == "+", "left"),
+            toggle_style(strand == "both", "middle"),
+            toggle_style(strand == "-", "right"),
         )
 
+    # ---- Mode (focus/overlap) toggle ----
     @app.callback(
         Output("mode-store", "data"),
         Input("mode-focus-btn", "n_clicks"),
         Input("mode-overlap-btn", "n_clicks"),
-        prevent_initial_call=False,
     )
-    def update_mode(focus_clicks, overlap_clicks):
-        """Toggle between focus (single threshold) and overlap (range) mode."""
-        if ctx.triggered_id == "mode-overlap-btn":
-            return "overlap"
-        return "focus"  # default
+    def set_mode(focus, overlap):
+        return "overlap" if ctx.triggered_id == "mode-overlap-btn" else "focus"
 
     @app.callback(
         Output("mode-focus-btn", "style"),
         Output("mode-overlap-btn", "style"),
-        Output("dist-slider-focus-wrapper", "style"),
-        Output("dist-slider-overlap-wrapper", "style"),
+        Output("slider-focus-wrap", "style"),
+        Output("slider-overlap-wrap", "style"),
         Input("mode-store", "data"),
     )
-    def update_mode_ui(mode):
-        """Sync button styles and slider visibility with current mode."""
+    def style_mode(mode):
         is_focus = mode == "focus"
-        slider_w = {"minWidth": UI_SLIDER_MIN_WIDTH, "flexShrink": 1}
-        hidden = {**slider_w, "display": "none"}
+        base = {"minWidth": UI_SLIDER_MIN_WIDTH, "flexShrink": 1}
         return (
-            get_toggle_button_style(is_focus, "left"),
-            get_toggle_button_style(not is_focus, "right"),
-            slider_w if is_focus else hidden,
-            slider_w if not is_focus else hidden,
+            toggle_style(is_focus, "left"),
+            toggle_style(not is_focus, "right"),
+            base if is_focus else {**base, "display": "none"},
+            base if not is_focus else {**base, "display": "none"},
         )
 
+    # ---- Main figure update ----
     @app.callback(
         Output("graph", "figure"),
         Input("query-dropdown", "value"),
@@ -1913,102 +1769,82 @@ def create_app(input_path, tree_path, query=None, annotation_path=None):
         Input("x-range-store", "data"),
         Input("tree-view-store", "data"),
         Input("strand-store", "data"),
-        Input("prune-store", "data") if has_pruned_tree else State("prune-store", "data"),
+        Input("prune-store", "data") if has_pruned else State("prune-store", "data"),
     )
     def update_figure(
-        seq_id,
-        focus_val,
-        overlap_val,
-        mode,
-        colorscheme,
-        y_range,
-        x_range,
-        tree_view_mode,
-        strand,
-        is_pruned,
+        seq_id, focus_val, overlap_val, mode, scheme, y_range, x_range, tree_mode, strand, is_pruned
     ):
-        """Update the figure based on all current settings."""
         if seq_id is None:
             return go.Figure()
 
-        # Select the appropriate tree data based on prune state
-        if has_pruned_tree and not is_pruned:
-            current_data = full_tree_data
-            obtain_filtered = obtain_filtered_full
+        # Select tree data
+        if has_pruned and not is_pruned:
+            cur_data = full_data
+            do_filter = filter_full
         else:
-            current_data = pruned_tree_data if has_pruned_tree else full_tree_data
-            obtain_filtered = obtain_filtered_pruned if has_pruned_tree else obtain_filtered_full
+            cur_data = pruned_data if has_pruned else full_data
+            do_filter = filter_pruned if has_pruned else filter_full
 
-        tip_order = current_data["tip_order"]
-        leaf_distances = current_data["leaf_distances"]
-        phylo_layout = current_data["phylo_layout"]
-        clado_layout = current_data["clado_layout"]
+        tip_order = cur_data["tip_order"]
+        leaf_dist = cur_data["leaf_distances"]
 
-        # Resolve dist_lo / dist_hi from the active slider
+        # Resolve distance thresholds
         if mode == "focus":
-            # Single threshold — show only intervals at that exact distance
-            dist_val = nearest_value(
-                focus_val if focus_val is not None else dist_th_l[0], dist_th_l
-            )
-            dist_lo = dist_val
-            dist_hi = dist_val
+            d = nearest_value(focus_val if focus_val is not None else dist_ths[0], dist_ths)
+            d_lo = d_hi = d
         else:
-            # Range — overlap all thresholds within [lo, hi]
             if isinstance(overlap_val, (list, tuple)) and len(overlap_val) == 2:
-                dist_lo = nearest_value(overlap_val[0], dist_th_l)
-                dist_hi = nearest_value(overlap_val[1], dist_th_l)
+                d_lo = nearest_value(overlap_val[0], dist_ths)
+                d_hi = nearest_value(overlap_val[1], dist_ths)
             else:
-                dist_lo = dist_th_l[0]
-                dist_hi = dist_th_l[-1]
+                d_lo, d_hi = dist_ths[0], dist_ths[-1]
 
-        active_strand = strand if has_strand else None
-        df_filtered = obtain_filtered(seq_id, tuple(tip_order), dist_hi, dist_lo, active_strand)
-        bin_edges, colors = get_binned_colors(dist_th_l, colorscheme)
+        strand_val = strand if has_strand and strand != "both" else None
+        df_filt = do_filter(seq_id, tuple(tip_order), d_hi, d_lo, strand_val)
+        bin_edges, colors = get_binned_colors(dist_ths, scheme)
 
-        # Calculate bounds and line width
-        n_tips = len(tip_order)
-        seq_len = get_seq_len(df_filtered)
-        if seq_len is None or seq_len <= 0:
+        # Sequence length
+        seq_len = get_seq_len(df_filt)
+        if not seq_len or seq_len <= 0:
             seq_len = get_seq_len(
-                obtain_filtered(seq_id, tuple(tip_order), dist_th_l[-1], dist_th_l[0], None)
+                do_filter(seq_id, tuple(tip_order), dist_ths[-1], dist_ths[0], None)
             )
-        if seq_len is None or seq_len <= 0:
+        if not seq_len or seq_len <= 0:
             return go.Figure()
 
+        n_tips = len(tip_order)
+
+        # Enforce zoom constraints
         if y_range is not None:
             y_range = enforce_min_span(y_range, ZOOM_MIN_Y_SPAN, bounds=(0, n_tips - 1))
         if x_range is not None:
             x_range = enforce_min_span(x_range, min(ZOOM_MIN_X_SPAN, seq_len), bounds=(0, seq_len))
 
-        x_range_limits = [-AXIS_X_PAD, seq_len + AXIS_X_PAD]
-        y_range_limits = [-AXIS_Y_PAD, n_tips - 1 + AXIS_Y_PAD]
-        interval_lw = scaled_interval_width(y_range, n_tips)
-        tree_lw = scaled_tree_width(y_range, n_tips)
+        x_limits = [-AXIS_X_PAD, seq_len + AXIS_X_PAD]
+        y_limits = [-AXIS_Y_PAD, n_tips - 1 + AXIS_Y_PAD]
 
-        if tree_view_mode == "cladogram":
-            tree_data, _, layout_xy = clado_layout
-        else:
-            tree_data, _, layout_xy = phylo_layout
+        layout = cur_data["clado_layout"] if tree_mode == "cladogram" else cur_data["phylo_layout"]
 
         return build_figure(
-            tree_data,
+            layout[0],
             tip_order,
-            layout_xy,
-            df_filtered,
+            layout[2],
+            df_filt,
             bin_edges,
             colors,
-            df_annotations=df_annotations,
+            df_annotations=df_annot,
             query_id=seq_id,
-            interval_linewidth=interval_lw,
-            tree_linewidth=tree_lw,
+            interval_lw=scaled_interval_width(y_range, n_tips),
+            tree_lw=scaled_tree_width(y_range, n_tips),
             uirevision="query",
             y_range=y_range,
             x_range=x_range,
-            x_range_limits=x_range_limits,
-            y_range_limits=y_range_limits,
-            leaf_distances=leaf_distances,
+            x_limits=x_limits,
+            y_limits=y_limits,
+            leaf_distances=leaf_dist,
         )
 
+    # ---- Data export ----
     @app.callback(
         Output("download-data", "data"),
         Input("export-btn", "n_clicks"),
@@ -2022,80 +1858,64 @@ def create_app(input_path, tree_path, query=None, annotation_path=None):
         State("strand-store", "data"),
         prevent_initial_call=True,
     )
-    def export_visible_data(
-        n_clicks, seq_id, focus_val, overlap_val, mode, y_range, x_range, is_pruned, strand
-    ):
-        """Export currently visible data (genomes and intervals in view)."""
+    def export_data(n, seq_id, focus_val, overlap_val, mode, y_rng, x_rng, is_pruned, strand):
         if seq_id is None:
             return no_update
 
-        if has_pruned_tree and not is_pruned:
-            current_data = full_tree_data
-            obtain_filtered = obtain_filtered_full
+        if has_pruned and not is_pruned:
+            cur_data = full_data
+            do_filter = filter_full
         else:
-            current_data = pruned_tree_data if has_pruned_tree else full_tree_data
-            obtain_filtered = obtain_filtered_pruned if has_pruned_tree else obtain_filtered_full
+            cur_data = pruned_data if has_pruned else full_data
+            do_filter = filter_pruned if has_pruned else filter_full
 
-        tip_order = current_data["tip_order"]
-
-        # Resolve thresholds the same way as update_figure
         if mode == "focus":
-            dist_val = nearest_value(
-                focus_val if focus_val is not None else dist_th_l[0], dist_th_l
-            )
-            dist_lo = dist_hi = dist_val
+            d = nearest_value(focus_val if focus_val is not None else dist_ths[0], dist_ths)
+            d_lo = d_hi = d
         else:
             if isinstance(overlap_val, (list, tuple)) and len(overlap_val) == 2:
-                dist_lo = nearest_value(overlap_val[0], dist_th_l)
-                dist_hi = nearest_value(overlap_val[1], dist_th_l)
+                d_lo = nearest_value(overlap_val[0], dist_ths)
+                d_hi = nearest_value(overlap_val[1], dist_ths)
             else:
-                dist_lo = dist_th_l[0]
-                dist_hi = dist_th_l[-1]
+                d_lo, d_hi = dist_ths[0], dist_ths[-1]
 
-        active_strand = strand if has_strand else None
-        df_filtered = obtain_filtered(seq_id, tuple(tip_order), dist_hi, dist_lo, active_strand)
+        df_exp = do_filter(
+            seq_id, tuple(cur_data["tip_order"]), d_hi, d_lo, strand if has_strand else None
+        )
 
-        # Determine visible genomes (y-axis)
-        if y_range is None:
-            y_min, y_max = 0, len(tip_order) - 1
-            visible_indices = list(range(len(tip_order)))
+        # Visible genomes
+        if y_rng is None:
+            y_min, y_max = 0, len(cur_data["tip_order"]) - 1
         else:
-            y_min, y_max = sorted(y_range)
-            y_min = max(0, int(np.floor(y_min)))
-            y_max = min(len(tip_order) - 1, int(np.ceil(y_max)))
-            visible_indices = list(range(y_min, y_max + 1))
+            y_min = max(0, int(np.floor(min(y_rng))))
+            y_max = min(len(cur_data["tip_order"]) - 1, int(np.ceil(max(y_rng))))
 
-        visible_genomes = [tip_order[i] for i in visible_indices]
-        df_export = df_filtered[df_filtered["REF_ID"].isin(visible_genomes)].copy()
+        visible = cur_data["tip_order"][y_min : y_max + 1]
+        df_exp = df_exp[df_exp["REF_ID"].isin(visible)].copy()
 
-        # Determine visible x-range
-        if x_range is None:
-            seq_len = get_seq_len(df_filtered)
-            if seq_len is None:
-                seq_len = get_seq_len(
-                    obtain_filtered(seq_id, tuple(tip_order), dist_th_l[-1], dist_th_l[0], None)
-                )
-            x_min, x_max = 0, seq_len if seq_len else 0
+        # Visible x-range
+        if x_rng is None:
+            seq_len = get_seq_len(df_exp) or get_seq_len(
+                do_filter(seq_id, tuple(cur_data["tip_order"]), dist_ths[-1], dist_ths[0], None)
+            )
+            x_min, x_max = 0, seq_len or 0
         else:
-            x_min, x_max = sorted(x_range)
-            x_min = int(np.floor(x_min))
-            x_max = int(np.ceil(x_max))
+            x_min = int(np.floor(min(x_rng)))
+            x_max = int(np.ceil(max(x_rng)))
 
-        df_export = df_export[
-            (df_export["INTERVAL_END"] >= x_min) & (df_export["INTERVAL_START"] <= x_max)
+        df_exp = df_exp[
+            (df_exp["INTERVAL_END"] >= x_min) & (df_exp["INTERVAL_START"] <= x_max)
         ].copy()
 
-        df_export["y_order"] = df_export["REF_ID"].map(
-            {name: i for i, name in enumerate(tip_order)}
-        )
-        df_export = df_export.sort_values(["y_order", "INTERVAL_START"])
-        df_export = df_export.drop(columns=["y_order", "y"])
+        ref_to_y = {n: i for i, n in enumerate(cur_data["tip_order"])}
+        df_exp["y_order"] = df_exp["REF_ID"].map(ref_to_y)
+        df_exp = df_exp.sort_values(["y_order", "INTERVAL_START"]).drop(columns=["y_order", "y"])
 
-        tsv_content = df_export.to_csv(sep="\t", index=False)
-        strand_tag = f"_{strand}" if has_strand else ""
-        filename = f"{seq_id}{strand_tag}_y{y_min}-{y_max}_x{x_min}-{x_max}.tsv"
-        return dict(content=tsv_content, filename=filename)
+        tag = f"_{strand}" if has_strand else ""
+        filename = f"{seq_id}{tag}_y{y_min}-{y_max}_x{x_min}-{x_max}.tsv"
+        return dict(content=df_exp.to_csv(sep="\t", index=False), filename=filename)
 
+    # ---- PDF export ----
     @app.callback(
         Output("download-plot", "data"),
         Input("export-pdf-btn", "n_clicks"),
@@ -2105,19 +1925,12 @@ def create_app(input_path, tree_path, query=None, annotation_path=None):
         State("export-height", "value"),
         prevent_initial_call=True,
     )
-    def export_plot(pdf_clicks, figure, seq_id, width, height):
-        """Export the current plot view as PDF.
-
-        Scattergl (WebGL) traces render blank in static image export,
-        so we convert them to regular Scatter before calling pio.to_image.
-        """
+    def export_pdf(n, figure, seq_id, width, height):
         if figure is None:
             return no_update
-        w = int(width) if width else 1600
-        h = int(height) if height else 900
+        w, h = int(width) if width else 1600, int(height) if height else 900
         fig = go.Figure(figure)
-        # Scattergl (WebGL) traces render blank in kaleido's headless exporter.
-        # Rebuild the figure with Scattergl replaced by plain Scatter.
+        # Convert scattergl to scatter for PDF export
         new_traces = []
         for trace in fig.data:
             td = trace.to_plotly_json()
@@ -2126,28 +1939,61 @@ def create_app(input_path, tree_path, query=None, annotation_path=None):
             new_traces.append(td)
         export_fig = go.Figure(data=new_traces, layout=fig.layout)
         img_bytes = pio.to_image(export_fig, format="pdf", width=w, height=h, scale=2)
-        encoded = base64.b64encode(img_bytes).decode()
-        name = seq_id if seq_id else "plot"
-        return dict(content=encoded, filename=f"{name}.pdf", base64=True)
+        name = seq_id or "plot"
+        return dict(
+            content=base64.b64encode(img_bytes).decode(), filename=f"{name}.pdf", base64=True
+        )
 
     return app
 
 
+# =============================================================================
+# ENTRY POINT
+# =============================================================================
+
+
 def parse_args():
-    p = argparse.ArgumentParser(description=None)
-    p.add_argument("--input", "-i", required=True, help="Path to TSV data")
-    p.add_argument("--tree", "-t", required=True, help="Path to Newick tree")
-    p.add_argument("--query", "-q", default=None, help="Query leaf name for distance calculations")
-    p.add_argument(
-        "--annotation", "-a", default=None, help="Path to annotation TSV file (optional)"
+    try:
+        version = importlib.metadata.version("gidiff-plot")
+    except importlib.metadata.PackageNotFoundError:
+        version = "dev"
+
+    p = argparse.ArgumentParser(
+        prog="gidiff-plot",
+        description="GIDiff — Interactive interval & phylogeny visualization",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    p.add_argument("--port", "-p", type=int, default=8080, help="Port (default: 8080)")
-    p.add_argument("--host", default="127.0.0.1", help="Host address (default: 127.0.0.1)")
-    p.add_argument("--debug", action="store_true", default=False, help="Debug mode")
+    p.add_argument(
+        "--input",
+        "-i",
+        required=True,
+        help="Path to TSV data file (QUERY_ID, REF_ID, INTERVAL_START, …)",
+    )
+    p.add_argument("--tree", "-t", required=True, help="Path to Newick tree file")
+    p.add_argument(
+        "--query", "-q", default=None, help="Default query leaf name (first sequence if omitted)"
+    )
+    p.add_argument(
+        "--annotation", "-a", default=None, help="Annotation file: GFF3, GTF, or custom TSV"
+    )
+    p.add_argument("--port", "-p", type=int, default=8080, help="Port to serve on")
+    p.add_argument(
+        "--host", default="127.0.0.1", help="Host to bind to (use 0.0.0.0 to expose on LAN)"
+    )
+    p.add_argument("--open", action="store_true", help="Open browser automatically after startup")
+    p.add_argument("--debug", action="store_true", help="Enable Dash debug/hot-reload mode")
+    p.add_argument("--version", action="version", version=f"%(prog)s {version}")
     return p.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
     app = create_app(args.input, args.tree, query=args.query, annotation_path=args.annotation)
+
+    url = f"http://{args.host}:{args.port}"
+    if args.open:
+        import threading
+
+        threading.Timer(1.2, lambda: webbrowser.open(url)).start()
+
     app.run(debug=args.debug, host=args.host, port=args.port)

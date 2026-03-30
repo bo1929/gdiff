@@ -1,5 +1,4 @@
 # gidiff
-
 gidiff is a k-mer-based tool for identifying genomic intervals in query sequences where the local k-mer distance to a reference differs significantly from the background.
 It builds an LSH-based sketch of a reference genome, then scans each query sequence to detect contiguous intervals whose k-mer profile is closer (or further) to the reference than expected by chance, using a log-likelihood ratio tested with a chi-squared threshold.
 
@@ -101,3 +100,32 @@ Prints the name, build date, k-mer length, window length, LSH parameters, subsam
 | `--num-threads` | `1` | Number of threads for parallel sketch processing. |
 
 When exactly 8 distance thresholds are provided via `-d`, gidiff uses AVX-512 SIMD to evaluate all 8 thresholds simultaneously in a single pass over the query.
+
+## Interactive Visualization
+
+The `plot.py` script creates an interactive Dash/Plotly web application for visualizing genomic intervals and phylogenetic trees.
+
+### Basic Usage
+```bash
+python plotx.py --input <TSV_DATA> --tree <NEWICK_TREE> --query <QUERY_NAME>
+```
+
+### With Gene Annotations
+Add a gene annotation panel below the interval visualization:
+```bash
+python plotx.py \
+  --input <TSV_DATA> \
+  --tree <NEWICK_TREE> \
+  --annotation <ANNOTATION_TSV> \
+  --query <QUERY_NAME>
+```
+
+### Options
+- `--input`, `-i`: Path to TSV data file (required)
+- `--tree`, `-t`: Path to Newick tree file (required)
+- `--query`, `-q`: Query leaf name for distance calculations (optional)
+- `--annotation`, `-a`: Path to annotation TSV file (optional)
+- `--port`, `-p`: Port number (default: 8080)
+- `--host`: Host address (default: 127.0.0.1)
+- `--debug`: Enable debug mode
+>>>>>>> 1aac9c6 (updated plotting to add gtf/gff annotations)
