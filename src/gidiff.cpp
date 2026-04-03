@@ -40,7 +40,8 @@ void MapSC::write_header()
   if (enum_only) {
     (*output_stream) << "QUERY_ID\tSEQ_LEN\tINTERVAL_START\tINTERVAL_END\tSTRAND\tREF_ID\tDIST_TH\n";
   } else {
-    (*output_stream) << "QUERY_ID\tSEQ_LEN\tINTERVAL_START\tINTERVAL_END\tSTRAND\tREF_ID\tDIST\tMASK\n";
+    (*output_stream)
+      << "QUERY_ID\tSEQ_LEN\tINTERVAL_START\tINTERVAL_END\tSTRAND\tREF_ID\tDIST\tMASK\tSIGN\tDIST_CONTIG\tDIST_GENOME\n";
   }
 }
 

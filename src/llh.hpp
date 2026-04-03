@@ -85,7 +85,7 @@ public:
     }
   }
 
-  void set_counts(uint64_t* v_r, uint64_t u_r)
+  void set_counts(const uint64_t* v_r, uint64_t u_r)
   {
     v = v_r;
     u = u_r;
@@ -217,7 +217,7 @@ private:
     return (fd * gpd - gd * fpd) / (fd * fd);
   }
 
-  uint64_t* v = nullptr;
+  const uint64_t* v = nullptr;
   uint64_t u = 0;
   T sign;
   T fdc_u;

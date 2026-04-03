@@ -2,7 +2,6 @@
 #include <boost/math/tools/minima.hpp>
 
 #define EPS 1e-10
-#define MAXHD 32
 
 // TODO: Further optimize, and polish.
 // TODO: A better output format with a header? For both modes...
@@ -55,12 +54,12 @@ void DIM<T>::aggregate_mer(uint32_t hdist_min, uint64_t i)
 {
   // i is the bin index; multiple k-mers in the same bin accumulate here.
   if (hdist_min <= hdist_th) {
-    merhit_count++;
+    t_q++;
     if (!enum_only) hdisthist_v[(i + 1) * (hdist_th + 1) + hdist_min]++;
     add_to(sdc_v[i], llhf->get_sdc(hdist_min));
     add_to(fdc_v[i], llhf->get_fdc(hdist_min));
   } else {
-    mermiss_count++;
+    u_q++;
     add_to(sdc_v[i], llhf->get_sdc());
     add_to(fdc_v[i], llhf->get_fdc());
   }
@@ -95,6 +94,27 @@ void DIM<T>::compute_prefhistsum()
       hdisthist_v[(i + 1) * W + d] += hdisthist_v[i * W + d];
     }
   }
+}
+
+template<typename T>
+void DIM<T>::extract_histogram(uint64_t a, uint64_t b, uint64_t bin_shift, vec<uint64_t>& v, uint64_t& u, uint64_t& t) const
+{
+  const uint32_t W = hdist_th + 1;
+  v.assign(MAXHD + 1, 0);
+  const simde__mmask8 mask = static_cast<simde__mmask8>((1u << W) - 1);
+  const simde__m512i vb = simde_mm512_maskz_loadu_epi64(mask, &hdisthist_v[b * W]);
+  const simde__m512i va = simde_mm512_maskz_loadu_epi64(mask, &hdisthist_v[a * W]);
+  const simde__m512i vd = simde_mm512_sub_epi64(vb, va);
+  simde_mm512_storeu_si512(v.data(), vd);
+  const simde__m256i lo = simde_mm512_castsi512_si256(vd);
+  const simde__m256i hi = simde_mm512_extracti64x4_epi64(vd, 1);
+  const simde__m256i s4 = simde_mm256_add_epi64(lo, hi);
+  const simde__m128i s4_lo = simde_mm256_castsi256_si128(s4);
+  const simde__m128i s4_hi = simde_mm256_extracti128_si256(s4, 1);
+  const simde__m128i s2 = simde_mm_add_epi64(s4_lo, s4_hi);
+  t = simde_mm_extract_epi64(s2, 0) + simde_mm_extract_epi64(s2, 1);
+  const uint64_t total_nmers = std::min(b << bin_shift, nmers) - (a << bin_shift);
+  u = total_nmers - t;
 }
 
 template<typename T>
@@ -340,6 +360,10 @@ QIE<T>::QIE(sketch_sptr_t sketch, lshf_sptr_t lshf, const vec<str>& seq_batch, c
   const uint64_t u64m = std::numeric_limits<uint64_t>::max();
   mask_lr = ((u64m >> (64 - k)) << 32) + ((u64m << 32) >> (64 - k));
   mask_bp = u64m >> ((32 - k) * 2);
+  if (!params.enum_only) {
+    v_acc_fw.assign(MAXHD + 1, 0);
+    v_acc_rc.assign(MAXHD + 1, 0);
+  }
 }
 
 template<typename T>
@@ -381,8 +405,8 @@ void QIE<T>::map_sequences(std::ostream& sout, const str& rid)
       for (size_t i = 0; i < WIDTH; ++i) {
         /* dim_fw.extract_intervals_sx(std::min(tau_bins, nbins) - 1, i); */
         /* dim_rc.extract_intervals_sx(std::min(tau_bins, nbins) - 1, i); */
-        dim_fw.extract_intervals_mx(std::min(tau_bins, nbins) - 1);
-        dim_rc.extract_intervals_mx(std::min(tau_bins, nbins) - 1);
+        dim_fw.extract_intervals_mx(std::min(tau_bins, nbins) - 1, i);
+        dim_rc.extract_intervals_mx(std::min(tau_bins, nbins) - 1, i);
         dim_fw.expand_intervals(chisq, i);
         dim_rc.expand_intervals(chisq, i);
       }
@@ -401,11 +425,55 @@ void QIE<T>::map_sequences(std::ostream& sout, const str& rid)
     } else {
       dim_fw.compute_prefhistsum();
       dim_rc.compute_prefhistsum();
-      dim_fw.map_contiguous_segments(bin_shift);
-      dim_rc.map_contiguous_segments(bin_shift);
-      report_segments(sout, rid, dim_fw, false);
-      report_segments(sout, rid, dim_rc, true);
+
+      // Build positive/negative threshold masks from sign
+      uint8_t pos_bv = 0, neg_bv = 0;
+      const T sign = llhf->get_sign();
+      if constexpr (std::is_same_v<T, double>) {
+        if (sign > 0)
+          pos_bv = 1;
+        else
+          neg_bv = 1;
+      } else {
+        for (size_t ti = 0; ti < WIDTH; ++ti) {
+          if (sign[ti] > 0)
+            pos_bv |= static_cast<uint8_t>(1u << ti);
+          else
+            neg_bv |= static_cast<uint8_t>(1u << ti);
+        }
+      }
+
+      dim_fw.map_contiguous_segments(bin_shift, pos_bv, '<');
+      dim_fw.map_contiguous_segments(bin_shift, neg_bv, '>');
+      dim_rc.map_contiguous_segments(bin_shift, pos_bv, '<');
+      dim_rc.map_contiguous_segments(bin_shift, neg_bv, '>');
+
+      // Extract per-query histograms, compute per-query MLE, accumulate into file-level
+      vec<uint64_t> v_q_fw, v_q_rc;
+      uint64_t u_q_fw = 0, u_q_rc = 0, t_q_fw = 0, t_q_rc = 0;
+      dim_fw.extract_histogram(0, nbins, bin_shift, v_q_fw, u_q_fw, t_q_fw);
+      dim_rc.extract_histogram(0, nbins, bin_shift, v_q_rc, u_q_rc, t_q_rc);
+      const double d_q_fw = compute_mle_dist(v_q_fw, u_q_fw);
+      const double d_q_rc = compute_mle_dist(v_q_rc, u_q_rc);
+
+      collect_segments(dim_fw, false, d_q_fw);
+      collect_segments(dim_rc, true, d_q_rc);
+
+      simde__m512i vc_fw = simde_mm512_loadu_si512(v_acc_fw.data());
+      simde__m512i vc_rc = simde_mm512_loadu_si512(v_acc_rc.data());
+      vc_fw = simde_mm512_add_epi64(vc_fw, simde_mm512_loadu_si512(v_q_fw.data()));
+      vc_rc = simde_mm512_add_epi64(vc_rc, simde_mm512_loadu_si512(v_q_rc.data()));
+      simde_mm512_storeu_si512(v_acc_fw.data(), vc_fw);
+      simde_mm512_storeu_si512(v_acc_rc.data(), vc_rc);
+      u_acc_fw += u_q_fw;
+      u_acc_rc += u_q_rc;
     }
+  }
+
+  if (!params.enum_only) {
+    d_acc_fw = compute_mle_dist(v_acc_fw, u_acc_fw);
+    d_acc_rc = compute_mle_dist(v_acc_rc, u_acc_rc);
+    emit_segments(sout, rid);
   }
 }
 
@@ -490,8 +558,8 @@ void QIE<T>::report_intervals(std::ostream& sout, const str& rid, DIM<T>& dim, b
   uint64_t i = 0;
   interval_t ab = dim.get_interval(i, idx);
   while (ab.first < nbins) {
-    const uint64_t a = ab.first << bin_shift;
-    const uint64_t b = std::min(((ab.second + 1) << bin_shift) - 1, enmers - 1) + k - 1;
+    const uint64_t a = (ab.first <= 1) ? 1 : ((ab.first << bin_shift) + 1);
+    const uint64_t b = std::min(((ab.second + 1) << bin_shift), enmers) + k - 1;
     sout << WRITE_CINTERVAL(qid_batch[bix], n, a, b, strand, rid, dist_th) << '\n';
     ab = dim.get_interval(++i, idx);
   }
@@ -510,34 +578,19 @@ inline double QIE<T>::at(T v, const size_t idx)
 template<typename T>
 double DIM<T>::estimate_interval_distance(uint64_t a, uint64_t b, uint64_t bin_shift)
 {
-  const uint32_t W = hdist_th + 1;
-  const uint64_t pa = a * W;
-  const uint64_t pb = (b + 1) * W;
-
-  assert(W <= MAXHD+1);
-  uint64_t hist[MAXHD+1];
-  uint64_t total_merhit = 0;
-  for (uint32_t d = 0; d < W; ++d) {
-    hist[d] = hdisthist_v[pb + d] - hdisthist_v[pa + d];
-    total_merhit += hist[d];
-  }
-
-  if (total_merhit == 0) {
-    return std::numeric_limits<double>::quiet_NaN();
-  }
-
-  // TODO: this is not necessarily correct, Ns must be taken care of?
-  const uint64_t total_nmers = std::min((b + 1) << bin_shift, nmers) - (a << bin_shift);
-
-  llhf->set_counts(hist, total_nmers - total_merhit);
+  vec<uint64_t> v;
+  uint64_t u, t;
+  extract_histogram(a, b + 1, bin_shift, v, u, t);
+  llhf->set_counts(v.data(), u);
   auto f = [&](const double& D) { return (*llhf)(D); };
-  return boost::math::tools::brent_find_minima(f, EPS, 0.5, 16).first;
+  const double ub = (t == 0) ? 0.75 + EPS : 0.5;
+  return boost::math::tools::brent_find_minima(f, EPS, ub, 24).first;
 }
 
 template<typename T>
-void DIM<T>::map_contiguous_segments(uint64_t bin_shift)
+void DIM<T>::map_contiguous_segments(uint64_t bin_shift, uint8_t th_bv, char sign)
 {
-  segments_v.clear();
+  if (th_bv == 0) return;
 
   // k-way merge of already-sorted per-threshold breakpoints into a unique sorted list.
   // Each interval [first, second] contributes two breakpoints: first and second+1.
@@ -545,28 +598,30 @@ void DIM<T>::map_contiguous_segments(uint64_t bin_shift)
   vec<uint64_t> pts;
   arr<size_t, WIDTH> ix = {};
   for (;;) {
-    uint64_t smallest = std::numeric_limits<uint64_t>::max();
+    uint64_t smin = std::numeric_limits<uint64_t>::max();
     for (size_t ti = 0; ti < WIDTH; ++ti) {
+      if (!(th_bv & (1u << ti))) continue;
       const auto& ev = eintervals_v[ti];
       if (ix[ti] < ev.size() * 2) {
         const uint64_t v = (ix[ti] & 1) ? ev[ix[ti] >> 1].second + 1 : ev[ix[ti] >> 1].first;
-        if (v < smallest) smallest = v;
+        if (v < smin) smin = v;
       }
     }
-    if (smallest == std::numeric_limits<uint64_t>::max()) break;
-    if (pts.empty() || pts.back() != smallest) pts.push_back(smallest);
+    if (smin == std::numeric_limits<uint64_t>::max()) break;
+    if (pts.empty() || pts.back() != smin) pts.push_back(smin);
     for (size_t ti = 0; ti < WIDTH; ++ti) {
+      if (!(th_bv & (1u << ti))) continue;
       const auto& ev = eintervals_v[ti];
       while (ix[ti] < ev.size() * 2) {
         const uint64_t v = (ix[ti] & 1) ? ev[ix[ti] >> 1].second + 1 : ev[ix[ti] >> 1].first;
-        if (v != smallest) break;
+        if (v != smin) break;
         ++ix[ti];
       }
     }
   }
   if (pts.size() < 2) return;
 
-  // Each consecutive pair of breakpoints defines an contiguos segment [a, b] where
+  // Each consecutive pair of breakpoints defines a contiguous segment [a, b] where
   // the set of thresholds satisfied is constant.
   arr<size_t, WIDTH> ti_ix = {};
   for (size_t pi = 0; pi + 1 < pts.size(); ++pi) {
@@ -574,6 +629,7 @@ void DIM<T>::map_contiguous_segments(uint64_t bin_shift)
     const uint64_t b = pts[pi + 1] - 1;
     uint8_t mask = 0;
     for (size_t ti = 0; ti < WIDTH; ++ti) {
+      if (!(th_bv & (1u << ti))) continue;
       // Advance past any interval whose right endpoint is before a.
       while (ti_ix[ti] < eintervals_v[ti].size() && eintervals_v[ti][ti_ix[ti]].second < a) {
         ++ti_ix[ti];
@@ -585,23 +641,47 @@ void DIM<T>::map_contiguous_segments(uint64_t bin_shift)
       }
     }
     if (mask == 0) continue;
-    segments_v.push_back({a, b, estimate_interval_distance(a, b, bin_shift), mask});
+    segments_v.push_back({a, b, estimate_interval_distance(a, b, bin_shift), mask, sign});
   }
 }
 
 template<typename T>
-void QIE<T>::report_segments(std::ostream& sout, const str& rid, const DIM<T>& dim, bool rc)
+double QIE<T>::compute_mle_dist(const vec<uint64_t>& v, uint64_t u)
 {
-  const str strand = rc ? "-" : "+";
+  uint64_t t = 0;
+  for (auto c : v)
+    t += c;
+  if (t == 0) return std::numeric_limits<double>::quiet_NaN();
+  llhf->set_counts(v.data(), u);
+  auto f = [&](const double& D) { return (*llhf)(D); };
+  return boost::math::tools::brent_find_minima(f, EPS, 0.5, 24).first;
+}
+
+template<typename T>
+void QIE<T>::collect_segments(const DIM<T>& dim, bool rc, double d_q)
+{
+  const char strand = rc ? '-' : '+';
   const uint64_t n = enmers + k - 1;
   const auto& segments_v = dim.get_segments();
 
   for (const auto& ab : segments_v) {
-    if (std::isnan(ab.d_llh)) continue;
-    const uint64_t a = ab.start << bin_shift;
-    const uint64_t b = std::min(((ab.end + 1) << bin_shift) - 1, enmers - 1) + k - 1;
-    // TODO: Revisit how we report (rc/fw and other nuances)?
-    sout << WRITE_SEGMENT(qid_batch[bix], n, a, b, strand, rid, ab.d_llh, static_cast<uint32_t>(ab.mask)) << '\n';
+    // if (std::isnan(ab.d_s)) continue;
+    const uint64_t a = (ab.start <= 1) ? 1 : ((ab.start << bin_shift) + 1);
+    const uint64_t b = std::min(((ab.end + 1) << bin_shift), enmers) + k - 1;
+    output_records.push_back({&qid_batch[bix], n, a, b, strand, ab.d_s, d_q, ab.mask, ab.sign});
+  }
+}
+
+template<typename T>
+void QIE<T>::emit_segments(std::ostream& sout, const str& rid) const
+{
+  const str strand_fw = "+";
+  const str strand_rc = "-";
+  for (const auto& r : output_records) {
+    const str& strand = (r.strand == '+') ? strand_fw : strand_rc;
+    const double d_acc = (r.strand == '+') ? d_acc_fw : d_acc_rc;
+    sout << WRITE_SEGMENT(*r.qid, r.n, r.a, r.b, strand, rid, r.d_s, static_cast<uint32_t>(r.mask), r.sign, r.d_q, d_acc)
+         << '\n';
   }
 }
 

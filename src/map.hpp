@@ -19,8 +19,19 @@ struct segment_t
 {
   uint64_t start;
   uint64_t end;
-  double d_llh;
+  double d_s;
   uint8_t mask; // bitmask: bit i set iff threshold i hits this segment
+  char sign;    // '<' for positive thresholds, '>' for negative thresholds
+};
+
+struct output_record_t
+{
+  const str* qid;
+  uint64_t n, a, b;
+  char strand;
+  double d_s, d_q;
+  uint8_t mask;
+  char sign;
 };
 
 template<typename T>
@@ -49,8 +60,9 @@ public:
   const vec<segment_t>& get_segments() const { return segments_v; }
   uint64_t get_nbins() const { return nbins; }
   uint64_t get_nmers() const { return nmers; }
-  void map_contiguous_segments(uint64_t bin_shift);
+  void map_contiguous_segments(uint64_t bin_shift, uint8_t th_bv, char sign);
   double estimate_interval_distance(uint64_t a, uint64_t b, uint64_t bin_shift);
+  void extract_histogram(uint64_t a, uint64_t b, uint64_t bin_shift, vec<uint64_t>& v, uint64_t& u, uint64_t& t) const;
   static inline void add_to(T& dest, const T& src)
   {
     if constexpr (std::is_same_v<T, double>) {
@@ -69,8 +81,8 @@ private:
   const uint32_t hdist_th;
   const uint64_t nbins; // number of bins
   const uint64_t nmers; // number of k-mers in query (for per-k-mer hdist tracking)
-  uint64_t merhit_count = 0;
-  uint64_t mermiss_count = 0;
+  uint64_t t_q = 0;
+  uint64_t u_q = 0;
   // T fdt; // To keep the total in case fw/rc decision is needed.
   // T sdt; // Not sure if this is needeed even for fw/rc decision.
   vec<uint64_t> hdisthist_v; // [(nbins+1) × (hdist_th+1)] row-major, row 0 = zeros, compute_prefhistsum() converts in-place
@@ -84,8 +96,6 @@ private:
   arr<vec<interval_t>, WIDTH> eintervals_v;
   vec<segment_t> segments_v;
   // arr<vec<double>, WIDTH> chisq_v;
-  double d_llh = std::numeric_limits<double>::quiet_NaN();
-  double v_llh = std::numeric_limits<double>::quiet_NaN();
 };
 
 template<typename T>
@@ -101,7 +111,9 @@ private:
   static inline double at(T v, size_t idx);
   void search_mers(const char* cseq, uint64_t len, DIM<T>& dim_fw, DIM<T>& dim_rc);
   void report_intervals(std::ostream& sout, const str& rid, DIM<T>& dim, bool rc, size_t idx = 0);
-  void report_segments(std::ostream& sout, const str& rid, const DIM<T>& dim, bool rc);
+  void collect_segments(const DIM<T>& dim, bool rc, double d_q);
+  void emit_segments(std::ostream& sout, const str& rid) const;
+  double compute_mle_dist(const vec<uint64_t>& v, uint64_t u);
 
   const sketch_sptr_t sketch;
   const lshf_sptr_t lshf;
@@ -124,12 +136,21 @@ private:
 
   const vec<str>& seq_batch;
   const vec<str>& qid_batch;
+
+  vec<uint64_t> v_acc_fw;
+  vec<uint64_t> v_acc_rc;
+  uint64_t u_acc_fw = 0;
+  uint64_t u_acc_rc = 0;
+  double d_acc_fw = std::numeric_limits<double>::quiet_NaN();
+  double d_acc_rc = std::numeric_limits<double>::quiet_NaN();
+  vec<output_record_t> output_records;
 };
 
 #define WRITE_CINTERVAL(qid, n, a, b, strand, rid, dist_th)                                                                 \
   qid << '\t' << n << '\t' << a << '\t' << b << '\t' << strand << '\t' << rid << '\t' << dist_th
 
-#define WRITE_SEGMENT(qid, n, a, b, strand, rid, dist, mask)                                                                \
-  qid << '\t' << n << '\t' << a << '\t' << b << '\t' << strand << '\t' << rid << '\t' << dist << '\t' << mask
+#define WRITE_SEGMENT(qid, n, a, b, strand, rid, dist, mask, sign, d_q, d_acc)                                              \
+  qid << '\t' << n << '\t' << a << '\t' << b << '\t' << strand << '\t' << rid << '\t' << dist << '\t' << mask << '\t'       \
+      << sign << '\t' << d_q << '\t' << d_acc
 
 #endif

@@ -12,6 +12,7 @@
 // #include "phmap.h"
 
 #define RWIDTH 8
+#define MAXHD 7
 
 template<typename T>
 class LLH;
