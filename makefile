@@ -12,7 +12,7 @@ ARCH := $(shell uname -m)
 COMPILER_ID := $(shell $(CXX) -v 2>&1 | grep -qi clang && echo clang || echo gcc)
 
 CXXFLAGS  = -std=c++17 -O3 -funroll-loops -flto
-CPPFLAGS  = -I vendor -I math/include -DBOOST_MATH_STANDALONE
+CPPFLAGS  = -I vendor -DBOOST_MATH_STANDALONE
 WFLAGS    = -Wall -Wextra -Wno-unused-result -Wno-unused-parameter
 LDFLAGS   =
 LDLIBS    = -lm -lz -lpthread
