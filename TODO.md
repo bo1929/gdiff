@@ -1,3 +1,14 @@
+
+// TODO: Further optimize, and polish.
+// TODO: A better output format with a header? For both modes...
+// TODO: If we will compute the distances, perhaps have an option to merge all overlapping intervals per distance.
+// TODO: Merge aggressively as per above reasons.
+// TODO: Something interesting with the second derivatives? Is the minimum second-derivative interval interesting?
+
+
+Make Windusrf write tests.
+Update the makefile for gamma and review.
+
 Output format!!!!! Not very clean. No header.
 The entire boundary issue is so confusing. Check it and make it make sense.
 ## TODOs

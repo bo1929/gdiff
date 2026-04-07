@@ -12,7 +12,6 @@
 // #include "phmap.h"
 
 #define RWIDTH 8
-#define MAXHD 7
 
 template<typename T>
 class LLH;
@@ -27,18 +26,18 @@ class SDHM;
 class SFHM;
 class Sketch;
 
-// typedef uint32_t inc_t; // This might be just OK...
-typedef uint64_t inc_t;
-typedef uint32_t enc_t;
-typedef std::string str;
-typedef std::stringstream strstream;
-typedef std::pair<uint64_t, uint64_t> interval_t;
-typedef std::shared_ptr<RSeq> rseq_sptr_t;
-typedef std::shared_ptr<QSeq> qseq_sptr_t;
-typedef std::shared_ptr<LSHF> lshf_sptr_t;
-typedef std::shared_ptr<SDHM> sdhm_sptr_t;
-typedef std::shared_ptr<SFHM> sfhm_sptr_t;
-typedef std::shared_ptr<Sketch> sketch_sptr_t;
+// using inc_t = uint32_t; // This might be just OK...
+using inc_t = uint64_t;
+using enc_t = uint32_t;
+using str = std::string;
+using strstream = std::stringstream;
+using interval_t = std::pair<uint64_t, uint64_t>;
+using rseq_sptr_t = std::shared_ptr<RSeq>;
+using qseq_sptr_t = std::shared_ptr<QSeq>;
+using lshf_sptr_t = std::shared_ptr<LSHF>;
+using sdhm_sptr_t = std::shared_ptr<SDHM>;
+using sfhm_sptr_t = std::shared_ptr<SFHM>;
+using sketch_sptr_t = std::shared_ptr<Sketch>;
 
 template<typename T, size_t WIDTH>
 using arr = std::array<T, WIDTH>;
@@ -62,13 +61,28 @@ struct hmer_t
 template<typename T>
 struct params_t
 {
-  size_t n;
-  T dist_th;
-  uint32_t hdist_th;
-  uint64_t tau;
-  double chisq;
-  uint64_t bin_shift;
+  size_t n;           // Number of distance thresholds given, also equals to WIDTH later
+  T dist_th;          // Distance threshold used for detection across varying scales
+  uint32_t hdist_th;  // Hamming distance threshold used for k-mer search
+  double chisq;       // Chi-square threshold in the statistical test for interval merging
+  uint64_t bin_shift; // Shift value for fast bin index calculation
+  uint64_t bin_size;  // Bin size in sites, equals to pow(2, bin_shift)
+  uint64_t tau;       // The minimum length threshold in sites
+  uint64_t tau_bin;   // The minimum length threshold in number of bins instead of sites
   bool enum_only;
+
+  params_t(size_t n, T dist_th, uint32_t hdist_th, uint64_t tau, double chisq, uint64_t bin_shift, bool enum_only)
+    : n(n)
+    , dist_th(dist_th)
+    , hdist_th(hdist_th)
+    , tau(tau)
+    , chisq(chisq)
+    , bin_shift(bin_shift)
+    , bin_size(uint64_t(1) << bin_shift)
+    , tau_bin((tau + (uint64_t(1) << bin_shift) - 1) >> bin_shift)
+    , enum_only(enum_only)
+  {
+  }
 };
 
 // struct alignas(64) cm512_t

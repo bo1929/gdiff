@@ -28,7 +28,7 @@ bool MapSC::validate_configuration()
       std::cerr << "One of the distance thresholds is too close to zero: " << dist_th[i] << std::endl;
     }
   }
-  if ((1 << bin_shift) > tau) {
+  if ((uint64_t(1) << bin_shift) > tau) {
     is_invalid = true;
     std::cerr << "The given bin size (2^b) is too large for the minimum length threshold, b: " << bin_shift << std::endl;
   }
@@ -74,8 +74,8 @@ void MapSC::map()
   }
   sketch_stream.close();
 
-  params_t<double> params_single = {dist_th.size(), dist_th.front(), hdist_th, tau, chisq, bin_shift, enum_only};
-  params_t<cm512_t> params_multiple = {dist_th.size(), {0}, hdist_th, tau, chisq, bin_shift, enum_only};
+  params_t<double> params_single(dist_th.size(), dist_th.front(), hdist_th, tau, chisq, bin_shift, enum_only);
+  params_t<cm512_t> params_multiple(dist_th.size(), {0}, hdist_th, tau, chisq, bin_shift, enum_only);
   std::copy(dist_th.begin(), dist_th.end(), params_multiple.dist_th.begin());
 
   // Per-sketch result buffers

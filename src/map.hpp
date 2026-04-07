@@ -1,28 +1,28 @@
-#ifndef _MAP_H
-#define _MAP_H
+#ifndef _MAP_HPP
+#define _MAP_HPP
 
-#include <unordered_map>
 #include <simde/x86/avx512.h>
+#include "gamma.hpp"
 #include "llh.hpp"
 #include "lshf.hpp"
 #include "rqseq.hpp"
 #include "sketch.hpp"
 
-static constexpr uint64_t NULL_SAMPLES_PER_LENGTH = 200;
-static constexpr uint64_t NULL_MIN_SAMPLES = 30;
-static constexpr std::array<double, 3> GAMMA_FIT_PROBS = {0.25, 0.50, 0.75};
-static constexpr double SUBSAMPLE_FACTOR = 1.0;
-static constexpr double GRID_GROWTH = 1.25;
+static constexpr double eps = 1e-10;
+static constexpr uint32_t hdist_bound = 7;
+static constexpr double grid_growth = 1.25;
+static constexpr double subsample_factor = 1.0;
+static constexpr uint64_t nsamples_per_length = 200;
 
-struct qrec_t
+template<typename T>
+class QIE;
+
+struct qstride_t
 {
   uint64_t nbins;
   uint64_t nmers;
   vec<uint64_t> hdisthist_v; // subsampled prefix-sum rows, flattened [(nbins/G + 1) × W]
 };
-
-template<typename T>
-class QIE;
 
 struct segment_t
 {
@@ -33,16 +33,40 @@ struct segment_t
   char sign;    // '<' for positive thresholds, '>' for negative thresholds
 };
 
-struct output_record_t
+struct record_t
 {
   uint64_t bix;
-  uint64_t n, a, b;
+  uint64_t L, a, b;
   uint64_t nbins_s;
   char strand;
   double d_s, d_q;
-  double percentile, fold;
+  double percentile = std::numeric_limits<double>::quiet_NaN();
+  double fold = std::numeric_limits<double>::quiet_NaN();
   uint8_t mask;
   char sign;
+
+  record_t(uint64_t bix,
+           uint64_t L,
+           uint64_t a,
+           uint64_t b,
+           uint64_t nbins_s,
+           char strand,
+           double d_s,
+           double d_q,
+           uint8_t mask,
+           char sign)
+    : bix(bix)
+    , L(L)
+    , a(a)
+    , b(b)
+    , nbins_s(nbins_s)
+    , strand(strand)
+    , d_s(d_s)
+    , d_q(d_q)
+    , mask(mask)
+    , sign(sign)
+  {
+  }
 };
 
 template<typename T>
@@ -51,9 +75,7 @@ class DIM
   static constexpr size_t WIDTH = std::is_same_v<T, double> ? 1 : RWIDTH;
 
 public:
-  DIM(llh_sptr_t<T> llhf, uint32_t hdist_th, uint64_t nbins, uint64_t nmers, bool enum_only = true);
-  // T get_fdt() const { return fdt; }
-  // T get_sdt() const { return sdt; }
+  DIM(const llh_sptr_t<T> llhf, const params_t<T>& params, uint64_t nbins, uint64_t nmers);
   static inline double at(T v, size_t idx);
   void release_accumulators() noexcept;
   void inclusive_scan();
@@ -71,42 +93,40 @@ public:
   const vec<segment_t>& get_segments() const { return segments_v; }
   uint64_t get_nbins() const { return nbins; }
   uint64_t get_nmers() const { return nmers; }
-  void map_contiguous_segments(uint64_t bin_shift, uint8_t th_bv, char sign);
-  double estimate_interval_distance(uint64_t a, uint64_t b, uint64_t bin_shift);
-  void extract_histogram(uint64_t a, uint64_t b, uint64_t bin_shift, vec<uint64_t>& v, uint64_t& u, uint64_t& t) const;
-  static inline void add_to(T& dest, const T& src)
+  void map_contiguous_segments(uint8_t th_bv, char sign);
+  double estimate_interval_distance(uint64_t a, uint64_t b);
+  void extract_histogram(uint64_t a, uint64_t b, vec<uint64_t>& v, uint64_t& u, uint64_t& t) const;
+  static inline void add_to(T& dest, const T& source)
   {
     if constexpr (std::is_same_v<T, double>) {
-      dest += src;
+      dest += source;
     } else {
       simde__m512d vd = simde_mm512_loadu_pd(dest.data());
-      simde__m512d vs = simde_mm512_loadu_pd(src.data());
+      simde__m512d vs = simde_mm512_loadu_pd(source.data());
       vd = simde_mm512_add_pd(vd, vs);
       simde_mm512_storeu_pd(dest.data(), vd);
     }
   }
 
 private:
-  const llh_sptr_t<T> llhf;
-  const bool enum_only;
-  const uint32_t hdist_th;
-  const uint64_t nbins; // number of bins
-  const uint64_t nmers; // number of k-mers in query (for per-k-mer hdist tracking)
-  uint64_t t_q = 0;
-  uint64_t u_q = 0;
-  // T fdt; // To keep the total in case fw/rc decision is needed.
-  // T sdt; // Not sure if this is needeed even for fw/rc decision.
-  vec<uint64_t> hdisthist_v; // [(nbins+1) × (hdist_th+1)] row-major, row 0 = zeros, compute_prefhistsum() converts in-place
+  const params_t<T>& params;
+  const llh_sptr_t<T> llhf;  // log-likelihood function for all calculations
+  const uint64_t nbins;      // number of bins
+  const uint64_t nmers;      // number of k-mers in query (for per-k-mer HD tracking)
+  uint64_t t_q = 0;          // total number of k-mers hits below hdist_th per query sequence
+  uint64_t u_q = 0;          // total number misses per query sequence
+  vec<uint64_t> hdisthist_v; // D[i][j] is the number of hits with HD=j, [(nbins+1) × (hdist_th+1)] row-major; D[0][j]=0
   vec<T> fdc_v;              // The f' contribution c_i of the k-mer (bin) starting at i
   vec<T> sdc_v;              // The f'' contribution s_i of the k-mer (bin) starting at i
   vec<T> fdps_v;             // C[i] = sum(c_0, ..., c_{i}), C[0] = 0 (length n) (shifted by 1 w.r.t. fdc_v)
   vec<T> sdps_v;             // S[i] = sum(s_0, ..., s_{i}), S[0] = 0 (length n) (shifted by 1 w.r.t. sdc_v)
   vec<T> fdpmax_v;           // H[i] = max(C_1, ..., C_{i}), H_0 = -inf, H_{n+1} = inf (length n+1)
   vec<T> fdsmin_v;           // L[i] = min(C_{i}, ..., C_n), L_0 = inf, L_{n+1}= -inf (length n+1)
-  arr<vec<interval_t>, WIDTH> rintervals_v;
-  arr<vec<interval_t>, WIDTH> eintervals_v;
-  vec<segment_t> segments_v;
-  // arr<vec<double>, WIDTH> chisq_v;
+  arr<vec<interval_t>, WIDTH> rintervals_v; // inital-raw intervals without any postprocessing; released after postprocessing
+  arr<vec<interval_t>, WIDTH>
+    eintervals_v; // final intervals after expansing and merging; used to compute segments or directly reported in enum-only mode
+  vec<segment_t>
+    segments_v; // segments computed from eintervals_v based on boundaries across different distance thresholds, constitutes the main output
 };
 
 template<typename T>
@@ -115,39 +135,38 @@ class QIE
   static constexpr size_t WIDTH = std::is_same_v<T, double> ? 1 : RWIDTH;
 
 public:
-  QIE(sketch_sptr_t sketch, lshf_sptr_t lshf, const vec<str>& seq_batch, const vec<str>& qid_batch, params_t<T> params);
+  QIE(const sketch_sptr_t sketch,
+      const lshf_sptr_t lshf,
+      const vec<str>& seq_batch,
+      const vec<str>& qid_batch,
+      const params_t<T>& params);
   void map_sequences(std::ostream& sout, const str& rid);
 
 private:
   static inline double at(T v, size_t idx);
+  double compute_mle_dist(const vec<uint64_t>& v, uint64_t u, uint64_t t);
   void search_mers(const char* cseq, uint64_t len, DIM<T>& dim_fw, DIM<T>& dim_rc);
-  void report_intervals(std::ostream& sout, const str& rid, DIM<T>& dim, bool rc, size_t idx = 0);
-  void collect_segments(const DIM<T>& dim, bool rc, double d_q);
-  void store_qrec(const DIM<T>& dim);
-  void build_length_grid();
+  void collect_segments(const DIM<T>& dim, double d_q, bool rc);
+  void save_qstride(const DIM<T>& dim);
   void fit_gamma_significance();
+  void sample_distances(uint64_t L, vec<double>& dists_v) const;
   void emit_segments(std::ostream& sout, const str& rid) const;
-  double compute_mle_dist(const vec<uint64_t>& v, uint64_t u);
+  void report_intervals(std::ostream& sout, const str& rid, DIM<T>& dim, bool rc, size_t idx = 0);
 
+  const params_t<T>& params;
   const sketch_sptr_t sketch;
   const lshf_sptr_t lshf;
   const uint64_t batch_size;
   const uint32_t k;
   const uint32_t h;
   const uint32_t m;
-  const params_t<T> params;
-  const uint64_t tau;
-  const uint64_t btau;
-  const uint64_t bin_shift;
-  const uint64_t bin_size;
-  const double chisq; // 3.841; // 95%
+  llh_sptr_t<T> llhf;
   uint64_t mask_bp;
   uint64_t mask_lr;
-  uint64_t onmers; // number of observed k-mers in current query (e.g., due to Ns)
-  uint64_t enmers; // number of expected k-mers in current query (= len - k + 1)
-  uint64_t nbins;  // number of bins  (= ceil(enmers / bin_len))
+  uint64_t onmers; // Number of observed k-mers in current query (e.g., due to Ns)
+  uint64_t enmers; // Number of expected k-mers in current query (= len - k + 1)
+  uint64_t nbins;  // Number of bins  (= ceil(enmers / bin_len))
   uint64_t bix;    // Index of the current query in the this batch
-  llh_sptr_t<T> llhf;
 
   const vec<str>& seq_batch;
   const vec<str>& qid_batch;
@@ -155,17 +174,19 @@ private:
   double d_acc = std::numeric_limits<double>::quiet_NaN();
   uint64_t u_acc = 0;
   vec<uint64_t> v_acc;
-  uint64_t gstride = 1;
-  vec<uint64_t> length_grid;
-  vec<qrec_t> qrecs;
-  vec<output_record_t> output_records;
+
+  uint64_t stride_len = 1;
+
+  vec<qstride_t> qstrides_v;
+  vec<record_t> records_v;
 };
 
-#define WRITE_CINTERVAL(qid, n, a, b, strand, rid, dist_th)                                                                 \
-  qid << '\t' << n << '\t' << a << '\t' << b << '\t' << strand << '\t' << rid << '\t' << dist_th
-
-#define WRITE_SEGMENT(qid, n, a, b, strand, rid, dist, mask, sign, d_q, d_acc, pctl, fold)                                  \
-  qid << '\t' << n << '\t' << a << '\t' << b << '\t' << strand << '\t' << rid << '\t' << dist << '\t' << mask << '\t'       \
-      << sign << '\t' << d_q << '\t' << d_acc << '\t' << pctl << '\t' << fold
+template<typename... Args>
+inline std::ostream& write_tsv(std::ostream& os, const Args&... args)
+{
+  size_t n = 0;
+  ((os << (n++ ? "\t" : "") << args), ...);
+  return os;
+}
 
 #endif

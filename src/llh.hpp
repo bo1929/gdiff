@@ -1,5 +1,5 @@
-#ifndef _LLH_H
-#define _LLH_H
+#ifndef _LLH_HPP
+#define _LLH_HPP
 
 #include <cmath>
 #include <cstdint>
@@ -101,6 +101,25 @@ public:
   const T get_fdc() const { return fdc_u; }
 
   T get_sign() const { return sign; }
+
+  std::pair<uint8_t, uint8_t> get_sign_bv() const
+  {
+    uint8_t pos_bv = 0, neg_bv = 0;
+    if constexpr (std::is_same_v<T, double>) {
+      if (sign > 0)
+        pos_bv = 1;
+      else
+        neg_bv = 1;
+    } else {
+      for (size_t ti = 0; ti < WIDTH; ++ti) {
+        if (sign[ti] > 0)
+          pos_bv |= static_cast<uint8_t>(1u << ti);
+        else
+          neg_bv |= static_cast<uint8_t>(1u << ti);
+      }
+    }
+    return {pos_bv, neg_bv};
+  }
 
   double prob_elude(uint32_t d) const
   {

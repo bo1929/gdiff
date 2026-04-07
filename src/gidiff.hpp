@@ -1,5 +1,5 @@
-#ifndef _GIDIFF_H
-#define _GIDIFF_H
+#ifndef _GIDIFF_HPP
+#define _GIDIFF_HPP
 
 #include <atomic>
 #include <chrono>

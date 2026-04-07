@@ -36,7 +36,4 @@ inline void check_fstream(const stream_t& stream, const std::string& msg, const 
   }
 }
 
-template void check_fstream<std::ifstream>(const std::ifstream&, const std::string&, const std::string&);
-template void check_fstream<std::ofstream>(const std::ofstream&, const std::string&, const std::string&);
-
 #endif
