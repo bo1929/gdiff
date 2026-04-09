@@ -3,7 +3,7 @@ MODE     ?= dynamic
 DEBUG    ?= no
 NATIVE   ?= no
 
-PROGRAM  = gidiff
+PROGRAM  = gdiff
 BDIR = build
 
 OS   := $(shell uname -s)
@@ -101,9 +101,9 @@ TBDIR    = $(BDIR)/test
 TSOURCES = $(wildcard $(TDIR)/*.cpp)
 TOBJECTS = $(patsubst $(TDIR)/%.cpp,$(TBDIR)/%.o,$(TSOURCES))
 TDEPENDS = $(TOBJECTS:.o=.d)
-# All project .o files except gidiff.o (which contains main())
-LIB_OBJECTS = $(filter-out $(BDIR)/gidiff.o,$(OBJECTS))
-TEST_BIN = $(BDIR)/test_gidiff
+# All project .o files except gdiff.o (which contains main())
+LIB_OBJECTS = $(filter-out $(BDIR)/gdiff.o,$(OBJECTS))
+TEST_BIN = $(BDIR)/test_gdiff
 
 # Rules
 .PHONY: all dynamic static debug clang tidy tidy-fix clean test-unit test-regression test

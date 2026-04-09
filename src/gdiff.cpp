@@ -1,4 +1,4 @@
-#include "gidiff.hpp"
+#include "gdiff.hpp"
 
 void BaseLSH::set_lshf() { lshf = std::make_shared<LSHF>(k, h, m); }
 
@@ -385,7 +385,7 @@ int main(int argc, char** argv)
   std::ios::sync_with_stdio(false);
   std::cin.tie(nullptr);
 
-  CLI::App app{"gidiff"};
+  CLI::App app{"gdiff"};
   app.set_help_flag("--help");
   app.fallthrough();
 

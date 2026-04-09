@@ -2855,13 +2855,13 @@ def create_app(
 
 def parse_args():
     try:
-        version = importlib.metadata.version("gidiff-plot")
+        version = importlib.metadata.version("gdiff-plot")
     except importlib.metadata.PackageNotFoundError:
         version = "dev"
 
     p = argparse.ArgumentParser(
-        prog="gidiff-plot",
-        description="GIDiff — Interactive interval & phylogeny visualization",
+        prog="gdiff-plot",
+        description="gdiff-plot — Interactive visualization of distance-based genome comparison results",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument(

@@ -11,10 +11,10 @@ static const std::string TEST_DIR = "test/";
 static const std::string GENOMES_DIR = TEST_DIR + "genomes/";
 static const std::string SKETCHES_DIR = TEST_DIR + "sketches/";
 
-// Check if the gidiff binary and test data exist
+// Check if the gdiff binary and test data exist
 static bool test_data_available()
 {
-  return std::filesystem::exists("gidiff") &&
+  return std::filesystem::exists("gdiff") &&
          std::filesystem::exists(GENOMES_DIR + "G000016665.fna.gz");
 }
 
@@ -35,7 +35,7 @@ TEST_CASE("end-to-end with real sketch and query" * doctest::skip(!test_data_ava
   if (!sketch_available(ref_name)) {
     // Create sketch directory
     std::filesystem::create_directories(SKETCHES_DIR);
-    std::string cmd = "./gidiff sketch -k 27 -w 31 -h 11 -m 2 -r 1 --frac -i " +
+    std::string cmd = "./gdiff sketch -k 27 -w 31 -h 11 -m 2 -r 1 --frac -i " +
                       GENOMES_DIR + ref_name + ".fna.gz -o " +
                       SKETCHES_DIR + ref_name + ".skc 2>/dev/null";
     int ret = std::system(cmd.c_str());
@@ -115,7 +115,7 @@ TEST_CASE("QIE with real data: known pair produces intervals" * doctest::skip(!t
 
   if (!sketch_available(ref_name)) {
     std::filesystem::create_directories(SKETCHES_DIR);
-    std::string cmd = "./gidiff sketch -k 27 -w 31 -h 11 -m 2 -r 1 --frac -i " +
+    std::string cmd = "./gdiff sketch -k 27 -w 31 -h 11 -m 2 -r 1 --frac -i " +
                       GENOMES_DIR + ref_name + ".fna.gz -o " +
                       SKETCHES_DIR + ref_name + ".skc 2>/dev/null";
     int ret = std::system(cmd.c_str());
@@ -162,7 +162,7 @@ TEST_CASE("QIE with multiple thresholds (cm512_t)" * doctest::skip(!test_data_av
 
   if (!sketch_available(ref_name)) {
     std::filesystem::create_directories(SKETCHES_DIR);
-    std::string cmd = "./gidiff sketch -k 27 -w 31 -h 11 -m 2 -r 1 --frac -i " +
+    std::string cmd = "./gdiff sketch -k 27 -w 31 -h 11 -m 2 -r 1 --frac -i " +
                       GENOMES_DIR + ref_name + ".fna.gz -o " +
                       SKETCHES_DIR + ref_name + ".skc 2>/dev/null";
     int ret = std::system(cmd.c_str());

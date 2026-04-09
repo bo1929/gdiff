@@ -7,7 +7,7 @@
 # Check if correct number of arguments provided
 if [ $# -ne 4 ]; then
     echo "Usage: $0 <fasta_file> <sequence_id> <start> <end>"
-    echo "Example: $0 genome.fasta chr1 1000 2000"
+    echo "Example: $0 genome.fasta seq_id 1000 2000"
     echo ""
     echo "Arguments:"
     echo "  fasta_file    : Input FASTA file"

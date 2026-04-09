@@ -1,5 +1,5 @@
-# gidiff
-gidiff is a k-mer-based tool for identifying genomic intervals in query sequences where the local k-mer distance to a reference differs significantly from the background.
+# gdiff
+gdiff is a k-mer-based tool for identifying genomic intervals in query sequences where the local k-mer distance to a reference differs significantly from the background.
 It builds an LSH-based sketch of a reference genome, then scans each query sequence to detect contiguous intervals whose k-mer profile is closer (or further) to the reference than expected by chance, using a log-likelihood ratio tested with a chi-squared threshold.
 
 ## Installation
@@ -9,27 +9,27 @@ It builds an LSH-based sketch of a reference genome, then scans each query seque
 Clone the repository with its submodules and compile with
 
 ```
-git clone --recurse-submodules -j8 https://github.com/bo1929/gidiff.git
-cd gidiff && make
+git clone --recurse-submodules -j8 https://github.com/bo1929/gdiff.git
+cd gdiff && make
 ```
 
-Run `./gidiff --help` to verify. You may then copy the binary to a directory on your `$PATH` (e.g., `cp ./gidiff ~/.local/bin`).
+Run `./gdiff --help` to verify. You may then copy the binary to a directory on your `$PATH` (e.g., `cp ./gdiff ~/.local/bin`).
 
 ## Quickstart
 
-gidiff operates in two stages: build a sketch from a reference sequence, then map query sequences against it to extract intervals.
+gdiff operates in two stages: build a sketch from a reference sequence, then map query sequences against it to extract intervals.
 
 ### 1. Building a sketch
 
 ```
-gidiff sketch -i reference.fasta -o reference.sketch
+gdiff sketch -i reference.fasta -o reference.sketch
 ```
 
 This uses default parameters (`k=27`, `w=33`, `h=11`, `m=2`, `r=1`).
 To tune the index:
 
 ```
-gidiff sketch -i reference.fasta -o reference.sketch -k 27 -w 33 -h 11 -m 2 -r 1
+gdiff sketch -i reference.fasta -o reference.sketch -k 27 -w 33 -h 11 -m 2 -r 1
 ```
 
 The sketch is saved as a binary file. Multiple sketches can later be merged (see below).
@@ -37,7 +37,7 @@ The sketch is saved as a binary file. Multiple sketches can later be merged (see
 ### 2. Mapping query sequences
 
 ```
-gidiff map -i reference.sketch -q query.fasta -d 0.05 -l 500 --num-threads 8 | tee intervals.tsv
+gdiff map -i reference.sketch -q query.fasta -d 0.05 -l 500 --num-threads 8 | tee intervals.tsv
 ```
 
 `-d` sets the distance threshold and `-l` sets the minimum interval length (in base pairs).
@@ -56,23 +56,23 @@ By default, output goes to stdout. Use `-o intervals.tsv` to write to a file ins
 
 ### 3. Merging sketches
 
-Multiple sketches built from different references can be merged into a single file, which gidiff will then process in parallel:
+Multiple sketches built from different references can be merged into a single file, which gdiff will then process in parallel:
 
 ```
-gidiff merge -i ref_A.sketch ref_B.sketch ref_C.sketch -o all_refs.sketch
+gdiff merge -i ref_A.sketch ref_B.sketch ref_C.sketch -o all_refs.sketch
 ```
 
 ### 4. Inspecting a sketch
 
 ```
-gidiff info -i reference.sketch
+gdiff info -i reference.sketch
 ```
 
 Prints the name, build date, k-mer length, window length, LSH parameters, subsampling rate (rho), and total k-mer count for each sketch in the file.
 
 ## Options
 
-### `gidiff sketch`
+### `gdiff sketch`
 
 | Option | Default | Description |
 |---|---|---|
@@ -85,7 +85,7 @@ Prints the name, build date, k-mer length, window length, LSH parameters, subsam
 | `-r, --residue-lsh` | `1` | Include k-mer x if `LSH(x) mod m == r`. |
 | `--frac / --no-frac` | `true` | Include k-mers with `LSH(x) mod m <= r`. |
 
-### `gidiff map`
+### `gdiff map`
 
 | Option | Default | Description |
 |---|---|---|
@@ -99,7 +99,7 @@ Prints the name, build date, k-mer length, window length, LSH parameters, subsam
 | `-b, --bin-shift` | `0` | Group consecutive k-mers into bins of size 2^b. |
 | `--num-threads` | `1` | Number of threads for parallel sketch processing. |
 
-When exactly 8 distance thresholds are provided via `-d`, gidiff uses AVX-512 SIMD to evaluate all 8 thresholds simultaneously in a single pass over the query.
+When exactly 8 distance thresholds are provided via `-d`, gdiff uses AVX-512 SIMD to evaluate all 8 thresholds simultaneously in a single pass over the query.
 
 ## Interactive Visualization
 

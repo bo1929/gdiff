@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# Regression test: runs gidiff sketch + map in both --enum-only and continuous modes,
+# Regression test: runs gdiff sketch + map in both --enum-only and continuous modes,
 # then compares output against ground truth in gt/.
 #   gt/*.enum.txt  — expected enum-only output
 #   gt/*.cont.txt  — expected continuous-mode output
@@ -10,10 +10,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
-GIDIFF="../gidiff"
+GDIFF="../gdiff"
 
-if [ ! -x "$GIDIFF" ]; then
-  echo "ERROR: gidiff binary not found at $GIDIFF"
+if [ ! -x "$GDIFF" ]; then
+  echo "ERROR: gdiff binary not found at $GDIFF"
   echo "Run 'make' first."
   exit 1
 fi
@@ -25,7 +25,7 @@ SKETCHING_OPTS="-k 27 -w 31 -h 11 -m 2 -r 1 --frac"
 echo "=== Phase 0: Sketching ==="
 rm -rf sketches && mkdir -p sketches
 while read -r name; do
-  "$GIDIFF" sketch $SKETCHING_OPTS -i "genomes/${name}.fna.gz" -o "sketches/${name}.skc" 2>/dev/null &
+  "$GDIFF" sketch $SKETCHING_OPTS -i "genomes/${name}.fna.gz" -o "sketches/${name}.skc" 2>/dev/null &
   while [ "$(jobs -rp | wc -l)" -ge "$NPROC" ]; do wait -n 2>/dev/null || true; done
 done < genome_names.txt
 wait
@@ -36,7 +36,7 @@ rm -rf est && mkdir -p est
 echo "=== Phase 1: enum-only regression ==="
 ENUM_OPTS="-d 0.10 -l 9900 --chisq 10000 --enum-only"
 while IFS=$'\t' read -r query ref; do
-  "$GIDIFF" map $ENUM_OPTS \
+  "$GDIFF" map $ENUM_OPTS \
     -i "sketches/${ref}.skc" \
     -q "genomes/${query}.fna.gz" \
     -o "est/query_${query}-ref_${ref}.enum.txt" 2>/dev/null &
@@ -78,7 +78,7 @@ fi
 echo "=== Phase 2: continuous regression ==="
 CONT_OPTS="-d 0.10 -l 9900 --chisq 33.00051"
 while IFS=$'\t' read -r query ref; do
-  "$GIDIFF" map $CONT_OPTS \
+  "$GDIFF" map $CONT_OPTS \
     -i "sketches/${ref}.skc" \
     -q "genomes/${query}.fna.gz" \
     -o "est/query_${query}-ref_${ref}.cont.txt" 2>/dev/null &

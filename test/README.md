@@ -8,7 +8,7 @@ Source files live in `unit/`. Built with [doctest](https://github.com/doctest/do
 make test            # build & run all tests
 ```
 
-The test binary `build/test_gidiff` links against all project objects except `gidiff.o` (main).
+The test binary `build/test_gdiff` links against all project objects except `gdiff.o` (main).
 
 ### Test files
 

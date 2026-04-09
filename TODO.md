@@ -19,7 +19,7 @@
 
 - **Output format**: Design a clean output format with a header for both modes.
 - **Interval merging**: Add option to merge overlapping intervals per distance; consider aggressive merging.
-- **Code review**: Review and polish `gidiff.cpp`/`gidiff.hpp` — improve messages, naming, and readability.
+- **Code review**: Review and polish `gdiff.cpp`/`gdiff.hpp` — improve messages, naming, and readability.
 - **Write tests**: Add automated tests for core functionality.
 
 ## Open Questions
@@ -68,7 +68,3 @@
 
 - **Distance vector model**: Given a per-segment distance vector and an ANI estimate for a genome, build a model to estimate a tree distance vector. Handle missing data. Constrain vectors. Possibly incorporate genome-wide distance embeddings.
 - **krepp distance per segment**: Use krepp to compute/validate per-segment distances.
-
-## Project Name Candidates
-
-digg, digit, dimes, dint, distil, drip, gdiff, gdip, gind, glint, grid, grind, mint, paint, pind, ping, pint, plint, point, rind
