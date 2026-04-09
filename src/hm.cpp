@@ -1,6 +1,6 @@
 #include "hm.hpp"
 
-SFHM::SFHM(sdhm_sptr_t source)
+SFHM::SFHM(const sdhm_sptr_t& source)
 {
   nkmers = source->nkmers;
   nrows = source->enc_vvec.size();
@@ -114,7 +114,7 @@ void SDHM::make_unique()
   }
 }
 
-void SDHM::fill_table(uint32_t nrows, rseq_sptr_t rs)
+void SDHM::fill_table(uint32_t nrows, const rseq_sptr_t& rs)
 {
   enc_vvec.resize(nrows);
   while (rs->read_next_seq()) {
@@ -127,4 +127,4 @@ void SDHM::fill_table(uint32_t nrows, rseq_sptr_t rs)
   make_unique();
 }
 
-uint64_t SDHM::get_nmers() { return nkmers; }
+uint64_t SDHM::get_nmers() const { return nkmers; }

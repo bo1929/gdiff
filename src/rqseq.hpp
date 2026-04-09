@@ -71,12 +71,12 @@ KSEQ_INIT(gzFile, gzread)
 class RSeq : public HandlerURL
 {
 public:
-  RSeq(str input, lshf_sptr_t lshf, uint8_t w, uint32_t r, bool frac);
+  RSeq(const str& input, const lshf_sptr_t& lshf, uint8_t w, uint32_t r, bool frac);
   ~RSeq();
   bool set_curr_seq();
   bool read_next_seq();
   void compute_rho();
-  double get_rho();
+  double get_rho() const;
   template<typename T>
   void extract_mers(vvec<T>& table);
 
@@ -107,7 +107,7 @@ class QSeq : public HandlerURL
   friend class QIE<cm512_t>;
 
 public:
-  QSeq(str input);
+  QSeq(const str& input);
   ~QSeq();
   bool read_next_batch();
   void clear();

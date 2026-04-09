@@ -1,6 +1,6 @@
 #include "rqseq.hpp"
 
-RSeq::RSeq(str input, lshf_sptr_t lshf, uint8_t w, uint32_t r, bool frac)
+RSeq::RSeq(const str& input, const lshf_sptr_t& lshf, uint8_t w, uint32_t r, bool frac)
   : w(w)
   , r(r)
   , frac(frac)
@@ -43,7 +43,7 @@ void RSeq::compute_rho() { rho = n2_est / n1_est; }
 
 bool RSeq::read_next_seq() { return kseq_read(kseq) >= 0; }
 
-double RSeq::get_rho() { return rho; }
+double RSeq::get_rho() const { return rho; }
 
 bool RSeq::set_curr_seq()
 {
@@ -105,7 +105,7 @@ void RSeq::extract_mers(vvec<T>& table)
     rix = lshf->compute_hash(cminimizer.x);
     rix_res = rix % m;
     if (frac ? rix_res <= r : rix_res == r) {
-      rix = frac ? rix / m * (r + 1) + rix_res : rix / m;
+      rix = frac ? (rix / m * (r + 1)) + rix_res : rix / m;
       table[rix].push_back(lshf->drop_ppos_lr(cminimizer.y));
     }
   }
@@ -113,7 +113,7 @@ void RSeq::extract_mers(vvec<T>& table)
   n2_est += c2.estimate();
 }
 
-QSeq::QSeq(str input)
+QSeq::QSeq(const str& input)
 {
   is_url = std::regex_match(input, urlexp);
   if (is_url) {

@@ -9,7 +9,7 @@ LSHF::LSHF(uint8_t k, uint8_t h, uint32_t m)
   set_lshf();
 }
 
-LSHF::LSHF(uint32_t m, vec<uint8_t> ppos_v, vec<uint8_t> npos_v)
+LSHF::LSHF(uint32_t m, const vec<uint8_t>& ppos_v, const vec<uint8_t>& npos_v)
   : m(m)
   , ppos_v(ppos_v)
   , npos_v(npos_v)
@@ -82,7 +82,7 @@ void LSHF::set_lshf()
     mask_hash_lr += (0x0000000100000001ull << ppos_v[i]);
     mask_hash_bp += (0x0000000000000003ull << (ppos_v[i] * 2));
   }
-  for (uint32_t i = 2 * h + 1; i < 32; ++i) {
+  for (uint32_t i = (2 * h) + 1; i < 32; ++i) {
     mask_hash_lr += (0x0000000000000001ull << i);
   }
   // mask_drop_l = (mask_drop_lr & 0xffffffff00000000ull);
@@ -105,7 +105,7 @@ uint32_t LSHF::drop_ppos_lr(uint64_t enc64_lr)
 
 uint32_t LSHF::drop_ppos_bp(uint64_t enc64_bp) { return static_cast<uint32_t>(_pext_u64(enc64_bp, mask_drop_bp)); }
 #else
-uint32_t LSHF::compute_hash(uint64_t enc64_bp)
+uint32_t LSHF::compute_hash(uint64_t enc64_bp) const
 {
   #if defined(__aarch64__)
   return static_cast<uint32_t>(extract_bits(enc64_bp, mask_hash_bp));
@@ -162,11 +162,11 @@ char* LSHF::npos_data() { return reinterpret_cast<char*>(npos_v.data()); }
 
 char* LSHF::ppos_data() { return reinterpret_cast<char*>(ppos_v.data()); }
 
-uint8_t LSHF::get_k() { return k; }
+uint8_t LSHF::get_k() const { return k; }
 
-uint8_t LSHF::get_h() { return h; }
+uint8_t LSHF::get_h() const { return h; }
 
-uint32_t LSHF::get_m() { return m; }
+uint32_t LSHF::get_m() const { return m; }
 
 vec<uint8_t> LSHF::get_npos() { return npos_v; }
 

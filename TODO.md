@@ -1,167 +1,74 @@
+# TODO
 
-// TODO: Further optimize, and polish.
-// TODO: A better output format with a header? For both modes...
-// TODO: If we will compute the distances, perhaps have an option to merge all overlapping intervals per distance.
-// TODO: Merge aggressively as per above reasons.
-// TODO: Something interesting with the second derivatives? Is the minimum second-derivative interval interesting?
+## Next TODOs
 
+- Apply FDR for p-value correction.
+- Make sure that sampled intervals do not overlap with the tested one(s).
+- Make sure that examples are fine and correct.
+- Make sure that the test is two-sided.
 
-Make Windusrf write tests.
-Update the makefile for gamma and review.
+## Critical / Bugs
 
-Output format!!!!! Not very clean. No header.
-The entire boundary issue is so confusing. Check it and make it make sense.
-## TODOs
+- **Parameter validation**: Add checks for edge cases, especially minimum tau.
+- **Boundary handling in interval detection**: Audit and clarify boundary logic — currently confusing and potentially incorrect.
+- **Reverse complement coordinates**: Fix/improve how reverse complement coordinates are reported.
+- **Strand separation**: Strands are kept separate (fw/rc), but the test uses the lower distance — verify this is correct.
+- **`extract_intervals` correctness**: Review the algorithm for correctness.
 
+## High Priority
 
+- **Output format**: Design a clean output format with a header for both modes.
+- **Interval merging**: Add option to merge overlapping intervals per distance; consider aggressive merging.
+- **Code review**: Review and polish `gidiff.cpp`/`gidiff.hpp` — improve messages, naming, and readability.
+- **Write tests**: Add automated tests for core functionality.
 
-Define a metric for overlapping start measuring how they overlapping:
-before the test merging
-after the testing, different lower alpha
+## Open Questions
 
-- subsampling?
-- backtracking
-- multiple-pass
-- change alpha
-Reverse complement
+- **Remove sdust?** Evaluate whether sdust filtering is still needed.
+- **Remove m/r splitting?** Sketching without minimizer/remainder splitting may be significantly faster.
+- **How to handle Ns and skip positions?**
+- **How to report interval positions?** Use positions of k-mers?
+- **Inversion detection**: Can strand comparison (ups/downs of fw vs rc) be used to detect inversions?
+- **Postprocessing for fw/rc**: What downstream handling is needed for +/- strand results?
 
-Krepp distance per segment
+## Improvements
 
-Do one pass take min p val, merge, check neighbors, repeat
+- **Performance optimization**: Further optimize hot paths.
+- **Second derivative analysis**: Investigate whether the minimum second-derivative interval is meaningful.
+- **Overlapping metric**: Define a metric to measure interval overlap before/after merging.
+- **One-pass merge strategy**: Do one pass, take min p-value, merge, check neighbors, repeat.
+- **Memory usage for intervals**: Intervals use a lot of memory; keep temp data and clear across thresholds.
+- **Early skip for intervals**: Find conditions to skip interval checking (e.g., save prefmax/suffmin).
 
-Take contig size into consideration in plots
+## I/O and Sketching
 
-no sdust?
+- **Binary I/O**: Improve write/read of binary blocks — use buffers, avoid large single-chunk reads.
+- **Save k-mer positions**: Store positions of k-mers and query sketch; requires metadata (lengths). Use `rho1*rho2`?
+- **Sketch-to-sketch mode?**
 
-no r/m splitting, sketch single already?
+## Static Analysis and Sanitizers
 
-Implement a model such that given a distance vector with in ANI estimate for a genome, estimate tree distance vector. A simple model perhaps, with missing data (this is important). Get local distance vectors, a compare against its ANI vector. Make sure that initialization etc. doesn't matter. So the vectors are constrained. Maybe something smarter. Incorporating the estimated embedding for the genome-wide distances.
+- Run Clang's Static Analyzer (`scan-build`).
+- Run AddressSanitizer and ThreadSanitizer.
+- Verify memory accesses in krepp (related project) are bug-free.
+- Validate against krepp?
 
+## plot.py
 
-**Importante**
-! Parameter checks, for example especially min tau!
-! Strands kept separate for fw/rc, but the test is against the lower distance.
-! Inversion detection based on strand comparison ups and downs?
+- **Header-aware input**: Make the plotting input compatible with the new output format.
+- **Contig size in plots**: Take contig size into consideration.
+- **Color scheme**: Experiment with non-linear color scales.
+  - No match: 0.75+
+  - One color range: 0.5–0.75
+  - Add toggle for switching to a continuous color scale.
+- **Selection/navigation**: Show selection without zooming into intervals; enable scroll-back and mouse interaction.
+- **Annotations**: Improve annotation styling and colors. Maybe show the name when it's close.
 
+## Future / Research Ideas
 
-! Review gidiff.cpp/hpp and polish. messages and names.
+- **Distance vector model**: Given a per-segment distance vector and an ANI estimate for a genome, build a model to estimate a tree distance vector. Handle missing data. Constrain vectors. Possibly incorporate genome-wide distance embeddings.
+- **krepp distance per segment**: Use krepp to compute/validate per-segment distances.
 
-## names
-digg
-digit
-dimes
-dint
-distil
-drip
-gdiff
-gdip
-gind
-glint
-grid
-grind
-mint
-paint
-pind
-ping
-pint
-plint
-point
-rind
+## Project Name Candidates
 
-Save positions of k-mers and query sketch to skecht for this youu need metadata (len). just do rho1*rho2?
-Sketch to sketch?
-Better write/read binary blocks, perhaps with buffers, large chunks at once is bad for IO
-
-https://claude.ai/share/c6995cef-f98d-4d4b-aeb1-352587ac1543
-
-Find conditions to not even check intervals (save some of the prefmax/suffmin ?)
-lots of intervals use a lot of memory, keep it temp, at least across threshold clear stuff
-
-? extract_intervals? correctness of the algorithm
-? How to report intervals -- positions of k-mers?
-? Remove m/r and splitting. Might make it much faster.
-? How to treat Ns and skip positions
-? Be careful about reverse complement coordinates!
-? Postprocessing or be careful for +/- rc/fw in downstream analysis
-
-
-grep
-src/map.cpp:      l = 0; // TODO: What to do for missing ones?
-src/map.cpp:      continue; // TODO: How to propagate the missing ones?
-src/map.cpp:{ // TODO: Revisit?
-src/map.hpp:  // void optimize_loglikelihood(); // TODO: Is ever needed? If so, correct?
-src/map.hpp:  // void skip_mer(uint64_t i); // TODO: Anything better than ignoring?
-src/sketch.cpp:  vec_enc_it ix1 = sfhm->bucket_iter_start(offset); // TODO: Use pointers?
-
-
-Also for krepp, see if memory accesses are bug-free
-Clang-Tidy
-Clang's Static Analyzer (scan-build)
-AddressSanitizer and ThreadSanitizer
-
-plot.py
-=====
-learn more about annotations? Colors?
-Maybe don't ever zoom in on intevarls but show seletion also enable scrolling back mouse motions?
-make the input compatbile and header aware.
-====
-
-
-=====
-### Correctness of the algorithm:
-For an interval (a, b) to be maximal (not properly contained in any larger negative-sum interval):
-
-Left endpoint must be a running max: If ∃ a' < a with fdps_v[a'] >= fdps_v[a], then (a', b) has sum fdps_v[b] - fdps_v[a'] <= fdps_v[b] - fdps_v[a] < 0. So (a', b) also has negative sum and properly contains (a, b) → not maximal.
-Right endpoint must be the farthest: If ∃ b' > b with (a, b') negative, then (a, b') properly contains (a, b) → not maximal.
-Algorithm Correctness
-The algorithm does exactly this:
-
-Line 96-98: Only considers a where fdps_v[a] > fdpmax_v[a-1] (running maxima)
-Lines 100-102: Finds rightmost b_star where (a, b_star) could have negative sum (using suffix minima)
-Line 109-111: Verifies (a, b_star) actually has negative sum
-Line 113-115: b_prev tracking ensures each b_star is claimed by the leftmost valid a
-Line 117: Left-maximality check confirms no (a', b_star) with a' < a has negative sum
-Linear Time
-Outer loop: O(n)
-b_curr only increases (never resets), total increments ≤ n−1
-Total: O(n)
-Verification with Counterexample
-My earlier example fdc_v = [1, -3, 2, -1]:
-
-(3, 4) has sum = −1, but (1, 4) also has negative sum and contains (3, 4)
-So (3, 4) is NOT maximal under your definition
-The algorithm correctly outputs only (1, 4) ✓
-Conclusion
-The algorithm is correct for finding all maximal (not contained in larger) negative-sum intervals in O(n) time. The comments are somewhat misleading (e.g., "a is a prefix maxima" should say "skip if a is NOT a new record high"), but the logic is sound.
-#### Completeness
-Yes, it finds **all** maximal intervals. Here's the proof:
-
-### Completeness Proof
-
-Let `(a*, b*)` be any maximal negative-sum interval. We show the algorithm outputs it.
-
-**Step 1**: `a*` must be a running maximum.
-- If not, `∃ a' < a*` with `fdps_v[a'] ≥ fdps_v[a*]`
-- Then `(a', b*)` has sum ≤ `(a*, b*)` sum < 0
-- So `(a', b*)` contains `(a*, b*)` with negative sum → contradicts maximality
-
-**Step 2**: `b*` must equal `b_star` (the rightmost found by the algorithm for `a*`).
-- `b_star` = rightmost `b` where `(a*, b)` has negative sum
-- If `b* < b_star`, then `(a*, b_star)` contains `(a*, b*)` with negative sum → contradicts maximality
-- So `b* = b_star`
-
-**Step 3**: The `b_prev` check passes.
-- If `b_prev == b*`, some earlier `a < a*` claimed `b*`
-- That means `(a, b*)` was output, which contains `(a*, b*)` with negative sum → contradicts maximality
-- So `b_prev ≠ b*`
-
-**Step 4**: The left-maximality check passes.
-- If `fdps_v[b*] < fdpmax_v[a*-1]`, then `∃ a' < a*` with `fdps_v[a'] > fdps_v[b*]`
-- So `(a', b*)` has negative sum and contains `(a*, b*)` → contradicts maximality
-- So the check passes
-
-**Conclusion**: All checks pass → `(a*, b*)` is output. ∎
-
----
-The algorithm is **complete**: every maximal interval is found, none are missed.
-======
+digg, digit, dimes, dint, distil, drip, gdiff, gdip, gind, glint, grid, grind, mint, paint, pind, ping, pint, plint, point, rind

@@ -11,10 +11,10 @@ class SDHM
   friend class SFHM;
 
 public:
-  void fill_table(uint32_t nrows, rseq_sptr_t rs);
+  void fill_table(uint32_t nrows, const rseq_sptr_t& rs);
   void make_unique();
   void sort_columns();
-  uint64_t get_nmers();
+  uint64_t get_nmers() const;
 
 protected:
   uint64_t nkmers = 0;
@@ -26,8 +26,8 @@ class SFHM
   friend class SDHM;
 
 public:
-  SFHM(sdhm_sptr_t source);
-  SFHM() {};
+  SFHM(const sdhm_sptr_t& source);
+  SFHM() = default;
   ~SFHM();
   void save(std::ofstream& sketch_stream);
   void load(std::ifstream& sketch_stream);

@@ -1,7 +1,9 @@
 #include "sketch.hpp"
 
+#include <utility>
+
 Sketch::Sketch(std::filesystem::path sketch_path)
-  : sketch_path(sketch_path)
+  : sketch_path(std::move(sketch_path))
 {
 }
 
@@ -78,9 +80,9 @@ sfhm_sptr_t Sketch::get_sfhm_sptr() { return sfhm; }
 
 lshf_sptr_t Sketch::get_lshf() { return lshf; }
 
-double Sketch::get_rho() { return rho; }
+double Sketch::get_rho() const { return rho; }
 
-bool Sketch::check_partial(uint32_t rix)
+bool Sketch::check_partial(uint32_t rix) const
 {
   uint32_t rix_res = rix % m;
   return (frac && (rix_res <= r)) || (rix_res == r);
@@ -90,7 +92,7 @@ uint32_t Sketch::search_mer(uint32_t rix, enc_t enc_lr)
 {
   uint32_t offset;
   if (frac) {
-    offset = (rix / m) * (r + 1) + (rix % m);
+    offset = ((rix / m) * (r + 1)) + (rix % m);
   } else {
     offset = rix / m;
   }
@@ -113,7 +115,7 @@ bool Sketch::search_mer_partial(uint32_t rix, enc_t enc_lr, uint32_t& hdist_min)
   // if (__builtin_expect((frac ? (rix_res > r) : (rix_res != r)), 0)) return false;
   if (frac ? (rix_res > r) : (rix_res != r)) return false;
 
-  const uint32_t offset = frac ? (rix / m) * (r + 1) + rix_res : rix / m;
+  const uint32_t offset = frac ? ((rix / m) * (r + 1)) + rix_res : rix / m;
   vec_enc_it ix1 = sfhm->bucket_iter_start(offset);
   vec_enc_it ix2 = sfhm->bucket_iter_next(offset);
   hdist_min = std::numeric_limits<uint32_t>::max();
@@ -133,7 +135,7 @@ uint32_t Sketch::partial_offset(uint32_t rix) const noexcept
   if (frac ? (rix_res > r) : (rix_res != r)) {
     return std::numeric_limits<uint32_t>::max();
   }
-  return frac ? (rix / m) * (r + 1) + rix_res : rix / m;
+  return frac ? ((rix / m) * (r + 1)) + rix_res : rix / m;
 }
 
 void Sketch::prefetch_offset_inc(uint32_t offset) const noexcept
@@ -171,7 +173,7 @@ std::pair<vec_enc_it, vec_enc_it> Sketch::bucket_indices(uint32_t rix)
 {
   uint32_t offset;
   if (frac) {
-    offset = (rix / m) * (r + 1) + (rix % m);
+    offset = ((rix / m) * (r + 1)) + (rix % m);
   } else {
     offset = rix / m;
   }

@@ -18,7 +18,7 @@
 
   #if defined(__has_builtin) && (defined(__GNUC__) || defined(__clang__))
 
-    #define _GET_CLZ(x, b) (uint8_t) std::min(b, ::__builtin_clz(x)) + 1
+    #define _GET_CLZ(x, b) ((uint8_t)std::min(b, ::__builtin_clz(x)) + 1)
 
   #else
 
@@ -83,7 +83,7 @@ namespace hll {
           alpha = 0.709;
           break;
         default:
-          alpha = 0.7213 / (1.0 + 1.079 / m_);
+          alpha = 0.7213 / (1.0 + (1.079 / m_));
           break;
       }
       alphaMM_ = alpha * m_ * m_;
@@ -172,7 +172,7 @@ namespace hll {
      *
      * @param[in,out] rhs Another HyperLogLog instance
      */
-    void swap(HyperLogLog& rhs)
+    void swap(HyperLogLog& rhs) noexcept
     {
       std::swap(b_, rhs.b_);
       std::swap(m_, rhs.m_);
@@ -289,7 +289,7 @@ namespace hll {
      *
      * @param[in,out] rhs Another HyperLogLog instance
      */
-    void swap(HyperLogLogHIP& rhs)
+    void swap(HyperLogLogHIP& rhs) noexcept
     {
       std::swap(b_, rhs.b_);
       std::swap(m_, rhs.m_);

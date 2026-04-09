@@ -47,7 +47,7 @@ public:
     m = 2;
     r = 1;
     frac = true;
-    nrows = pow(2, 2 * h - 1);
+    nrows = pow(2, (2 * h) - 1);
   }
 
 protected:
@@ -85,7 +85,7 @@ public:
   void map();
   void write_header();
   bool validate_configuration();
-  uint64_t get_total_qseq() { return total_qseq; }
+  uint64_t get_total_qseq() const { return total_qseq; }
 
 private:
   str query_path;

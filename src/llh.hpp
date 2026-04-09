@@ -123,7 +123,7 @@ public:
 
   double prob_elude(uint32_t d) const
   {
-    return 1.0 - static_cast<double>(binom_coef_hnk[d]) / static_cast<double>(binom_coef_k[d]);
+    return 1.0 - (static_cast<double>(binom_coef_hnk[d]) / static_cast<double>(binom_coef_k[d]));
   }
 
   double prob_collide(uint32_t d) const
@@ -142,7 +142,7 @@ public:
     for (uint32_t d = hdist_th + 1; d <= k; ++d) {
       p += prob_mutate(D, d);
     }
-    return rho * p + 1.0 - rho;
+    return (rho * p) + 1.0 - rho;
   }
 
   double prob_hit(double D, uint32_t d) const { return rho * prob_collide(d) * prob_mutate(D, d); }
@@ -158,7 +158,7 @@ public:
 
     for (uint32_t d = 0; d <= k; ++d) {
       if (d <= hdist_th) {
-        lsum -= (logdn + d * logdp) * v[d];
+        lsum -= (logdn + (d * logdp)) * v[d];
         lv_m += binom_coef_hnk[d] * powdc;
       } else {
         lv_m += powdc * binom_coef_k[d];
@@ -166,20 +166,20 @@ public:
       powdc *= ratioD;
     }
 
-    return lsum - std::log(rho * lv_m + 1.0 - rho) * u;
+    return lsum - (std::log((rho * lv_m) + 1.0 - rho) * u);
   }
 
 private:
   double compute_fdc_v(const double D, const uint32_t d) const
   {
     const double S = 1.0 - D;
-    return (d - k * D) / (D * S);
+    return (d - (k * D)) / (D * S);
   }
 
   double compute_sdc_v(const double D, const uint32_t d) const
   {
     const double S = 1.0 - D;
-    const double numerator = d * (2 * D - 1.0) - (k * D * D);
+    const double numerator = (d * ((2 * D) - 1.0)) - (k * D * D);
     const double denominator = D * D * S * S;
     return numerator / denominator;
   }
@@ -190,7 +190,7 @@ private:
     double gd = 0;
     double fd = 0;
     for (uint32_t d = 0; d <= k; ++d) {
-      const double pd = (d - k * D) / (D * S);
+      const double pd = (d - (k * D)) / (D * S);
       const double pe = std::pow(S, k - d) * std::pow(D, d);
       double wt = pe;
       if (d <= hdist_th) {
@@ -201,7 +201,7 @@ private:
       gd += wt * pd;
       fd += wt;
     }
-    return rho * gd / (1.0 - rho + rho * fd);
+    return rho * gd / (1.0 - rho + (rho * fd));
   }
 
   double compute_sdc_u(const double D) const
@@ -215,9 +215,9 @@ private:
     const double S_sq = S * S;
     const double denom = D_sq * S_sq;
     for (uint32_t d = 0; d <= k; ++d) {
-      const double pd = (d - k * D) / (D * S);
+      const double pd = (d - (k * D)) / (D * S);
       const double pe = std::pow(S, k - d) * std::pow(D, d);
-      const double vy = (d * d + (k - 1) * k * D_sq - d * (1 + (k - 1) * 2 * D)) / denom;
+      const double vy = ((d * d) + ((k - 1) * k * D_sq) - (d * (1 + ((k - 1) * 2 * D)))) / denom;
       double wt = pe;
       if (d <= hdist_th) {
         wt *= binom_coef_hnk[d];
@@ -232,8 +232,8 @@ private:
     gd *= rho;
     fpd *= rho;
     gpd *= rho;
-    fd = 1.0 - rho + rho * fd;
-    return (fd * gpd - gd * fpd) / (fd * fd);
+    fd = 1.0 - rho + (rho * fd);
+    return ((fd * gpd) - (gd * fpd)) / (fd * fd);
   }
 
   const uint64_t* v = nullptr;

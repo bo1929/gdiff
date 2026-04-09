@@ -15,7 +15,7 @@ public:
   void load_from_offset(std::ifstream& stream, uint64_t offset);
   static void seek_past(std::ifstream& stream);
   void make_rho_partial();
-  bool check_partial(uint32_t rix);
+  bool check_partial(uint32_t rix) const;
   uint32_t search_mer(uint32_t rix, enc_t enc_lr);
   bool search_mer_partial(uint32_t rix, enc_t enc_lr, uint32_t& hdist_min);
   uint32_t partial_offset(uint32_t rix) const noexcept;
@@ -25,9 +25,9 @@ public:
   std::pair<vec_enc_it, vec_enc_it> bucket_indices(uint32_t rix);
   sfhm_sptr_t get_sfhm_sptr();
   lshf_sptr_t get_lshf();
-  double get_rho();
+  double get_rho() const;
   str get_rid() { return rid; }
-  uint64_t get_timestamp() { return timestamp; }
+  uint64_t get_timestamp() const { return timestamp; }
 
 private:
   uint8_t k;

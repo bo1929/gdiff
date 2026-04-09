@@ -14,7 +14,7 @@ inline uint32_t ghhp(const str& str)
   uint32_t a = 63689;
   uint32_t h = 0;
   for (char c : str) {
-    h = h * a + c;
+    h = (h * a) + c;
     a = a * b;
   }
   return (h & 0x7FFFFFFF);

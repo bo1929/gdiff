@@ -75,7 +75,7 @@ class DIM
   static constexpr size_t WIDTH = std::is_same_v<T, double> ? 1 : RWIDTH;
 
 public:
-  DIM(const llh_sptr_t<T> llhf, const params_t<T>& params, uint64_t nbins, uint64_t nmers);
+  DIM(const llh_sptr_t<T>& llhf, const params_t<T>& params, uint64_t nbins, uint64_t nmers);
   static inline double at(T v, size_t idx);
   void release_accumulators() noexcept;
   void inclusive_scan();
@@ -135,8 +135,8 @@ class QIE
   static constexpr size_t WIDTH = std::is_same_v<T, double> ? 1 : RWIDTH;
 
 public:
-  QIE(const sketch_sptr_t sketch,
-      const lshf_sptr_t lshf,
+  QIE(const sketch_sptr_t& sketch,
+      const lshf_sptr_t& lshf,
       const vec<str>& seq_batch,
       const vec<str>& qid_batch,
       const params_t<T>& params);

@@ -7,7 +7,7 @@
 #include <iostream>
 #include <cassert>
 
-#define assertm(exp, msg) assert(((void)msg, exp))
+#define assertm(exp, msg) assert(((void)(msg), exp))
 
 [[noreturn]] inline void error_exit(const std::string& msg, int code = EXIT_FAILURE)
 {

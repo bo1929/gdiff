@@ -31,7 +31,7 @@ struct GammaModel
       const size_t low = static_cast<size_t>(idx);
       const size_t high = std::min(low + 1, n - 1);
       const double frac = idx - low;
-      emp_q[i] = sorted_samples[low] * (1.0 - frac) + sorted_samples[high] * frac;
+      emp_q[i] = (sorted_samples[low] * (1.0 - frac)) + (sorted_samples[high] * frac);
     }
 
     if (emp_q.back() < eps) return {1.0, eps};
@@ -80,11 +80,11 @@ struct GammaModel
       if (F[2] - F[0] < tol && iter > 10) break;
 
       pt c = {0.5 * (S[0].alpha + S[1].alpha), 0.5 * (S[0].beta + S[1].beta)};
-      pt r = {2.0 * c.alpha - S[2].alpha, 2.0 * c.beta - S[2].beta};
+      pt r = {(2.0 * c.alpha) - S[2].alpha, (2.0 * c.beta) - S[2].beta};
       double fr = sse(r.alpha, r.beta);
 
       if (fr < F[0]) {
-        pt e = {c.alpha + 2.0 * (r.alpha - c.alpha), c.beta + 2.0 * (r.beta - c.beta)};
+        pt e = {c.alpha + (2.0 * (r.alpha - c.alpha)), c.beta + (2.0 * (r.beta - c.beta))};
         double fe = sse(e.alpha, e.beta);
         if (fe < fr) {
           S[2] = e;

@@ -95,8 +95,18 @@ DEPENDS  = $(OBJECTS:.o=.d)
 
 $(info --- $(PROGRAM): $(OS)/$(ARCH), $(COMPILER_ID), mode=$(MODE), debug=$(DEBUG), native=$(NATIVE) ---)
 
+# Test configuration
+TDIR     = test/unit
+TBDIR    = $(BDIR)/test
+TSOURCES = $(wildcard $(TDIR)/*.cpp)
+TOBJECTS = $(patsubst $(TDIR)/%.cpp,$(TBDIR)/%.o,$(TSOURCES))
+TDEPENDS = $(TOBJECTS:.o=.d)
+# All project .o files except gidiff.o (which contains main())
+LIB_OBJECTS = $(filter-out $(BDIR)/gidiff.o,$(OBJECTS))
+TEST_BIN = $(BDIR)/test_gidiff
+
 # Rules
-.PHONY: all dynamic static debug clean
+.PHONY: all dynamic static debug clang tidy tidy-fix clean test-unit test-regression test
 
 all: $(PROGRAM)
 
@@ -108,6 +118,37 @@ static:
 
 debug:
 	$(MAKE) DEBUG=yes $(PROGRAM)
+
+clang:
+	$(MAKE) CXX=clang++ $(PROGRAM)
+
+# Clang-tidy configuration
+CLANG_TIDY     ?= clang-tidy
+CLANG_TIDY_OUT = $(BDIR)/clang-tidy.out
+CLANG_TIDY_FLAGS = --
+
+# macOS system include detection
+ifeq ($(OS),Darwin)
+  SYSROOT := $(shell xcrun --sdk macosx --show-sdk-path 2>/dev/null)
+  ifneq ($(SYSROOT),)
+    CLANG_TIDY_FLAGS += -isystem $(SYSROOT)/usr/include/c++/v1
+    CLANG_TIDY_FLAGS += -isystem $(SYSROOT)/usr/include
+  endif
+endif
+
+CLANG_TIDY_FLAGS += -std=c++17 -I vendor -DBOOST_MATH_STANDALONE -pthread
+
+# Run clang-tidy and save output
+tidy: $(SOURCES) .clang-tidy | $(BDIR)
+	@echo "Running clang-tidy..."
+	$(CLANG_TIDY) $(SOURCES) $(CLANG_TIDY_FLAGS) 2>&1 | tee $(CLANG_TIDY_OUT)
+	@echo "Output saved to $(CLANG_TIDY_OUT)"
+
+# Auto-fix clang-tidy issues
+tidy-fix: $(SOURCES) .clang-tidy | $(BDIR)
+	@echo "Running clang-tidy with auto-fix..."
+	$(CLANG_TIDY) $(SOURCES) -fix $(CLANG_TIDY_FLAGS) 2>&1 | tee $(CLANG_TIDY_OUT)
+	@echo "Fixes applied. Review changes with git diff."
 
 $(BDIR)/%.o: src/%.cpp | $(BDIR)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(WFLAGS) -MMD -MP -c $< -o $@
@@ -123,3 +164,26 @@ clean:
 	@echo "Clean."
 
 -include $(DEPENDS)
+
+# ── Test targets ──────────────────────────────────────────────────────────────
+
+$(TBDIR):
+	@mkdir -p $@
+
+$(TBDIR)/%.o: $(TDIR)/%.cpp | $(TBDIR)
+	$(CXX) $(CPPFLAGS) -I src $(CXXFLAGS) $(WFLAGS) -MMD -MP -c $< -o $@
+
+$(TEST_BIN): $(TOBJECTS) $(LIB_OBJECTS)
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) $^ -o $@ $(LDLIBS)
+
+test-unit: $(TEST_BIN)
+	@echo "Running unit tests..."
+	./$(TEST_BIN) --duration
+
+test-regression: $(PROGRAM)
+	@echo "Running regression tests..."
+	bash test/test_regression.sh
+
+test: test-unit test-regression
+
+-include $(TDEPENDS)

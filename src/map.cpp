@@ -3,8 +3,8 @@
 #include <boost/math/tools/minima.hpp>
 
 template<typename T>
-QIE<T>::QIE(const sketch_sptr_t sketch,
-            const lshf_sptr_t lshf,
+QIE<T>::QIE(const sketch_sptr_t& sketch,
+            const lshf_sptr_t& lshf,
             const vec<str>& seq_batch,
             const vec<str>& qid_batch,
             const params_t<T>& params)
@@ -24,7 +24,7 @@ QIE<T>::QIE(const sketch_sptr_t sketch,
   mask_bp = u64m >> ((32 - k) * 2);
   if (!params.enum_only) {
     v_acc.assign(hdist_bound + 1, 0); // For SIMD alignment; set to 8.
-    stride_len = std::ceil(params.tau_bin * subsample_factor + 1);
+    stride_len = std::ceil((params.tau_bin * subsample_factor) + 1);
   }
 }
 
@@ -133,7 +133,7 @@ void QIE<T>::map_sequences(std::ostream& sout, const str& rid)
 }
 
 template<typename T>
-DIM<T>::DIM(const llh_sptr_t<T> llhf, const params_t<T>& params, uint64_t nbins, uint64_t nmers)
+DIM<T>::DIM(const llh_sptr_t<T>& llhf, const params_t<T>& params, uint64_t nbins, uint64_t nmers)
   : llhf(llhf)
   , params(params)
   , nbins(nbins)
@@ -249,7 +249,7 @@ void QIE<T>::sample_distances(uint64_t L, vec<double>& dists_v) const
   vec<uint64_t> weights(qstrides_v.size());
   uint64_t total_weight = 0;
   for (size_t qi = 0; qi < qstrides_v.size(); ++qi) {
-    const uint64_t nstrides = qstrides_v[qi].nbins / G + 1;
+    const uint64_t nstrides = (qstrides_v[qi].nbins / G) + 1;
     weights[qi] = (nstrides > N) ? (nstrides - N) : 0; // Assign 0 weight if there are not enough strides
     total_weight += weights[qi];
   }
@@ -261,7 +261,7 @@ void QIE<T>::sample_distances(uint64_t L, vec<double>& dists_v) const
   for (uint64_t si = 0; si < nsamples_per_length; ++si) {
     const size_t qidx = rvidx(gen);
     const auto& qs = qstrides_v[qidx];
-    const uint64_t nstrides = qs.nbins / G + 1;
+    const uint64_t nstrides = (qs.nbins / G) + 1;
 
     const uint64_t max_idx = nstrides - 1 - N;
     std::uniform_int_distribution<uint64_t> rvpos(0, max_idx);
@@ -271,7 +271,7 @@ void QIE<T>::sample_distances(uint64_t L, vec<double>& dists_v) const
     std::fill(v.begin(), v.end(), 0);
     uint64_t t = 0;
     for (uint32_t d = 0; d < W; ++d) {
-      v[d] = qs.hdisthist_v[(pidx + N) * W + d] - qs.hdisthist_v[pidx * W + d];
+      v[d] = qs.hdisthist_v[((pidx + N) * W) + d] - qs.hdisthist_v[(pidx * W) + d];
       t += v[d];
     }
 
@@ -317,7 +317,7 @@ void DIM<T>::aggregate_mer(uint32_t hdist_min, uint64_t i)
   // i is the bin index; multiple k-mers in the same bin accumulate here.
   if (hdist_min <= params.hdist_th) {
     t_q++;
-    if (!params.enum_only) hdisthist_v[(i + 1) * (params.hdist_th + 1) + hdist_min]++;
+    if (!params.enum_only) hdisthist_v[((i + 1) * (params.hdist_th + 1)) + hdist_min]++;
     add_to(sdc_v[i], llhf->get_sdc(hdist_min));
     add_to(fdc_v[i], llhf->get_fdc(hdist_min));
   } else {
@@ -595,7 +595,7 @@ void DIM<T>::expand_intervals(const double chisq_th, const size_t idx)
     fdiff = at(fdps_v[b], idx) - at(fdps_v[ap], idx);
     sdiff = at(sdps_v[ap], idx) - at(sdps_v[b], idx);
     // chisq_val = (sdiff > 0.0) ? (fdiff * fdiff) / sdiff : std::numeric_limits<double>::infinity();
-    chisq_val = (fdiff * fdiff + eps) / (sdiff + eps);
+    chisq_val = ((fdiff * fdiff) + eps) / (sdiff + eps);
 
     if ((chisq_val < chisq_th) && (a < bp)) {
       a = ap;
@@ -611,7 +611,7 @@ void DIM<T>::expand_intervals(const double chisq_th, const size_t idx)
   fdiff = at(fdps_v[bp], idx) - at(fdps_v[ap], idx);
   sdiff = at(sdps_v[ap], idx) - at(sdps_v[bp], idx);
   // chisq_val = (sdiff > 0.0) ? (fdiff * fdiff) / sdiff : std::numeric_limits<double>::infinity();
-  chisq_val = (fdiff * fdiff + eps) / (sdiff + eps);
+  chisq_val = ((fdiff * fdiff) + eps) / (sdiff + eps);
   eintervals_v[idx].emplace_back(ap, bp);
   rintervals_v[idx].clear();
   rintervals_v[idx].shrink_to_fit();
@@ -625,7 +625,7 @@ void DIM<T>::compute_prefhistsum()
   // Add each row to the previous in-place to get prefix sums
   for (uint64_t i = 0; i < nbins; ++i) {
     for (uint32_t d = 0; d < W; ++d) {
-      hdisthist_v[(i + 1) * W + d] += hdisthist_v[i * W + d];
+      hdisthist_v[((i + 1) * W) + d] += hdisthist_v[(i * W) + d];
     }
   }
 }
@@ -737,7 +737,7 @@ void QIE<T>::save_qstride(const DIM<T>& dim)
   const uint64_t G = stride_len;
   // Sample rows at 0, G, 2G, ..., floor(nbins/G)*G.
   const uint64_t nbins_q = dim.get_nbins();
-  const uint64_t nstrides = nbins_q / G + 1;
+  const uint64_t nstrides = (nbins_q / G) + 1;
 
   qstride_t qs;
   qs.nbins = nbins_q;
@@ -747,7 +747,7 @@ void QIE<T>::save_qstride(const DIM<T>& dim)
   const auto& src = dim.get_hdisthist();
   for (uint64_t i = 0; i < nstrides; ++i) {
     const uint64_t rix = i * G;
-    std::copy_n(src.begin() + rix * W, W, qs.hdisthist_v.begin() + i * W);
+    std::copy_n(src.begin() + (rix * W), W, qs.hdisthist_v.begin() + i * W);
   }
 
   qstrides_v.push_back(std::move(qs));
