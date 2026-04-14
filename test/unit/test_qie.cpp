@@ -63,8 +63,8 @@ TEST_CASE("end-to-end with real sketch and query" * doctest::skip(!test_data_ava
   REQUIRE(!qs->is_empty());
 
   SUBCASE("enum_only mode") {
-    params_t<double> params(1, 0.1, 4, 9900, 10000, 0, true);
-    QIE<double> qie(sketch, sketch->get_lshf(), qs->get_seq_batch(), qs->get_qid_batch(), params);
+    params_t<double> params(1, 0.1, 4, 9900, 10000.0, 0, 1000, false, true);
+    QIE<double> qie(params, sketch, sketch->get_lshf(), qs->get_seq_batch(), qs->get_qid_batch());
 
     std::ostringstream sout;
     qie.map_sequences(sout, sketch->get_rid());
@@ -87,8 +87,8 @@ TEST_CASE("end-to-end with real sketch and query" * doctest::skip(!test_data_ava
   }
 
   SUBCASE("continuous mode (non enum_only)") {
-    params_t<double> params(1, 0.1, 4, 9900, 33.0, 0, false);
-    QIE<double> qie(sketch, sketch->get_lshf(), qs->get_seq_batch(), qs->get_qid_batch(), params);
+    params_t<double> params(1, 0.1, 4, 9900, 33.0, 0, 1000, false, false);
+    QIE<double> qie(params, sketch, sketch->get_lshf(), qs->get_seq_batch(), qs->get_qid_batch());
 
     std::ostringstream sout;
     qie.map_sequences(sout, sketch->get_rid());
@@ -135,8 +135,8 @@ TEST_CASE("QIE with real data: known pair produces intervals" * doctest::skip(!t
   while (qs->read_next_batch()) {}
   REQUIRE(!qs->is_empty());
 
-  params_t<double> params(1, 0.1, 4, 9900, 10000, 0, true);
-  QIE<double> qie(sketch, sketch->get_lshf(), qs->get_seq_batch(), qs->get_qid_batch(), params);
+  params_t<double> params(1, 0.1, 4, 9900, 10000.0, 0, 1000, false, true);
+  QIE<double> qie(params, sketch, sketch->get_lshf(), qs->get_seq_batch(), qs->get_qid_batch());
 
   std::ostringstream sout;
   qie.map_sequences(sout, sketch->get_rid());
@@ -187,8 +187,8 @@ TEST_CASE("QIE with multiple thresholds (cm512_t)" * doctest::skip(!test_data_av
   dths[0] = 0.05; dths[1] = 0.10; dths[2] = 0.15; dths[3] = 0.20;
   dths[4] = 0.25; dths[5] = 0.30; dths[6] = 0.35; dths[7] = 0.40;
 
-  params_t<cm512_t> params(8, dths, 4, 9900, 10000, 0, true);
-  QIE<cm512_t> qie(sketch, sketch->get_lshf(), qs->get_seq_batch(), qs->get_qid_batch(), params);
+  params_t<cm512_t> params(8, dths, 4, 9900, 10000.0, 0, 1000, false, true);
+  QIE<cm512_t> qie(params, sketch, sketch->get_lshf(), qs->get_seq_batch(), qs->get_qid_batch());
 
   std::ostringstream sout;
   qie.map_sequences(sout, sketch->get_rid());

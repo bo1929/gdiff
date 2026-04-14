@@ -8,7 +8,7 @@
 static std::pair<std::shared_ptr<LLH<double>>, params_t<double>>
 make_test_params(double dist_th = 0.1, uint32_t hdist_th = 4, uint64_t tau = 2, uint64_t bin_shift = 0)
 {
-  auto params = params_t<double>(1, dist_th, hdist_th, tau, 33.0, bin_shift, true);
+  auto params = params_t<double>(1, dist_th, hdist_th, tau, 33.0, bin_shift, 1000, false, true);
   auto llhf = std::make_shared<LLH<double>>(27, 11, 0.5, hdist_th, dist_th);
   return {llhf, params};
 }
@@ -18,7 +18,7 @@ TEST_SUITE("DIM<double>::inclusive_scan") {
 TEST_CASE("prefix sums of fdc_v are correct for simple injection") {
   auto [llhf, params] = make_test_params();
   const uint64_t nbins = 5;
-  DIM<double> dim(llhf, params, nbins, nbins);
+  DIM<double> dim(params, llhf, nbins, nbins);
 
   // Inject k-mers into bins to create known fdc values
   // aggregate_mer(hdist_min, bin_index) accumulates fdc/sdc from the LLH
@@ -58,8 +58,8 @@ TEST_CASE("both algorithms produce identical intervals on synthetic data") {
   auto [llhf, params] = make_test_params(0.1, 4, 2, 0);
   const uint64_t nbins = 20;
 
-  DIM<double> dim_mx(llhf, params, nbins, nbins);
-  DIM<double> dim_sx(llhf, params, nbins, nbins);
+  DIM<double> dim_mx(params, llhf, nbins, nbins);
+  DIM<double> dim_sx(params, llhf, nbins, nbins);
 
   // Inject: low hdist (hit=0, strong positive fdc) in bins 0-4 and 15-19
   // high hdist (miss) in bins 5-14 gives large negative fdc contribution
@@ -95,7 +95,7 @@ TEST_CASE("both algorithms produce identical intervals on synthetic data") {
 TEST_CASE("no intervals when prefix sum is monotonically positive") {
   auto [llhf, params] = make_test_params();
   const uint64_t nbins = 10;
-  DIM<double> dim(llhf, params, nbins, nbins);
+  DIM<double> dim(params, llhf, nbins, nbins);
 
   // All bins get identical hits
   for (uint64_t i = 0; i < nbins; ++i) {
@@ -118,7 +118,7 @@ TEST_SUITE("DIM<double>::expand_intervals") {
 TEST_CASE("merge when chi-square below threshold") {
   auto [llhf, params] = make_test_params(0.1, 4, 1, 0);
   const uint64_t nbins = 30;
-  DIM<double> dim(llhf, params, nbins, nbins);
+  DIM<double> dim(params, llhf, nbins, nbins);
 
   // Create two regions of hits separated by a small gap
   for (uint64_t i = 0; i < 10; ++i) {
@@ -151,11 +151,11 @@ TEST_SUITE("DIM<double>::extract_histogram") {
 
 TEST_CASE("extract_histogram returns correct counts for enum_only=false") {
   // Need enum_only=false for hdisthist_v to be allocated
-  auto params = params_t<double>(1, 0.1, 4, 2, 33.0, 0, false);
+  auto params = params_t<double>(1, 0.1, 4, 2, 33.0, 0, 1000, false, false);
   auto llhf = std::make_shared<LLH<double>>(27, 11, 0.5, 4, 0.1);
   const uint64_t nbins = 10;
   const uint64_t nmers = 100;
-  DIM<double> dim(llhf, params, nbins, nmers);
+  DIM<double> dim(params, llhf, nbins, nmers);
 
   // Inject known hits
   // hdist=0: bins 0-4 get 2 hits each
@@ -194,11 +194,11 @@ TEST_CASE("extract_histogram returns correct counts for enum_only=false") {
 }
 
 TEST_CASE("extract_histogram full range matches partial sums") {
-  auto params = params_t<double>(1, 0.1, 4, 2, 33.0, 0, false);
+  auto params = params_t<double>(1, 0.1, 4, 2, 33.0, 0, 1000, false, false);
   auto llhf = std::make_shared<LLH<double>>(27, 11, 0.5, 4, 0.1);
   const uint64_t nbins = 8;
   const uint64_t nmers = 1000;
-  DIM<double> dim(llhf, params, nbins, nmers);
+  DIM<double> dim(params, llhf, nbins, nmers);
 
   // Inject hits into various bins with various hamming distances
   dim.aggregate_mer(0, 0);
@@ -237,10 +237,10 @@ TEST_SUITE("DIM<cm512_t>") {
 TEST_CASE("SIMD DIM produces valid intervals") {
   cm512_t dths{};
   for (int i = 0; i < 8; ++i) dths[i] = 0.05 * (i + 1);
-  auto params = params_t<cm512_t>(8, dths, 4, 2, 33.0, 0, true);
+  auto params = params_t<cm512_t>(8, dths, 4, 2, 33.0, 0, 1000, false, true);
   auto llhf = std::make_shared<LLH<cm512_t>>(27, 11, 0.5, 4, dths);
   const uint64_t nbins = 15;
-  DIM<cm512_t> dim(llhf, params, nbins, nbins);
+  DIM<cm512_t> dim(params, llhf, nbins, nbins);
 
   // Inject hits in a pattern
   for (uint64_t i = 0; i < nbins; ++i) {
