@@ -11,17 +11,19 @@
 
 [[noreturn]] inline void error_exit(const std::string& msg, int code = EXIT_FAILURE)
 {
-  auto ct = std::chrono::system_clock::now();
-  std::time_t tt = std::chrono::system_clock::to_time_t(ct);
-  std::cerr << "[ERROR] " << std::ctime(&tt) << ": " << msg << std::endl;
+  // auto ct = std::chrono::system_clock::now();
+  // std::time_t tt = std::chrono::system_clock::to_time_t(ct);
+  // std::cerr << "[ERROR] " << std::ctime(&tt) << ": " << msg << std::endl;
+  std::cerr << "[ERROR] " << msg << std::endl;
   std::exit(code);
 }
 
 inline void warn_msg(const std::string& msg)
 {
-  auto ct = std::chrono::system_clock::now();
-  std::time_t tt = std::chrono::system_clock::to_time_t(ct);
-  std::cerr << "[WARNING] " << std::ctime(&tt) << ": " << msg << std::endl;
+  // auto ct = std::chrono::system_clock::now();
+  // std::time_t tt = std::chrono::system_clock::to_time_t(ct);
+  // std::cerr << "[WARNING] " << std::ctime(&tt) << ": " << msg << std::endl;
+  std::cerr << "[WARNING] " << msg << std::endl;
 }
 
 template<typename stream_t>

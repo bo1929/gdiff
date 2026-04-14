@@ -15,7 +15,7 @@ struct GammaModel
   static constexpr double eps = 1e-10;
   static constexpr double tol = 1e-6;
   static constexpr int max_niter = 250;
-  static constexpr uint64_t min_nsamples = 30;
+  static constexpr uint64_t min_nsamples = 50;
   static constexpr std::array<double, 3> fit_probs = {0.25, 0.50, 0.75};
 
   // Fit Gamma to a sorted sample vector using quantile matching + 2D Nelder-Mead

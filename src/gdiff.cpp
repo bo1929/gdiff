@@ -32,6 +32,12 @@ bool MapSC::validate_configuration()
     is_invalid = true;
     std::cerr << "The given bin size (2^b) is too large for the minimum length threshold, b: " << bin_shift << std::endl;
   }
+  const uint64_t bin_size = uint64_t(1) << bin_shift;
+  const uint64_t tau_bin = (tau + bin_size - 1) >> bin_shift;
+  if (tau_bin < 2) {
+    is_invalid = true;
+    std::cerr << "Minimum length (-l) must yield at least 2 bins after binning, increase -l or decrease -b" << std::endl;
+  }
   return !is_invalid;
 }
 
@@ -74,7 +80,7 @@ void MapSC::map()
   }
   sketch_stream.close();
 
-  size_T n = dist_th.size();
+  size_t n = dist_th.size();
   params_t<double> params_single(n, dist_th.front(), hdist_th, tau, chisq, bin_shift, nsamples, ecdf_test, enum_only);
   params_t<cm512_t> params_multiple(n, {0}, hdist_th, tau, chisq, bin_shift, nsamples, ecdf_test, enum_only);
   std::copy(dist_th.begin(), dist_th.end(), params_multiple.dist_th.begin());

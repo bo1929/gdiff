@@ -95,7 +95,6 @@ struct params_t
     , ecdf_test(ecdf_test)
     , enum_only(enum_only)
   {
-    assert(tau_bin > 1);
   }
 };
 

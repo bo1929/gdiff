@@ -1,6 +1,7 @@
 #ifndef _GDIFF_HPP
 #define _GDIFF_HPP
 
+#include <cmath>
 #include <atomic>
 #include <chrono>
 #include <ctime>

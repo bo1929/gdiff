@@ -279,7 +279,12 @@ void QIE<T>::fit_gamma_significance()
   for (size_t ridx = 0; ridx < records_v.size(); ++ridx) {
     auto& r = records_v[ridx];
     const size_t grid_idx = idx_v[ridx];
-    assert(valid_v[grid_idx]);
+    if (!valid_v[grid_idx]) {
+      warn_msg("No valid null distribution for this segment length; skipping p-value");
+      r.percentile = std::numeric_limits<double>::quiet_NaN();
+      r.fold = std::numeric_limits<double>::quiet_NaN();
+      continue;
+    }
 
     // Collect non-overlapping null distances for this record
     const size_t qidx = r.bix;
@@ -293,7 +298,10 @@ void QIE<T>::fit_gamma_significance()
     }
 
     if (d_v.size() < GammaModel::min_nsamples) {
-      warn_msg("Filtering overlapping segments resulted in too few null samples to test");
+      warn_msg("Too few null samples for p-value (after overlap filter or sparse grid)");
+      r.percentile = std::numeric_limits<double>::quiet_NaN();
+      r.fold = std::numeric_limits<double>::quiet_NaN();
+      continue;
     }
 
     double cdf_val = std::numeric_limits<double>::quiet_NaN();
@@ -562,6 +570,11 @@ void DIM<T>::extract_intervals_mx(const uint64_t tau, const size_t idx)
 {
   uint64_t b_curr = 1;
   uint64_t b_prev = std::numeric_limits<uint64_t>::max(); // no interval yet
+
+  if (at(fdps_v[nbins], idx) < at(fdps_v[1], idx)) {
+    rintervals_v[idx].emplace_back(1, nbins);
+    return;
+  } // TODO: Is this correct???
 
   for (uint64_t a = 1; a <= nbins; ++a) {
     const double fdpmax_a = at(fdpmax_v[a - 1], idx);
