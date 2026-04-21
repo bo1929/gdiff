@@ -3,11 +3,12 @@
 ## Next TODOs
 
 - Apply FDR for p-value correction.
-- Make sure that sampled intervals do not overlap with the tested one(s).
+- **Non-overlapping null sampling**: sample null windows so they do not overlap the tested segment by construction (rejection or stratified sampling); preserve `nsamples` where possible.
+- **ECDF mode**: tie handling and small-`N` / edge-case p-values (complements guards for empty `d_v` in continuous output).
 - Make sure that examples are fine and correct.
 - Make sure that the test is two-sided.
-- From each sampled segment, sample multiple distances based on the likelihood function (proportional to lrw, for example).
-- Extreme cases, exit early without calculations?
+- From each sampled segment, sample multiple distances based on the likelihood function (proportional to lrw, for example). (important)
+- Extreme cases, exit early without calculations? (Important)
 
 ## Critical / Bugs
 
@@ -15,7 +16,14 @@
 - **Boundary handling in interval detection**: Audit and clarify boundary logic — currently confusing and potentially incorrect.
 - **Reverse complement coordinates**: Fix/improve how reverse complement coordinates are reported.
 - **Strand separation**: Strands are kept separate (fw/rc), but the test uses the lower distance — verify this is correct.
-- **`extract_intervals` correctness**: Review the algorithm for correctness.
+- **`extract_intervals` correctness**: Review the algorithm for correctness. (See `docs/proof-extract-intervals-sx-mx.md`.)
+
+## Recently addressed (keep brief)
+
+- **Parameter validation**: `map` rejects configurations with `tau_bin < 2`; stderr note for significance stride `G` vs query length.
+- **Null significance**: invalid grid or `< min_nsamples` after overlap filter sets `PERCENTILE`/`FOLD` to NaN (no assert on invalid grid; no ECDF divide-by-zero on empty `d_v`).
+- **NaN semantics**: documented in `map.cpp` above `fit_gamma_significance` (MLE 0.75 when `t=0` in null sampling; NaN p-values when samples insufficient).
+- **Segment end coordinates**: last-segment-only `k-1` extension in `collect_segments` is **intentional** (do not “fix”).
 
 ## High Priority
 
