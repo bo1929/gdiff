@@ -1,5 +1,7 @@
 #include "map.hpp"
+#include "gamma.hpp"
 #include "random.hpp"
+#include <boost/math/distributions/beta.hpp>
 #include <boost/math/tools/minima.hpp>
 
 namespace {
@@ -18,8 +20,11 @@ namespace {
   {
     llhf->set_counts(v.data(), u);
     auto f = [&](const double& D) { return (*llhf)(D); };
-    const double ub = (t == 0) ? 0.75 + eps : 0.5;
-    return boost::math::tools::brent_find_minima(f, eps, ub, 24);
+    // const double ub = (t == 0) ? 0.75 + eps : 0.5;
+    const double ub = 0.5;
+    xy_t result = boost::math::tools::brent_find_minima(f, eps, ub, 24);
+    if (std::isnan(result.first)) result.first = 0.5; // TODO: How to handle these?
+    return result;
   }
 } // namespace
 
@@ -66,10 +71,10 @@ void QIE<T>::map_sequences(std::ostream& sout, const str& rid)
       warn_msg("The bin size is too high for the query sequence length: " + std::to_string(len));
       continue;
     }
-    if (params.tau_bin > nbins) {
-      warn_msg("The minimum length threshold is too high for a query sequence of length: " + std::to_string(len));
-      continue;
-    }
+    // if (params.tau_bin > nbins) {
+    //   warn_msg("The minimum length threshold is too high for a contig/scaffold of length: " + std::to_string(len));
+    //   continue;
+    // }
 
     DIM<T> dim_fw(params, llhf, nbins, enmers);
     DIM<T> dim_rc(params, llhf, nbins, enmers);
@@ -174,7 +179,7 @@ void QIE<T>::emit_segments(std::ostream& sout, const str& rid) const
               r.a,
               r.b,
               r.strand,
-              // r.rstrand ? "T" : "F", // TODO: Enable for visualization.
+              // r.rstrand ? "T" : "F", // TODO: Enable/disable.
               rid,
               r.d,
               static_cast<uint32_t>(r.mask),
@@ -207,25 +212,30 @@ void QIE<T>::report_intervals(std::ostream& sout, const str& rid, DIM<T>& dim, b
 
 template<typename T>
 void QIE<T>::fit_gamma_significance()
-{ // TODO: Debug.
+{ // TODO: Debug especially the edge cases and warning handling.
   const uint64_t G = stride_len;
 
   // Find the largest bin count (G aligned) across all stored queries.
   uint64_t max_nbins = 0;
+  double wtotal = 0;
   for (const auto& qs : qstrides_v) {
-    max_nbins = std::max(max_nbins, (qs.nbins / G) * G);
+    max_nbins = std::max(max_nbins, (qs.nbins / G + 1) * G);
+    wtotal += qs.nbins;
   }
   if (max_nbins < G) {
     warn_msg("All queries are too short for significance testing with strides of length " + std::to_string(G));
     return;
   }
+    std::cout << "DEBUG: max_nbins = " << max_nbins << std::endl;
 
   // Build the full geometric grid of lengths up to the maximum number of bins.
   vec<uint64_t> L_v;
   for (uint64_t L = G; L <= max_nbins;) {
     L_v.push_back(L);
+    std::cout << "DEBUG: bin steps = " << L << std::endl;
     uint64_t step = std::ceil((L + G) * (grid_growth - 1.0) / G) * G;
     L += step;
+    std::cout << "DEBUG: L next = " << L << std::endl;
   }
 
   assert(!L_v.empty());
@@ -253,56 +263,98 @@ void QIE<T>::fit_gamma_significance()
   vec<vec<snull_t>> samples_vvec(L_v.size());
   vec<GammaModel::params_t> gp_v(L_v.size());
   vec<bool> valid_v(L_v.size(), false);
+  const size_t mgrid_idx = L_v.size() / 2; // I guess this is just fine, no need for a proper median.
 
   for (size_t grid_idx = 0; grid_idx < L_v.size(); ++grid_idx) {
-    if (!seen_v[grid_idx]) continue;
+    if (!seen_v[grid_idx] && grid_idx != mgrid_idx) continue;
     sample_distances(L_v[grid_idx], samples_vvec[grid_idx]);
 
-    if (samples_vvec[grid_idx].size() >= GammaModel::min_nsamples) {
-      std::sort(samples_vvec[grid_idx].begin(), samples_vvec[grid_idx].end(), [](const snull_t& a, const snull_t& b) {
-        return a.d < b.d;
-      });
-      if (!params.ecdf_test) {
-        vec<double> d_v(samples_vvec[grid_idx].size());
-        for (size_t i = 0; i < d_v.size(); ++i)
-          d_v[i] = samples_vvec[grid_idx][i].d;
-        gp_v[grid_idx] = GammaModel::fit(d_v);
+    // if (samples_vvec[grid_idx].size() >= GammaModel::min_nsamples) {
+    std::sort(samples_vvec[grid_idx].begin(), samples_vvec[grid_idx].end(), [](const snull_t& a, const snull_t& b) {
+      return a.d < b.d;
+    });
+    if (!params.ecdf_test) {
+      vec<double> d_v(samples_vvec[grid_idx].size());
+      for (size_t i = 0; i < d_v.size(); ++i) {
+        d_v[i] = samples_vvec[grid_idx][i].d;
       }
-      valid_v[grid_idx] = true;
-    } else {
-      warn_msg("Failed to sample sufficient number of distances for the length " + std::to_string(L_v[grid_idx]));
+      gp_v[grid_idx] = GammaModel::fit(d_v);
     }
+    valid_v[grid_idx] = true;
+    // } else {
+    //   warn_msg("Failed to sample sufficient number of distances for the length " + std::to_string(L_v[grid_idx]));
+    // }
   }
 
   // Score each record, filtering out null samples that overlap with the record itself.
   using boost::math::gamma_distribution;
   for (size_t ridx = 0; ridx < records_v.size(); ++ridx) {
     auto& r = records_v[ridx];
-    const size_t grid_idx = idx_v[ridx];
-    if (!valid_v[grid_idx]) {
-      warn_msg("No valid null distribution for this segment length; skipping p-value");
-      r.percentile = std::numeric_limits<double>::quiet_NaN();
-      r.fold = std::numeric_limits<double>::quiet_NaN();
-      continue;
-    }
+    size_t grid_idx = idx_v[ridx];
+    // if (!valid_v[grid_idx]) {
+    //   warn_msg("No valid null distribution for this segment length, not testing for significance");
+    //   r.percentile = std::numeric_limits<double>::quiet_NaN();
+    //   r.fold = std::numeric_limits<double>::quiet_NaN();
+    //   continue;
+    // }
 
     // Collect non-overlapping null distances for this record
     const size_t qidx = r.bix;
     const uint64_t bin_a = (r.a - 1) >> params.bin_shift;
     const uint64_t bin_b = bin_a + r.nbins_s + 1;
     vec<double> d_v;
-    d_v.reserve(samples_vvec[grid_idx].size());
-    for (const auto& s : samples_vvec[grid_idx]) {
-      if ((s.qidx == qidx) && (s.start < bin_b) && (bin_a < s.end)) continue;
-      d_v.push_back(s.d);
-    }
+    vec<std::pair<uint64_t, uint64_t>> ab_v;
 
-    if (d_v.size() < GammaModel::min_nsamples) {
-      warn_msg("Too few null samples for p-value (after overlap filter or sparse grid)");
-      r.percentile = std::numeric_limits<double>::quiet_NaN();
-      r.fold = std::numeric_limits<double>::quiet_NaN();
-      continue;
+    auto try_grid = [&](size_t gidx) -> bool {
+      if (!valid_v[gidx]) return false;
+      d_v.clear();
+      ab_v.clear();
+      d_v.reserve(samples_vvec[gidx].size());
+      ab_v.reserve(samples_vvec[gidx].size());
+      for (const auto& s : samples_vvec[gidx]) {
+        if ((s.qidx == qidx) && (s.start < bin_b) && (bin_a < s.end)) continue;
+        d_v.push_back(s.d);
+        ab_v.emplace_back(s.start, s.end);
+      }
+      // Compute wnull from filtered intervals
+      // Perhaps we do not need this after all.
+      // Is it making things unncessarily complicated?
+      if (ab_v.empty()) return false;
+      std::sort(ab_v.begin(), ab_v.end());
+      uint64_t wnull = 0, cur_a = ab_v[0].first, cur_b = ab_v[0].second;
+      for (size_t i = 1; i < ab_v.size(); ++i) {
+        if (ab_v[i].first > cur_b) {
+          wnull += cur_b - cur_a;
+          cur_a = ab_v[i].first;
+          cur_b = ab_v[i].second;
+        } else {
+          cur_b = std::max(cur_b, ab_v[i].second);
+        }
+      }
+      wnull += cur_b - cur_a;
+      const double r = static_cast<double>(wnull) / static_cast<double>(wtotal);
+      return (wtotal > 0) && (r >= GammaModel::min_coverage) && (d_v.size() >= GammaModel::min_nsamples);
+    };
+
+    bool is_vgrid = false;
+    bool is_mgrid = false;
+    // Try primary grid then use the median fallback
+    if (!(is_vgrid = try_grid(grid_idx)) && (grid_idx != mgrid_idx) && (is_mgrid = try_grid(mgrid_idx))) {
+      grid_idx = mgrid_idx;
     }
+    // DEBUG
+    is_mgrid = try_grid(mgrid_idx);
+      grid_idx = mgrid_idx;
+      std::cout << "DEBUG: median grid length = " << L_v[mgrid_idx] << std::endl;
+      std::cout << "DEBUG: grid length = " << (L_v[grid_idx] << params.bin_shift) << std::endl;
+    // DEBUG
+
+    // if (!is_vgrid && !is_mgrid) {
+    //   warn_msg("A null distribution could not be obtained after overlap filtering or due to using a sparse grid");
+    //   r.percentile = std::numeric_limits<double>::quiet_NaN();
+    //   r.fold = std::numeric_limits<double>::quiet_NaN();
+    //   continue;
+    // }
 
     double cdf_val = std::numeric_limits<double>::quiet_NaN();
     double median = std::numeric_limits<double>::quiet_NaN();
@@ -318,6 +370,12 @@ void QIE<T>::fit_gamma_significance()
       const bool has_overlap = (d_v.size() < samples_vvec[grid_idx].size());
       GammaModel::params_t gp;
 
+      // DEBUG
+      const double d_mean = std::accumulate(d_v.begin(), d_v.end(), 0.0) / d_v.size();
+      const double d_median = (d_v.size() % 2 == 0) ? 0.5 * (d_v[d_v.size() / 2 - 1] + d_v[d_v.size() / 2]) : d_v[d_v.size() / 2];
+      std::cerr << "DEBUG: d_v mean = " << d_mean << ", median = " << d_median << ", size = " << d_v.size() << std::endl;
+      // DEBUG
+
       if (!has_overlap) {
         // No overlap, hence just use the precomputed global Gamma
         gp = gp_v[grid_idx];
@@ -326,10 +384,11 @@ void QIE<T>::fit_gamma_significance()
         gp = GammaModel::fit(d_v);
       }
 
-      gamma_distribution<double> g(gp.alpha, gp.beta);
-      cdf_val = boost::math::cdf(g, r.d);
-      median = quantile(g, 0.5);
+      gamma_distribution<double> gamma_dist(gp.alpha, gp.beta);
+      cdf_val = boost::math::cdf(gamma_dist, r.d);
+      median = quantile(gamma_dist, 0.5);
     }
+
     if (r.rstrand) {
       // Two-sided for the strand closer to the reference
       r.percentile = 2.0 * std::min(cdf_val, 1.0 - cdf_val);
@@ -359,9 +418,19 @@ void QIE<T>::sample_distances(uint64_t L, vec<snull_t>& samples_v) const
   }
   if (total_weight == 0) return;
 
+  // DEBUG
+  std::cerr << "DEBUG sample_distances: G=" << G << " N=" << N << " L=" << L
+            << " nqueries=" << qstrides_v.size() << " total_weight=" << total_weight << std::endl;
+  for (size_t qi = 0; qi < qstrides_v.size(); ++qi) {
+    std::cerr << "  qi=" << qi << " name=" << qid_batch[qstrides_v[qi].bix]
+              << " nbins=" << qstrides_v[qi].nbins
+              << " nstrides=" << ((qstrides_v[qi].nbins / G) + 1)
+              << " weight=" << weights[qi] << std::endl;
+  }
+  // DEBUG
+
   // Sample windows with probability proportional to available positions.
   std::discrete_distribution<size_t> rvidx(weights.begin(), weights.end());
-
   for (uint64_t si = 0; si < params.nsamples; ++si) {
     const size_t qidx = rvidx(gen);
     const auto& qs = qstrides_v[qidx];
@@ -386,10 +455,50 @@ void QIE<T>::sample_distances(uint64_t L, vec<snull_t>& samples_v) const
     const uint64_t b = std::min((bin_b << params.bin_shift), qs.nmers);
     const uint64_t u = (b - a) - t;
 
-    // Compute distance via LLH + Brent; widen upper bound when no hits
-    double d = mle(llhf, v, u, t).first;
-    if (std::isnan(d)) d = 0.75;
-    samples_v.push_back({qidx, bin_a, bin_b, d});
+    // Compute MLE distance.
+    const double d_mle = mle(llhf, v, u, t).first;
+    // llhf->set_counts(v.data(), u); // Already set by mle().
+
+    // Laplace approximation: sample from Normal(MLE, 1/I) truncated to [eps, 0.5-eps),
+    // where I is the observed Fisher information (second derivative of neg-llh at MLE).
+    // This directly captures the estimator variance without importance sampling artifacts.
+    static constexpr double h_step = 1e-5;
+    const double d_p = std::min(0.5 - eps, d_mle + h_step);
+    const double d_m = std::max(eps, d_mle - h_step);
+    const double h_eff = (d_p - d_m) / 2.0;
+    double fisher = 0.0;
+    if (h_eff > 0) {
+      const double nll_0 = (*llhf)(d_mle);
+      const double nll_p = (*llhf)(d_p);
+      const double nll_m = (*llhf)(d_m);
+      fisher = (nll_p - 2.0 * nll_0 + nll_m) / (h_eff * h_eff);
+    }
+    // SE from Fisher info; generous fallback if Fisher is non-positive (flat likelihood).
+    const double se = (fisher > eps) ? (1.0 / std::sqrt(fisher)) : 0.1;
+
+    // DEBUG
+    std::cerr << "DEBUG sample_distances: qidx=" << qidx << " name=" << qid_batch[qstrides_v[qidx].bix] << " L=" << L << " mle=" << d_mle
+              << " fisher=" << fisher << " se=" << se
+              << " t=" << t << " u=" << u
+              << " v=[";
+    for (uint32_t d = 0; d < W; ++d) std::cerr << (d ? "," : "") << v[d];
+    std::cerr << "]" << std::endl;
+    // DEBUG
+
+    // Sample ks distances from truncated Normal(d_mle, se^2) via inverse CDF.
+    // Normal CDF: Phi(x) = 0.5 * erfc(-x / sqrt(2))
+    // Normal quantile: Phi^{-1}(p) = -sqrt(2) * erfc_inv(2*p)
+    const double cdf_lo = 0.5 * std::erfc(-(eps - d_mle) / (se * std::sqrt(2.0)));
+    const double cdf_hi = 0.5 * std::erfc(-(0.5 - eps - d_mle) / (se * std::sqrt(2.0)));
+    std::uniform_real_distribution<double> ucdf(cdf_lo, cdf_hi);
+    for (uint64_t ki = 0; ki < ks; ++ki) {
+      const double p = ucdf(gen);
+      const double d_sample = d_mle + se * (-std::sqrt(2.0) * boost::math::erfc_inv(2.0 * p));
+      // DEBUG
+      std::cerr << "  d_sample=" << d_sample << std::endl;
+      // DEBUG
+      samples_v.push_back({qidx, bin_a, bin_b, d_sample});
+    }
   }
 }
 
@@ -831,6 +940,7 @@ void QIE<T>::save_qstride(const DIM<T>& dim)
   const uint64_t nstrides = (nbins_q / G) + 1;
 
   qstride_t qs;
+  qs.bix = bix;
   qs.nbins = nbins_q;
   qs.nmers = dim.get_nmers();
   qs.hdisthist_v.resize(nstrides * W);

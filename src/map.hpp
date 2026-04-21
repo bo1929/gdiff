@@ -8,16 +8,21 @@
 #include "rqseq.hpp"
 #include "sketch.hpp"
 
-static constexpr double eps = 1e-10;
+static constexpr double eps = 1e-7;
 static constexpr uint32_t hdist_bound = 7;
-static constexpr double grid_growth = 1.25;
-static constexpr double subsample_factor = 1.0;
+// Striding parameters for null sample grid
+static constexpr double grid_growth = 1.25; // Incremental step size multiplier across the grid
+static constexpr double subsample_factor = 0.1; // Baseline step size coefficient for tau in bin sizes
+// Constants for weighted distance sampling
+static constexpr uint64_t ks = 10;  // Number of distances to sample per interval
+static constexpr uint64_t ncand = 30;        // Candidate pool size for weighted resampling
 
 template<typename T>
 class QIE;
 
 struct qstride_t
 {
+  size_t bix;
   uint64_t nbins;
   uint64_t nmers;
   vec<uint64_t> hdisthist_v; // subsampled prefix-sum rows, flattened [(nbins/G + 1) × W]
