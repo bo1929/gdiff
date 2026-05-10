@@ -1,83 +1,62 @@
 # TODO
 
-## Next TODOs
+Actionable items from the current review of `map.cpp`/`map.hpp`, `gamma.hpp`, `gdiff.cpp`/`gdiff.hpp`, and tests.
 
-- Apply FDR for p-value correction.
-- **Non-overlapping null sampling**: sample null windows so they do not overlap the tested segment by construction (rejection or stratified sampling); preserve `nsamples` where possible.
-- **ECDF mode**: tie handling and small-`N` / edge-case p-values (complements guards for empty `d_v` in continuous output).
-- Make sure that examples are fine and correct.
-- Make sure that the test is two-sided.
-- From each sampled segment, sample multiple distances based on the likelihood function (proportional to lrw, for example). (important)
-- Extreme cases, exit early without calculations? (Important)
+## Critical Bug Fixes
 
-## Critical / Bugs
+- **Make sampled/skipped query k-mers consistent between interval detection and distance estimation.** `search_mers()` skips `partial_offset() == max` k-mers, while `extract_histogram()` later counts all non-hit k-mers in the bin span as misses. Decide whether unsampled query k-mers are unobserved or misses, then make the likelihood contributions and histogram counts agree.
 
-- **Parameter validation**: Add checks for edge cases, especially minimum tau.
-- **Boundary handling in interval detection**: Audit and clarify boundary logic — currently confusing and potentially incorrect.
-- **Reverse complement coordinates**: Fix/improve how reverse complement coordinates are reported.
-- **Strand separation**: Strands are kept separate (fw/rc), but the test uses the lower distance — verify this is correct.
-- **`extract_intervals` correctness**: Review the algorithm for correctness. (See `docs/proof-extract-intervals-sx-mx.md`.)
+## P2 / Next Fixes
 
-## Recently addressed (keep brief)
+- **Make `MapSC::map()` truly batch queries or intentionally load all queries.** `QSeq::read_next_batch()` appends and never clears, so `map()` currently loads the whole query file into memory before threading. Either process sketches per batch, or rename/document this as whole-query loading and simplify the counter.
+- **Seed per-thread RNGs deterministically.** `gen` is `thread_local`; `--seed` only seeds the main thread, so worker threads use default-identical streams. Derive worker seeds from `seed` and worker index/sketch index.
+- **Audit strand/reference output.** Current output reports both `+` and `-` segments while genome-wide mesh/null sampling uses only the lower-distance strand. Clarify whether downstream users should compare strands, collapse strands, or treat the non-reference strand as inversion evidence.
+- **Add regression coverage for multi-contig edge cases.** Include at least two query contigs with different bin counts, one intact/full-sequence segment, one no-hit segment, and one reverse-complement-selected reference strand.
+- **Add end-to-end boundary tests for interval coordinates.** Unit helpers now cover conversion math; add CLI/QIE tests for `len == k`, `nbins == 2`, `tau_bin > nbins`, full-span `[1, nbins]`, and last-segment extension.
 
-- **Parameter validation**: `map` rejects configurations with `tau_bin < 2`; stderr note for significance stride `G` vs query length.
-- **Null significance**: invalid grid or `< min_nsamples` after overlap filter sets `PERCENTILE`/`FOLD` to NaN (no assert on invalid grid; no ECDF divide-by-zero on empty `d_v`).
-- **NaN semantics**: documented in `map.cpp` above `fit_gamma_significance` (MLE 0.75 when `t=0` in null sampling; NaN p-values when samples insufficient).
-- **Segment end coordinates**: last-segment-only `k-1` extension in `collect_segments` is **intentional** (do not “fix”).
+## Recently Addressed
 
-## High Priority
+- **Reference-strand significance:** `record_t` now stores whether a segment is on the null-sampled strand; that strand gets the two-sided p-value.
+- **Intact segment significance skip:** records now use record-local site coordinates for full-sequence detection.
+- **Unsupported `--hdist-th`:** CLI validation now rejects values above the fixed 8-lane histogram capacity.
+- **Null-window overlap coordinate conversion:** null sampling converts record bin coordinates to 0-based half-open bin-boundary coordinates before overlap rejection.
+- **Coordinate conventions:** coordinate conversion helpers now define enum-only interval coverage and continuous-mode boundary rows; README documents the public output convention.
+- **Direct unit coverage:** added direct tests for reference-strand p-value adjustment, half-open null-window overlap boundaries, and bin-to-output coordinate conversion.
 
-- **Output format**: Design a clean output format with a header for both modes.
-- **Interval merging**: Add option to merge overlapping intervals per distance; consider aggressive merging.
-- **Code review**: Review and polish `gdiff.cpp`/`gdiff.hpp` — improve messages, naming, and readability.
-- **Write tests**: Add automated tests for core functionality.
+## Optimizations
 
-## Open Questions
+- **Avoid full-file query buffering for large inputs.** The current map path scales memory with all query sequences plus all per-sketch result buffers. A batch-oriented design would also let continuous significance state be released earlier.
+- **Reduce per-record null sampling cost.** `test_significance()` fits a gamma model for every segment and runs MH draws for every accepted mesh sample. Cache reusable null samples by query/reference context where statistically valid, and benchmark fewer MH draws per mesh with calibration tests.
+- **Use a faster histogram path for common `hdist_th <= 4`.** The AVX-512/SIMDe path always handles 8 lanes. A small scalar loop or specialized 5-lane path may be faster on Apple Silicon where SIMDe emulates AVX-512.
+- **Release interval and prefix buffers after use.** `release_accumulators()` exists but is disabled; revisit lifetime now that continuous mode saves only mesh histograms and records.
+- **Benchmark `extract_intervals_mx()` vs `extract_intervals_sx()`.** Tests show agreement; keep one implementation unless both have a measured use.
 
-- **Remove sdust?** Evaluate whether sdust filtering is still needed.
-- **Remove m/r splitting?** Sketching without minimizer/remainder splitting may be significantly faster.
-- **How to handle Ns and skip positions?**
-- **How to report interval positions?** Use positions of k-mers?
-- **Inversion detection**: Can strand comparison (ups/downs of fw vs rc) be used to detect inversions?
-- **Postprocessing for fw/rc**: What downstream handling is needed for +/- strand results?
+## Design Cleanup
 
-## Improvements
+- **Move significance configuration into CLI/config.** `test_significance(params.nsamples, 250)` hard-codes `ntries`; expose or derive it from `nsamples` and expected rejection rate.
+- **Replace magic constants with named config.** Examples: `hdist_bound = 7`, `npoints_min = 8`, `npoints_max = 128`, MH `S = 50`, MH `B = 100`, and distance upper bound `0.5`.
+- **Clean dead/stale comments.** Remove commented-out code in `map.cpp` (`extract_intervals_sx`, `chisq_val`, `sample_box_muller` second draw, warnings) once decisions are made.
+- **Document output schema.** README and tests should state coordinate indexing, interval end inclusivity, `MASK`, `D_INTERVAL`, `PERCENTILE`, and `FOLD`.
+- **Clarify gamma model choice.** `GammaModel::fit()` supports noise-aware MLE/QMATCH, but `score_gamma()` uses `fit_from_samples()`. Keep both only if both are used or planned; otherwise remove the unused path or add tests for the intended public method.
 
-- **Performance optimization**: Further optimize hot paths.
-- **Second derivative analysis**: Investigate whether the minimum second-derivative interval is meaningful.
-- **Overlapping metric**: Define a metric to measure interval overlap before/after merging.
-- **One-pass merge strategy**: Do one pass, take min p-value, merge, check neighbors, repeat.
-- **Memory usage for intervals**: Intervals use a lot of memory; keep temp data and clear across thresholds.
-- **Early skip for intervals**: Find conditions to skip interval checking (e.g., save prefmax/suffmin).
+## Validation
 
-## I/O and Sketching
+- **Run sanitizers on map/significance paths.** Use ASan/UBSan with tests that set `--hdist-th` near the supported maximum and include continuous-mode significance.
+- **Run a deterministic multi-thread regression.** Same seed and inputs should produce identical output for `--num-threads 1`, `2`, and higher counts, modulo row ordering if explicitly allowed.
+- **Refresh golden regression outputs only after coordinate/significance semantics are fixed.**
+- **Compare segment distances against an independent implementation.** Use krepp or a small scalar reference for per-segment MLE and Fisher information.
 
-- **Binary I/O**: Improve write/read of binary blocks — use buffers, avoid large single-chunk reads.
-- **Save k-mer positions**: Store positions of k-mers and query sketch; requires metadata (lengths). Use `rho1*rho2`?
-- **Sketch-to-sketch mode?**
+## Lower Priority / Research
 
-## Static Analysis and Sanitizers
+- **Apply FDR correction to segment p-values.**
+- **Evaluate whether sdust filtering is still needed.**
+- **Evaluate removing minimizer/remainder splitting if benchmarks show it is slower than direct sketching.**
+- **Explore inversion detection from strand-specific high/low distance patterns.**
+- **Investigate distance-vector models for tree-distance estimation.**
 
-- Run Clang's Static Analyzer (`scan-build`).
-- Run AddressSanitizer and ThreadSanitizer.
-- Verify memory accesses in krepp (related project) are bug-free.
-- Validate against krepp?
+## Plotting
 
-## plot.py
-
-- **Header-aware input**: Make the plotting input compatible with the new output format.
-- **Contig size in plots**: Take contig size into consideration.
-- **Color scheme**: Experiment with non-linear color scales.
-  - No match: 0.75+
-  - One color range: 0.5–0.75
-  - Add toggle for switching to a continuous color scale.
-- **Selection/navigation**: Show selection without zooming into intervals; enable scroll-back and mouse interaction.
-- **Annotations**: Improve annotation styling and colors. Maybe show the name when it's close.
-
-## Future / Research Ideas
-
-- **Distance vector model**: Given a per-segment distance vector and an ANI estimate for a genome, build a model to estimate a tree distance vector. Handle missing data. Constrain vectors. Possibly incorporate genome-wide distance embeddings.
-- **krepp distance per segment**: Use krepp to compute/validate per-segment distances.
-
-## Notes
-Whatever you do, update the tests and the readme constantly.
+- **Make `plot.py` header-aware for the current output schema.**
+- **Use contig length when scaling interval plots.**
+- **Improve navigation/selection without zooming away from context.**
+- **Add color handling for NaN/no-match and bounded distance intervals.**

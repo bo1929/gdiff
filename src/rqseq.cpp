@@ -68,10 +68,13 @@ void RSeq::extract_mers(vvec<T>& table)
   hll::HyperLogLog c1(12);
   hll::HyperLogLog c2(12);
   uint64_t klix = 0;
-  uint64_t orenc64_bp, orenc64_lr, rcenc64_bp;
+  uint64_t orenc64_bp, orenc64_lr;
+#ifdef CANONICAL
+  uint64_t rcenc64_bp;
+#endif
   std::vector<hmer_t> winenc_v(ldiff);
   hmer_t cminimizer;
-  uint32_t mrs = 0, mre = len;
+  // uint32_t mrs = 0, mre = len; // These may be needed for masking purposes
   int mn = 0, mi = 0;
   for (i = l = 0; i < len;) {
     if (SEQ_NT4_TABLE[cseq[i]] >= 4) {

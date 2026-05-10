@@ -26,7 +26,7 @@ class SDHM;
 class SFHM;
 class Sketch;
 
-// using inc_t = uint32_t; // This might be just OK...
+// using inc_t = uint32_t; // This might be just OK
 using inc_t = uint64_t;
 using enc_t = uint32_t;
 using str = std::string;
@@ -70,8 +70,7 @@ struct params_t
   double chisq;       // Chi-square threshold in the statistical test for interval merging
   uint64_t bin_shift; // Shift value for fast bin index calculation
   uint64_t bin_size;  // Bin size in sites, equals to pow(2, bin_shift)
-  uint64_t nsamples;  // Number of null distance samples per grid length
-  bool ecdf_test;     // Use ECDF-based test instead of Gamma parameter estimation
+  uint64_t nsamples;  // Total number of intervals drawn from the genome per test
   bool enum_only;
 
   params_t(size_t n,
@@ -81,7 +80,6 @@ struct params_t
            double chisq,
            uint64_t bin_shift,
            uint64_t nsamples,
-           bool ecdf_test,
            bool enum_only)
     : n(n)
     , dist_th(dist_th)
@@ -92,7 +90,6 @@ struct params_t
     , bin_shift(bin_shift)
     , bin_size(uint64_t(1) << bin_shift)
     , nsamples(nsamples)
-    , ecdf_test(ecdf_test)
     , enum_only(enum_only)
   {
   }

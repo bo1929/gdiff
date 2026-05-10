@@ -35,9 +35,9 @@ public:
   std::vector<enc_t>::const_iterator bucket_iter_next(uint32_t rix);
   const enc_t* bucket_ptr_start(uint32_t rix) const noexcept;
   const enc_t* bucket_ptr_next(uint32_t rix) const noexcept;
-  // Prefetch the inc_v cache line that holds the bucket boundaries for rix.
+  // Prefetch the inc_v cache line that holds the bucket boundaries for rix
   void prefetch_inc(uint32_t rix) const noexcept;
-  // Requires inc_v[rix] to already be in cache (call after prefetch_inc has resolved).
+  // Requires inc_v[rix] to already be in cache (call after prefetch_inc has resolved)
   void prefetch_enc(uint32_t rix) const noexcept;
 
 private:

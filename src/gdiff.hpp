@@ -98,8 +98,7 @@ private:
   uint64_t tau = 1;
   uint64_t bin_shift = 0;
   double chisq = 33.00051; // 1e-10
-  uint64_t nsamples = 500;
-  bool ecdf_test = false;
+  uint64_t nsamples = 200;
   bool enum_only = false;
   std::vector<double> dist_th;
   uint64_t total_qseq = 0;

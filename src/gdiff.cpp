@@ -20,23 +20,31 @@ bool MapSC::validate_configuration()
   bool is_invalid = false;
   if (dist_th.size() != 1 && dist_th.size() != 8) {
     is_invalid = true;
-    std::cerr << "Exactly 1 or 8 -d (--dist-th) thresholds must be provided, got " << dist_th.size() << std::endl;
+    cerr_msg("--dist-th requires exactly 1 or 8 thresholds; got ", dist_th.size());
   }
   for (size_t i = 0; i < dist_th.size(); ++i) {
     if (std::abs(dist_th[i]) < 1e-6) {
       is_invalid = true;
-      std::cerr << "One of the distance thresholds is too close to zero: " << dist_th[i] << std::endl;
+      cerr_msg("--dist-th[", i, "] is too close to zero: ", dist_th[i]);
     }
   }
-  if ((uint64_t(1) << bin_shift) > tau) {
+  if (hdist_th > hdist_bound) {
     is_invalid = true;
-    std::cerr << "The given bin size (2^b) is too large for the minimum length threshold, b: " << bin_shift << std::endl;
+    cerr_msg("--hdist-th must be in [0, ", hdist_bound, "] with the current SIMD histogram layout; got ", hdist_th);
   }
-  const uint64_t bin_size = uint64_t(1) << bin_shift;
-  const uint64_t tau_bin = (tau + bin_size - 1) >> bin_shift;
+  if (bin_shift >= 63) {
+    is_invalid = true;
+    cerr_msg("--bin-shift must be less than 63; got ", bin_shift);
+  }
+  const uint64_t bin_size = (bin_shift < 63) ? (uint64_t(1) << bin_shift) : 0;
+  if (bin_size > tau) {
+    is_invalid = true;
+    cerr_msg("--bin-shift gives bin_size=", bin_size, ", which exceeds --min-length=", tau);
+  }
+  const uint64_t tau_bin = (bin_size > 0) ? ((tau + bin_size - 1) >> bin_shift) : 0;
   if (tau_bin < 2) {
     is_invalid = true;
-    std::cerr << "Minimum length (-l) must yield at least 2 bins after binning, increase -l or decrease -b" << std::endl;
+    cerr_msg("--min-length must span at least two bins after binning ", "(tau=", tau, ", bin_size=", bin_size, ")");
   }
   return !is_invalid;
 }
@@ -47,7 +55,7 @@ void MapSC::write_header()
     (*output_stream) << "QUERY_ID\tSEQ_LEN\tINTERVAL_START\tINTERVAL_END\tSTRAND\tREF_ID\tDIST_TH\n";
   } else {
     (*output_stream)
-      << "QUERY_ID\tSEQ_LEN\tINTERVAL_START\tINTERVAL_END\tSTRAND\tREF_ID\tDIST\tMASK\tSIGN\tDIST_CONTIG\tDIST_GENOME\tPERCENTILE\tFOLD\n";
+      << "QUERY_ID\tSEQ_LEN\tINTERVAL_START\tINTERVAL_END\tSTRAND\tREF_ID\tDIST\tMASK\tD_INTERVAL\tDIST_CONTIG\tDIST_GENOME\tPERCENTILE\tFOLD\n";
   }
 }
 
@@ -71,7 +79,7 @@ void MapSC::map()
   uint32_t nsketches;
   sketch_stream.read(reinterpret_cast<char*>(&nsketches), sizeof(uint32_t));
   const uint32_t nthreads = std::max(1u, std::min(num_threads, nsketches));
-  std::cerr << "Processing " << nsketches << " sketches w/ " << nthreads << " thread(s)..." << std::endl;
+  cerr_msg("Processing ", nsketches, " sketches w/ ", nthreads, " thread(s)...");
 
   std::vector<uint64_t> sketch_offsets(nsketches);
   for (uint32_t i = 0; i < nsketches; ++i) {
@@ -81,8 +89,8 @@ void MapSC::map()
   sketch_stream.close();
 
   size_t n = dist_th.size();
-  params_t<double> params_single(n, dist_th.front(), hdist_th, tau, chisq, bin_shift, nsamples, ecdf_test, enum_only);
-  params_t<cm512_t> params_multiple(n, {0}, hdist_th, tau, chisq, bin_shift, nsamples, ecdf_test, enum_only);
+  params_t<double> params_single(n, dist_th.front(), hdist_th, tau, chisq, bin_shift, nsamples, enum_only);
+  params_t<cm512_t> params_multiple(n, {0}, hdist_th, tau, chisq, bin_shift, nsamples, enum_only);
   std::copy(dist_th.begin(), dist_th.end(), params_multiple.dist_th.begin());
 
   // Per-sketch result buffers
@@ -142,27 +150,27 @@ bool SketchSC::validate_configuration()
   bool is_invalid = false;
   if (w < k) {
     is_invalid = true;
-    std::cerr << "The minimum minimizer window size (-w) is k (-k)!" << std::endl;
+    cerr_msg("The minimum minimizer window size (-w) is k (-k)!");
   }
   if (h < 3) {
     is_invalid = true;
-    std::cerr << "The minimum number of LSH positions (-h) is 3!" << std::endl;
+    cerr_msg("The minimum number of LSH positions (-h) is 3!");
   }
   if (h > 16) {
     is_invalid = true;
-    std::cerr << "The maximum number of LSH positions (-h) is 16!" << std::endl;
+    cerr_msg("The maximum number of LSH positions (-h) is 16!");
   }
   if (k > 32) {
     is_invalid = true;
-    std::cerr << "The maximum allowed k-mer length (-k) is 32!" << std::endl;
+    cerr_msg("The maximum allowed k-mer length (-k) is 32!");
   }
   if (k < 19) {
     is_invalid = true;
-    std::cerr << "The minimum allowed k-mer length (-k) is 19!" << std::endl;
+    cerr_msg("The minimum allowed k-mer length (-k) is 19!");
   }
   if ((k - h) > 16) {
     is_invalid = true;
-    std::cerr << "For compact k-mer encodings, h must be >= k-16!" << std::endl;
+    cerr_msg("For compact k-mer encodings, h must be >= k-16!");
   }
   return !is_invalid;
 }
@@ -175,8 +183,8 @@ void SketchSC::create()
   sketch_sfhm = std::make_shared<SFHM>(sdhm);
   rho = rs->get_rho();
 
-  std::cerr << "Total number of k-mers included in the sketch: " << sdhm->get_nmers() << std::endl;
-  std::cerr << "Subsampling rate (rho) is: " << rho << std::endl;
+  cerr_msg("Total number of k-mers included in the sketch: ", sdhm->get_nmers());
+  cerr_msg("Subsampling rate (rho) is: ", rho);
 }
 
 void SketchSC::write_header(std::ofstream& sout)
@@ -250,13 +258,12 @@ MapSC::MapSC(CLI::App& sc)
     ->check(url_validator | CLI::ExistingFile);
   sc.add_option("-i,--sketch-path", sketch_path, "Sketch file at <path> to query.")->required()->check(CLI::ExistingFile);
   sc.add_option("-o,--output-path", output_path, "Write output to a file at <path>. [stdout]");
-  sc.add_option("--hdist-th", hdist_th, "Maximum Hamming distance for a k-mer to match. [4]")->check(CLI::NonNegativeNumber);
+  sc.add_option("--hdist-th", hdist_th, "Maximum Hamming distance for a k-mer to match. [4]")
+    ->check(CLI::Range(0, static_cast<int>(hdist_bound)));
   sc.add_option("--chisq", chisq, "Chi-square threshold. [33.00051]")->check(CLI::NonNegativeNumber);
   sc.add_option("-d,--dist-th", dist_th, "Distance threshold(s) - provide exactly 1 or 8 values")->required()->expected(1, 8);
   sc.add_option("-l,--min-length", tau, "Minimum interval length.")->required()->check(CLI::PositiveNumber);
-  sc.add_option("-b,--bin-shift", bin_shift, "Group consecutive k-mers into bins of size 2^b. [0]")
-    ->check(CLI::NonNegativeNumber);
-  sc.add_flag("--ecdf-test,!--no-ecdf-test", ecdf_test, "Use ECDF-based test instead of the Gamma assumption. [false]");
+  sc.add_option("-b,--bin-shift", bin_shift, "Group consecutive k-mers into bins of size 2^b. [0]")->check(CLI::Range(0, 62));
   sc.add_flag("--enum-only,!--no-enum-only", enum_only, "Enumerate intervals without MLE distance estimation. [false]");
   sc.callback([&]() {
     if (!validate_configuration()) {
@@ -271,7 +278,7 @@ MapSC::MapSC(CLI::App& sc)
 
 void MergeSC::merge()
 {
-  std::cerr << "Preparing to merge " << sketch_paths.size() << " sketch file(s)" << std::endl;
+  cerr_msg("Preparing to merge ", sketch_paths.size(), " sketch file(s)");
 
   std::ofstream sout(output_path, std::ofstream::binary);
   check_fstream(sout, "Cannot open output file", output_path);
@@ -304,7 +311,7 @@ void MergeSC::merge()
   check_fstream(sout, "Failed to write the merged sketch file!", output_path);
   sout.close();
 
-  std::cerr << "Merged sketch saved to " << output_path << " with " << total_sketches << " sketch(es)" << std::endl;
+  cerr_msg("Merged sketch saved to ", output_path.string(), " with ", total_sketches, " sketch(es)");
 }
 
 MergeSC::MergeSC(CLI::App& sc)
@@ -430,32 +437,32 @@ int main(int argc, char** argv)
   std::cerr << std::ctime(&tstart_f);
 
   if (sc_sketch.parsed()) {
-    std::cerr << "Initializing the sketch..." << std::endl;
+    cerr_msg("Initializing the sketch...");
     krepp_sketch.set_nrows();
     krepp_sketch.set_lshf();
     std::chrono::duration<float> es_b = std::chrono::system_clock::now() - tstart;
     krepp_sketch.create();
     krepp_sketch.save();
     std::chrono::duration<float> es_s = std::chrono::system_clock::now() - tstart - es_b;
-    std::cerr << "Done sketching & saving, elapsed: " << es_s.count() << " sec" << std::endl;
+    cerr_msg("Done sketching & saving, elapsed: ", es_s.count(), " sec");
   }
 
   if (sc_merge.parsed()) {
-    std::cerr << "Merging sketches..." << std::endl;
+    cerr_msg("Merging sketches...");
     std::chrono::duration<float> es_b = std::chrono::system_clock::now() - tstart;
     krepp_merge.merge();
     std::chrono::duration<float> es_s = std::chrono::system_clock::now() - tstart - es_b;
-    std::cerr << "Done merging sketches, elapsed: " << es_s.count() << " sec" << std::endl;
+    cerr_msg("Done merging sketches, elapsed: ", es_s.count(), " sec");
   }
 
   if (sc_map.parsed()) {
-    std::cerr << "Loading the sketch..." << std::endl;
-    std::cerr << "Seeking query sequences in the sketch..." << std::endl;
+    cerr_msg("Loading the sketch...");
+    cerr_msg("Seeking query sequences in the sketch...");
     std::chrono::duration<float> es_b = std::chrono::system_clock::now() - tstart;
     krepp_map.map();
     std::chrono::duration<float> es_s = std::chrono::system_clock::now() - tstart - es_b;
-    std::cerr << "Done mapping sequences, elapsed: " << es_s.count() << " sec" << std::endl;
-    std::cerr << "Total number of sequences queried: " << krepp_map.get_total_qseq() << std::endl;
+    cerr_msg("Done mapping sequences, elapsed: ", es_s.count(), " sec");
+    cerr_msg("Total number of sequences queried: ", krepp_map.get_total_qseq());
   }
 
   if (sc_info.parsed()) {
@@ -469,5 +476,5 @@ int main(int argc, char** argv)
   return 0;
 }
 
-// TODO: Rename the tool, add header text. Check the --help descriptions and defaults.
+// TODO: Rename the tool, add header text. Check the --help descriptions and defaults
 // TODO: Also the name!!!

@@ -32,9 +32,9 @@ public:
     }
   }
 
-  const double rho;
   const uint32_t h;
   const uint32_t k;
+  const double rho;
   const uint32_t hdist_th;
   std::vector<uint64_t> binom_coef_k;
   std::vector<uint64_t> binom_coef_hnk;
@@ -91,7 +91,7 @@ public:
     u = u_r;
   }
 
-  // Passing a reference (&) fails due to SIMD for these...
+  // Passing a reference (&) fails due to SIMD for these
   const T get_sdc(uint32_t d) const { return sdc_v[d]; }
 
   const T get_fdc(uint32_t d) const { return fdc_v[d]; }
@@ -101,6 +101,8 @@ public:
   const T get_fdc() const { return fdc_u; }
 
   T get_sign() const { return sign; }
+
+  T get_extrema() const { return extrema; }
 
   std::pair<uint8_t, uint8_t> get_sign_bv() const
   {
@@ -169,9 +171,9 @@ public:
     return lsum - (std::log((rho * lv_m) + 1.0 - rho) * u);
   }
 
-  // Analytic observed Fisher information.
-  // I(D) = -d^2/dD^2 log L(D) (the negative log-likelihood evaluated at the given D).
-  // Note that operator()(D) above computes the negative log-likelihood.
+  // Analytic observed Fisher information:
+  // I(D) = -d^2/dD^2 log L(D) (the negative log-likelihood evaluated at the given D)
+  // Note that operator()(D) above computes the negative log-likelihood
   double compute_fisher_info(const uint64_t* v_r, uint64_t u_r, double D) const
   {
     double ll_dd = 0.0;
@@ -179,6 +181,16 @@ public:
       ll_dd += static_cast<double>(v_r[d]) * compute_sdc_v(D, d);
     }
     ll_dd += static_cast<double>(u_r) * compute_sdc_u(D);
+    return -ll_dd;
+  }
+
+  double compute_fisher_info(double D) const
+  {
+    double ll_dd = 0.0;
+    for (uint32_t d = 0; d <= hdist_th; ++d) {
+      ll_dd += static_cast<double>(v[d]) * compute_sdc_v(D, d);
+    }
+    ll_dd += static_cast<double>(u) * compute_sdc_u(D);
     return -ll_dd;
   }
 

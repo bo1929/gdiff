@@ -92,8 +92,6 @@ TEST_CASE("negative log-likelihood is minimized near true distance") {
   for (uint32_t d = 0; d <= hdist_th; ++d) {
     counts[d] = static_cast<uint64_t>(N * llh.prob_hit(D_true, d));
   }
-  uint64_t total_hits = 0;
-  for (auto c : counts) total_hits += c;
   uint64_t misses = static_cast<uint64_t>(N * llh.prob_miss(D_true));
 
   llh.set_counts(counts.data(), misses);

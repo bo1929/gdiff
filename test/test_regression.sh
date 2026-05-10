@@ -3,8 +3,8 @@ set -euo pipefail
 
 # Regression test: runs gdiff sketch + map in both --enum-only and continuous modes,
 # then compares output against ground truth in gt/.
-#   gt/*.enum.txt  — expected enum-only output
-#   gt/*.cont.txt  — expected continuous-mode output
+#   gt/*.enum.txt  -- expected enum-only output
+#   gt/*.cont.txt  -- expected continuous-mode output
 # Exit 0 on success, non-zero on failure.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -21,7 +21,7 @@ fi
 NPROC="${NPROC:-4}"
 SKETCHING_OPTS="-k 27 -w 31 -h 11 -m 2 -r 1 --frac"
 
-# ── Phase 0: Create sketches ──────────────────────────────────────────────────
+# -- Phase 0: Create sketches --------------------------------------------------
 echo "=== Phase 0: Sketching ==="
 rm -rf sketches && mkdir -p sketches
 while read -r name; do
@@ -30,9 +30,17 @@ while read -r name; do
 done < genome_names.txt
 wait
 
+first_name="$(head -n 1 genome_names.txt)"
+if "$GDIFF" map --hdist-th 8 -d 0.10 -l 9900 \
+  -i "sketches/${first_name}.skc" \
+  -q "genomes/${first_name}.fna.gz" >/dev/null 2>&1; then
+  echo "FAIL: map accepted unsupported --hdist-th 8"
+  exit 1
+fi
+
 rm -rf est && mkdir -p est
 
-# ── Phase 1: enum-only mode ───────────────────────────────────────────────────
+# -- Phase 1: enum-only mode ---------------------------------------------------
 echo "=== Phase 1: enum-only regression ==="
 ENUM_OPTS="-d 0.10 -l 9900 --chisq 10000 --enum-only"
 while IFS=$'\t' read -r query ref; do
@@ -74,7 +82,7 @@ else
   echo "PASS: enum-only"
 fi
 
-# ── Phase 2: continuous mode (default, no --enum-only) ────────────────────────
+# -- Phase 2: continuous mode (default, no --enum-only) ------------------------
 echo "=== Phase 2: continuous regression ==="
 CONT_OPTS="-d 0.10 -l 9900 --chisq 33.00051"
 while IFS=$'\t' read -r query ref; do
@@ -116,10 +124,10 @@ else
   echo "PASS: continuous"
 fi
 
-# ── Cleanup intermediates ─────────────────────────────────────────────────────
+# -- Cleanup intermediates -----------------------------------------------------
 rm -rf sketches est
 
-# ── Summary ───────────────────────────────────────────────────────────────────
+# -- Summary -------------------------------------------------------------------
 echo ""
 if [ "$ENUM_FAIL" -ne 0 ] || [ "$CONT_FAIL" -ne 0 ]; then
   echo "=== REGRESSION FAILED ==="

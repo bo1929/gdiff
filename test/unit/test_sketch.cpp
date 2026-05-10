@@ -147,7 +147,7 @@ TEST_CASE("seek_past correctly advances stream position") {
 
   // After seeking past one sketch, we should be at the end of file
   CHECK(pos_after > pos_before);
-  // Try reading one more byte — should fail (EOF)
+  // Try reading one more byte -- should fail (EOF)
   char c;
   stream.read(&c, 1);
   CHECK(stream.eof());

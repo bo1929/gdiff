@@ -178,7 +178,7 @@ def filter_intervals_continuous(
 
     strand: '+', '-', or 'both'. When 'both', pick strand with lowest DIST_CONTIG per interval.
     pval_th: if set, keep only rows with PERCENTILE <= pval_th.
-    sign: "<" or ">" to filter on the SIGN column; None means no filter.
+    sign: "<" or ">" to filter on the SIGN column (legacy enum); ignored if SIGN is absent.
     """
     df_q = df[df["QUERY_ID"] == seq_id].copy()
 

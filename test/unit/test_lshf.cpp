@@ -34,13 +34,6 @@ TEST_CASE("ppos and npos partition {0, ..., k-1}") {
   CHECK(all_pos.size() == 27);
 }
 
-TEST_CASE("ppos has no duplicates") {
-  LSHF lshf(27, 11, 2);
-  auto ppos = lshf.get_ppos();
-  std::set<uint8_t> s(ppos.begin(), ppos.end());
-  CHECK(s.size() == ppos.size());
-}
-
 TEST_CASE("compute_hash is deterministic for same input") {
   // Construct with known positions
   vec<uint8_t> ppos = {26, 25, 20, 18, 15, 14, 13, 10, 7, 5, 0};
@@ -56,42 +49,6 @@ TEST_CASE("compute_hash is deterministic for same input") {
   uint32_t h1 = lshf.compute_hash(enc_bp);
   uint32_t h2 = lshf.compute_hash(enc_bp);
   CHECK(h1 == h2);
-}
-
-TEST_CASE("compute_hash produces different outputs for different inputs") {
-  vec<uint8_t> ppos = {26, 25, 20, 18, 15, 14, 13, 10, 7, 5, 0};
-  vec<uint8_t> npos;
-  std::set<uint8_t> pset(ppos.begin(), ppos.end());
-  for (uint8_t i = 0; i < 27; ++i) {
-    if (pset.find(i) == pset.end()) npos.push_back(i);
-  }
-  LSHF lshf(2, ppos, npos);
-
-  uint32_t h1 = lshf.compute_hash(0x0000000001);
-  uint32_t h2 = lshf.compute_hash(0x0000000002);
-  // Very likely different; exact check depends on hash positions
-  // But for different bp encodings, hashes should differ unless hash positions happen to be the same
-  // Just check they are computed without crashing
-  CHECK(std::is_same_v<decltype(h1), uint32_t>);
-  CHECK(std::is_same_v<decltype(h2), uint32_t>);
-}
-
-TEST_CASE("drop_ppos_lr reduces information") {
-  vec<uint8_t> ppos = {26, 25, 20, 18, 15, 14, 13, 10, 7, 5, 0};
-  vec<uint8_t> npos;
-  std::set<uint8_t> pset(ppos.begin(), ppos.end());
-  for (uint8_t i = 0; i < 27; ++i) {
-    if (pset.find(i) == pset.end()) npos.push_back(i);
-  }
-  LSHF lshf(2, ppos, npos);
-
-  // Two k-mers that differ only at hash positions should give same drop_ppos_lr
-  // This is hard to construct without knowing the exact positions, so just verify
-  // the function runs and returns a uint32_t
-  uint64_t enc_lr = 0xABCDEF0123456789ULL;
-  uint32_t result = lshf.drop_ppos_lr(enc_lr);
-  // The result should fit in 32 bits (npos = 16 positions -> 32 bits in lr encoding)
-  CHECK(result == result); // non-NaN check (it's an int, always true)
 }
 
 TEST_CASE("hash distribution is not degenerate") {

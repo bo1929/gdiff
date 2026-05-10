@@ -15,6 +15,12 @@ cd gdiff && make
 
 Run `./gdiff --help` to verify. You may then copy the binary to a directory on your `$PATH` (e.g., `cp ./gdiff ~/.local/bin`).
 
+## Documentation
+
+- **[TODO.md](TODO.md)** — active task list.
+- **[docs/engineering-review.md](docs/engineering-review.md)** — algorithm, statistics, known gaps, and suggested next steps (kept in sync with the code; supersedes stray one-off review files).
+- **[docs/proof-extract-intervals-sx-mx.md](docs/proof-extract-intervals-sx-mx.md)** — correctness notes for interval extraction.
+
 ## Quickstart
 
 gdiff operates in two stages: build a sketch from a reference sequence, then map query sequences against it to extract intervals.
@@ -46,11 +52,11 @@ The output is tab-separated:
 ```
 QUERY_ID  SEQ_LEN  INTERVAL_START  INTERVAL_END  STRAND  REF_ID  DIST_TH
 read1     5200     120             3041          +       ref_A   0.05
-read2     4800     0               2199          -       ref_A   0.05
+read2     4800     1               2199          -       ref_A   0.05
 ```
 
-Each row is a genomic interval in the query whose k-mer profile is significantly closer to the reference than the background, as determined by a chi-squared test on the log-likelihood difference.
-Coordinates are 0-based; `INTERVAL_END` is inclusive and extends to the last base of the final k-mer.
+Each row is a query interval whose k-mer profile is significantly closer to the reference than the background, as determined by a chi-squared test on the log-likelihood difference.
+Coordinates are 1-based. In `--enum-only` mode, `INTERVAL_START` and `INTERVAL_END` are inclusive sequence coordinates covering the selected k-mer bins. In continuous mode, rows partition the query by 1-based k-mer-start boundaries; adjacent rows can share a boundary coordinate, and the final row extends to `SEQ_LEN`.
 
 By default, output goes to stdout. Use `-o intervals.tsv` to write to a file instead.
 
@@ -94,38 +100,32 @@ Prints the name, build date, k-mer length, window length, LSH parameters, subsam
 | `-d, --dist-th` | — | Distance threshold(s); provide exactly 1 or 8 values. **Required.** |
 | `-l, --min-length` | — | Minimum interval length (bp). **Required.** |
 | `-o, --output-path` | stdout | Write output to a file. |
-| `--hdist-th` | `4` | Maximum Hamming distance for a k-mer hit. |
+| `--hdist-th` | `4` | Maximum Hamming distance for a k-mer hit; supported range is 0–7. |
 | `--chisq` | `33.00051` | Chi-squared threshold (default ≈ p=1e-10 with 8 d.f.). |
 | `-b, --bin-shift` | `0` | Group consecutive k-mers into bins of size 2^b. |
 | `--num-threads` | `1` | Number of threads for parallel sketch processing. |
+| `--enum-only` | off | Emit interval endpoints only (no MLE distances or significance columns). |
 
-When exactly 8 distance thresholds are provided via `-d`, gdiff uses AVX-512 SIMD to evaluate all 8 thresholds simultaneously in a single pass over the query.
+When exactly 8 distance thresholds are provided via `-d`, gdiff evaluates all eight in one SIMD-wide pass (`cm512_t` path).
 
-## Interactive Visualization
+Without `--enum-only`, segment rows include distances and significance (`PERCENTILE`, `FOLD`); see `gdiff map --help` and [docs/engineering-review.md](docs/engineering-review.md) for semantics.
 
-The `plot.py` script creates an interactive Dash/Plotly web application for visualizing genomic intervals and phylogenetic trees.
+## Interactive visualization
 
-### Basic Usage
+The `plot.py` script builds an interactive Dash/Plotly app for intervals (and optional tree / annotations). Example:
+
 ```bash
-python plotx.py --input <TSV_DATA> --tree <NEWICK_TREE> --query <QUERY_NAME>
+python plot.py --input <TSV_DATA> --tree <NEWICK_TREE> --query <QUERY_NAME>
 ```
 
-### With Gene Annotations
-Add a gene annotation panel below the interval visualization:
+With optional annotations:
+
 ```bash
-python plotx.py \
+python plot.py \
   --input <TSV_DATA> \
   --tree <NEWICK_TREE> \
   --annotation <ANNOTATION_TSV> \
   --query <QUERY_NAME>
 ```
 
-### Options
-- `--input`, `-i`: Path to TSV data file (required)
-- `--tree`, `-t`: Path to Newick tree file (required)
-- `--query`, `-q`: Query leaf name for distance calculations (optional)
-- `--annotation`, `-a`: Path to annotation TSV file (optional)
-- `--port`, `-p`: Port number (default: 8080)
-- `--host`: Host address (default: 127.0.0.1)
-- `--debug`: Enable debug mode
->>>>>>> 1aac9c6 (updated plotting to add gtf/gff annotations)
+See `python plot.py --help` for options (port, host, debug, etc.).

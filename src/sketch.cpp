@@ -48,7 +48,7 @@ void Sketch::seek_past(std::ifstream& stream)
   // Skip rid (rid_len bytes) + timestamp (8 bytes)
   stream.seekg(static_cast<std::streamoff>(rid_len) + static_cast<std::streamoff>(sizeof(uint64_t)), std::ios::cur);
 
-  uint8_t k, w, h; // Skip k, w, h
+  uint8_t k, w, h; // Read k, skip one byte for w and then read h
   stream.read(reinterpret_cast<char*>(&k), sizeof(uint8_t));
   stream.seekg(sizeof(uint8_t), std::ios::cur);
   stream.read(reinterpret_cast<char*>(&h), sizeof(uint8_t));
