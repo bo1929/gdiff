@@ -628,10 +628,10 @@ bool QIE<T>::sample_metropolis_hastings(const xy_t& init, uint64_t S, uint64_t B
   for (uint64_t iter = 0; iter < B + S; ++iter) {
     // Reflect proposal off boundaries to stay in (0,1)
     double d_i = d + step * sample_box_muller(gen);
-    // Reflect instead of reject — better mixing near boundaries
+    // Reflect instead of reject - better mixing near boundaries
     if (d_i <= 0.0) d_i = -d_i;
-    if (d_i >= 1.0) d_i = 2.0 - d_i;
-    d_i = std::clamp(d_i, eps, 1.0 - eps);
+    if (d_i >= 0.5) d_i = 1.0 - d_i;
+    d_i = std::clamp(d_i, eps, 0.5 - eps);
 
     const double llh_i = f(d_i);
     const double log_alpha = llh_i - llh;
@@ -721,7 +721,7 @@ double QIE<T>::compute_mle_dist(const vec<uint64_t>& v, uint64_t u, uint64_t t)
   llhf->set_counts(v.data(), u);
   auto f = [&](const double& D) { return (*llhf)(D); };
   // const double ub = (t == 0) ? 0.75 + eps : 0.5;
-  const double ub = 0.5;
+  const double ub = 0.5 - eps;
   xy_t result = boost::math::tools::brent_find_minima(f, eps, ub, 24);
   if (std::isnan(result.first)) result.first = ub; // TODO: How to handle these?
   return result.first;
@@ -802,7 +802,7 @@ xy_t QIE<T>::score_gamma(const record_t& r, const vec<xy_t>& samples_v) const
     return {std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::quiet_NaN()};
   }
   const double sigma_r = (r.I > 0.0 && std::isfinite(r.I)) ? (1.0 / std::sqrt(r.I)) : 0.0;
-  const double prob = GammaModel::marginal_cdf(r.d, sigma_r, gp.shape, gp.scale);
+  const double prob = GammaModel::gamma_cdf(r.d, gp.shape, gp.scale);
 
   // Median of the latent Gamma distribution by binary search on [eps, 1-eps].
   // Uses plain gamma_cdf since the fit was on latent draws -- no convolution with sigma_r.
@@ -825,7 +825,7 @@ template<typename T>
 void QIE<T>::report_contiguous(std::ostream& sout, const str& rid) const
 { // TODO: Revisit?
   for (const auto& r : records_v) {
-    const char strand = r.is_rc ? '-' : '+';
+    const char strand = r.is_ref ? '-' : '+';
     std::ostringstream d_bin;
     d_bin.flags(sout.flags());
     d_bin.precision(sout.precision());

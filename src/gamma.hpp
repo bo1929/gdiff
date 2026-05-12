@@ -9,6 +9,9 @@
 #include <boost/math/distributions/gamma.hpp>
 #include "types.hpp"
 
+
+typedef boost::math::policies::policy<boost::math::policies::max_series_iterations<1000000>> hpolicy;
+
 // Latent-Gamma model with additive Gaussian noise:
 //   d_i = D_i + N(0, sigma2_i),  D_i ~ Gamma(shape, scale)
 //
@@ -95,7 +98,7 @@ struct GammaModel
   [[nodiscard]] static double gamma_pdf(double x, double shape, double scale)
   {
     if (!(x > 0.0) || !(shape > 0.0) || !(scale > 0.0)) return 0.0;
-    return boost::math::pdf(boost::math::gamma_distribution<double>(shape, scale), x);
+    return boost::math::pdf(boost::math::gamma_distribution<double, hpolicy>(shape, scale), x);
   }
 
   // Returns 0 for x <= 0, NaN for invalid parameters.
@@ -103,7 +106,7 @@ struct GammaModel
   {
     if (!(shape > 0.0) || !(scale > 0.0)) return std::numeric_limits<double>::quiet_NaN();
     if (!(x > 0.0)) return 0.0;
-    return boost::math::cdf(boost::math::gamma_distribution<double>(shape, scale), x);
+    return boost::math::cdf(boost::math::gamma_distribution<double, hpolicy>(shape, scale), x);
   }
 
   // Marginal distribution (Gamma convolved with Gaussian noise)

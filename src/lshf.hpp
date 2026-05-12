@@ -17,7 +17,7 @@ public:
   LSHF(uint32_t m, const vec<uint8_t>& ppos_v, const vec<uint8_t>& npos_v);
   void get_random_positions();
   void set_lshf();
-  uint32_t compute_hash(uint64_t enc_bp) const;
+  uint32_t compute_hash(uint64_t enc_bp);
   uint32_t drop_ppos_lr(uint64_t enc64_lr);
   uint32_t drop_ppos_bp(uint64_t enc64_bp);
   uint32_t get_npos_accdiff(uint32_t& zc, uint32_t& i);

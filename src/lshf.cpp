@@ -105,7 +105,7 @@ uint32_t LSHF::drop_ppos_lr(uint64_t enc64_lr)
 
 uint32_t LSHF::drop_ppos_bp(uint64_t enc64_bp) { return static_cast<uint32_t>(_pext_u64(enc64_bp, mask_drop_bp)); }
 #else
-uint32_t LSHF::compute_hash(uint64_t enc64_bp) const
+uint32_t LSHF::compute_hash(uint64_t enc64_bp)
 {
   #if defined(__aarch64__)
   return static_cast<uint32_t>(extract_bits(enc64_bp, mask_hash_bp));
