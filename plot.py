@@ -153,11 +153,10 @@ def filter_intervals(
     if strand and strand != "both" and "STRAND" in df_q.columns:
         df_q = df_q[df_q["STRAND"] == strand]
 
-    # Aggregate to unique intervals
-    df_q = df_q.groupby(
-        ["REF_ID", "y", "QUERY_ID", "INTERVAL_START", "INTERVAL_END", "SEQ_LEN"],
-        as_index=False,
-    )["DIST_TH"].min()
+    grp_cols = ["REF_ID", "y", "QUERY_ID", "INTERVAL_START", "INTERVAL_END", "SEQ_LEN"]
+    if "STRAND" in df_q.columns:
+        grp_cols.append("STRAND")
+    df_q = df_q.groupby(grp_cols, as_index=False)["DIST_TH"].min()
 
     df_q = df_q[df_q["DIST_TH"] <= dist_hi]
     if dist_lo is not None:
@@ -172,21 +171,24 @@ def filter_intervals_continuous(
     tip_order: list[str],
     strand: Optional[str] = None,
     pval_th: Optional[float] = None,
-    sign: Optional[str] = None,
+    fold: Optional[str] = None,
 ) -> pd.DataFrame:
-    """Filter intervals by query, strand, p-value cutoff, and sign.
+    """Filter intervals by query, strand, p-value cutoff, and fold change.
 
     strand: '+', '-', or 'both'. When 'both', pick strand with lowest DIST_CONTIG per interval.
     pval_th: if set, keep only rows with PERCENTILE <= pval_th.
-    sign: "<" or ">" to filter on the SIGN column (legacy enum); ignored if SIGN is absent.
+    fold: "<1" keeps FOLD < 1 (closer than expected), ">1" keeps FOLD > 1 (more distant).
     """
     df_q = df[df["QUERY_ID"] == seq_id].copy()
 
     if pval_th is not None and "PERCENTILE" in df_q.columns:
-        df_q = df_q[df_q["PERCENTILE"] <= pval_th]
+        df_q = df_q[df_q["PERCENTILE"].isna() | (df_q["PERCENTILE"] <= pval_th)]
 
-    if sign is not None and "SIGN" in df_q.columns:
-        df_q = df_q[df_q["SIGN"] == sign]
+    if fold is not None and "FOLD" in df_q.columns:
+        if fold == "<1":
+            df_q = df_q[df_q["FOLD"].isna() | (df_q["FOLD"] < 1.0)]
+        elif fold == ">1":
+            df_q = df_q[df_q["FOLD"].isna() | (df_q["FOLD"] > 1.0)]
 
     if strand and strand != "both" and "STRAND" in df_q.columns:
         df_q = df_q[df_q["STRAND"] == strand]
@@ -221,9 +223,9 @@ def make_cached_filter(df: pd.DataFrame, enum_only=True):
     else:
 
         @lru_cache(maxsize=CACHE_SIZE)
-        def cached_cont(seq_id, tip_order_tuple, strand, pval_th=None, sign=None):
+        def cached_cont(seq_id, tip_order_tuple, strand, pval_th=None, fold=None):
             return filter_intervals_continuous(
-                df, seq_id, list(tip_order_tuple), strand, pval_th, sign
+                df, seq_id, list(tip_order_tuple), strand, pval_th, fold
             )
 
         return cached_cont
@@ -346,7 +348,7 @@ def enforce_min_span(
     if span < min_span:
         center = (lo + hi) / 2
         lo = center - min_span / 2
-        hi = center + min_span / 1.9999  # Slightly offset to handle rounding
+        hi = center + min_span / 2
 
     # Enforce bounds
     if bounds is not None:
@@ -414,15 +416,49 @@ def assign_color_indices(distances, bin_edges, n_colors):
     return np.clip(indices, 0, n_colors - 1)
 
 
+def _build_interval_traces(starts, ends, ys, hovers, bin_idx, bin_colors,
+                           descending=False):
+    """Build trace dicts keyed by color from pre-computed arrays.
+
+    Each interval is rendered as 4 points (start, mid, end, None) so the
+    midpoint acts as a reliable hover target even for short intervals.
+    Plotly renders later traces on top.  Use descending=True when lower bin
+    indices are the most significant (enum mode).
+    """
+    mids = (starts + ends) / 2.0
+    hovers_arr = np.asarray(hovers, dtype=object)
+    traces = {}
+    order = np.unique(bin_idx)
+    if descending:
+        order = order[::-1]
+    for ci in order:
+        sel = bin_idx == ci
+        n = sel.sum()
+        x = np.empty(n * 4, dtype=object)
+        x[0::4], x[1::4], x[2::4], x[3::4] = (
+            starts[sel], mids[sel], ends[sel], None,
+        )
+        y = np.empty(n * 4, dtype=object)
+        y[0::4], y[1::4], y[2::4], y[3::4] = (
+            ys[sel], ys[sel], ys[sel], None,
+        )
+        sh = hovers_arr[sel]
+        text = np.empty(n * 4, dtype=object)
+        text[0::4], text[1::4], text[2::4], text[3::4] = sh, sh, sh, None
+        traces[bin_colors[ci]] = {
+            "x": x.tolist(), "y": y.tolist(), "text": text.tolist(),
+        }
+    return traces
+
+
 def batch_by_color(df, bin_edges, colors, leaf_distances=None, flip=False):
-    """Group intervals by color bin for efficient trace creation."""
+    """Group intervals by color bin for efficient trace creation (enum mode)."""
     if df.empty:
         return {}
     mask = df["INTERVAL_START"].values != df["INTERVAL_END"].values
     if not mask.any():
         return {}
 
-    # Reverse colors if flipped
     if flip:
         colors = list(reversed(colors))
 
@@ -436,51 +472,49 @@ def batch_by_color(df, bin_edges, colors, leaf_distances=None, flip=False):
     hovers = [
         f"{rid}<br>Pos: {s:,}-{e:,}<br>Dist: {d:.3f}"
         + (
-            f"<br>Distance to query: {leaf_distances[rid]:.4f}"
+            f"<br>Tree dist: {leaf_distances[rid]:.4f}"
             if leaf_distances and rid in leaf_distances
             else ""
         )
         for rid, s, e, d in zip(refs, starts, ends, dists)
     ]
 
-    traces = {}
-    for ci in np.unique(cidx)[::-1]:
-        sel = cidx == ci
-        n = sel.sum()
-        x = np.empty(n * 3, dtype=object)
-        x[0::3], x[1::3], x[2::3] = starts[sel], ends[sel], None
-
-        y = np.empty(n * 3, dtype=object)
-        y[0::3], y[1::3], y[2::3] = ys[sel], ys[sel], None
-
-        sh = np.array(hovers, dtype=object)[sel]
-        text = np.empty(n * 3, dtype=object)
-        text[0::3], text[1::3], text[2::3] = sh, sh, None
-
-        traces[colors[ci]] = {"x": x.tolist(), "y": y.tolist(), "text": text.tolist()}
-    return traces
+    return _build_interval_traces(starts, ends, ys, hovers, cidx, colors,
+                                   descending=True)
 
 
-# Bins for p-value coloring: edges go from 1 down to 0; first bin (high p) is whitish
+# Descending edges so lower-index bins = less significant (higher p-values).
+# _pval_bin_index negates both edges and values for ascending searchsorted.
 PVAL_BINS = (1.0, 0.1, 0.05, 0.01, 0.001, 0.0001, 0.00001, 0.0)
 
 
-def _pval_bin_colors(scheme):
-    """Build colors for p-value bins: first bin whitish, rest from colorscale."""
+def _pval_bin_colors(scheme, flip=False):
+    """Build colors for p-value bins: first bin whitish, rest from colorscale.
+
+    The gray bin (index 0, for p > 0.1 and NaN) is never affected by flip.
+    Only the significant-color bins (indices 1..n-1) are reversed when flip=True.
+    """
     n = len(PVAL_BINS) - 1  # number of bins
-    # Sample n-1 colors from the scheme for bins 1..n-1 (low p-values)
     fracs = [i / max(n - 2, 1) for i in range(n - 1)]
     sampled = px.colors.sample_colorscale(scheme, fracs)
-    # First bin (p near 1) is whitish/light gray
+    if flip:
+        sampled = list(reversed(sampled))
     return ["rgba(230,230,230,0.6)"] + list(sampled)
 
 
 def _pval_bin_index(pvals):
-    """Assign p-values to bins. Bin 0 = [PVAL_BINS[1], PVAL_BINS[0]], etc."""
-    # searchsorted on reversed edges (descending)
+    """Assign p-values to bins. Bin 0 = [PVAL_BINS[1], PVAL_BINS[0]], etc.
+
+    NaN and p > 0.1 are always mapped to bin 0 (the gray/whitish bin).
+    """
+    pvals = np.asarray(pvals, dtype=float)
     edges = np.array(PVAL_BINS)  # descending
-    idx = np.searchsorted(-edges, -pvals, side="left") - 1
-    return np.clip(idx, 0, len(PVAL_BINS) - 2)
+    nan_mask = np.isnan(pvals)
+    safe_pvals = np.where(nan_mask, 1.0, pvals)
+    idx = np.searchsorted(-edges, -safe_pvals, side="left") - 1
+    idx = np.clip(idx, 0, len(PVAL_BINS) - 2)
+    idx[nan_mask] = 0
+    return idx
 
 
 def compute_color_values(df, color_by, dist_range):
@@ -501,6 +535,11 @@ def compute_color_values(df, color_by, dist_range):
     dist_genomes = (
         df["DIST_GENOME"].values[mask] if "DIST_GENOME" in df.columns else dists
     )
+    d_intervals = (
+        df["D_INTERVAL"].values[mask] if "D_INTERVAL" in df.columns else None
+    )
+    folds = df["FOLD"].values[mask] if "FOLD" in df.columns else None
+    strands = df["STRAND"].values[mask] if "STRAND" in df.columns else None
 
     # Select color column
     if color_by == "pval":
@@ -519,6 +558,9 @@ def compute_color_values(df, color_by, dist_range):
         "pvals": pvals,
         "dist_contigs": dist_contigs,
         "dist_genomes": dist_genomes,
+        "d_intervals": d_intervals,
+        "folds": folds,
+        "strands": strands,
         "raw_colors": raw_colors,
         "cmin": cmin,
         "cmax": cmax,
@@ -531,7 +573,12 @@ def batch_by_continuous_color(
     """Create traces with continuous or binned coloring for non-enum mode.
 
     For 'pval' color_by: uses fixed p-value bins with whitish first bin.
-    For 'dist' color_by: 64-bin continuous discretization.
+    For 'dist' color_by: 65-bin continuous discretization (bin 0 = NaN gray).
+
+    Each interval is rendered as 4 points (start, mid, end, None) so the
+    midpoint acts as a reliable hover target even for short intervals.
+    Bins are iterated from least to most significant so that the most
+    significant intervals are added last and rendered on top.
     """
     cv = compute_color_values(df, color_by, dist_range)
     if cv is None:
@@ -540,59 +587,51 @@ def batch_by_continuous_color(
     if color_by == "pval":
         # Binned p-value coloring
         bin_idx = _pval_bin_index(cv["pvals"])
-        bin_colors = _pval_bin_colors(scheme)
-        if flip:
-            # Reverse: whitish goes to low p-values (high significance)
-            bin_colors = list(reversed(bin_colors))
+        bin_colors = _pval_bin_colors(scheme, flip=flip)
     else:
-        # Continuous distance coloring
-        n_bins = 64
+        # 64 color bins + 1 gray NaN bin at index 0
+        n_bins = 65
         cmin, cmax = cv["cmin"], cv["cmax"]
         span = cmax - cmin if cmax > cmin else 1.0
-        fracs = np.clip((cv["raw_colors"] - cmin) / span, 0.0, 1.0)
-        bin_idx = np.clip((fracs * (n_bins - 1)).astype(int), 0, n_bins - 1)
-        sample_fracs = [i / max(n_bins - 1, 1) for i in range(n_bins)]
-        bin_colors = px.colors.sample_colorscale(scheme, sample_fracs)
+        raw = np.asarray(cv["raw_colors"], dtype=float)
+        nan_mask = np.isnan(raw)
+        fracs = np.clip((np.where(nan_mask, cmin, raw) - cmin) / span, 0.0, 1.0)
+        bin_idx = np.clip((fracs * (n_bins - 2)).astype(int) + 1, 1, n_bins - 1)
+        bin_idx[nan_mask] = 0
+        sample_fracs = [i / max(n_bins - 2, 1) for i in range(n_bins - 1)]
+        sampled = px.colors.sample_colorscale(scheme, sample_fracs)
         if flip:
-            bin_colors = list(reversed(bin_colors))
+            sampled = list(reversed(sampled))
+        bin_colors = ["rgba(230,230,230,0.6)"] + list(sampled)
 
-    # Build hover text: dist + p-value + DIST_CONTIG + DIST_GENOME
-    hovers = [
-        f"{rid}<br>Pos: {s:,}-{e:,}<br>Dist: {d:.4f}<br>p-value: {p:.3e}"
-        f"<br>Dist contig: {dc:.4f}<br>Dist genome: {dg:.4f}"
-        + (
-            f"<br>Tree dist: {leaf_distances[rid]:.4f}"
-            if leaf_distances and rid in leaf_distances
-            else ""
-        )
-        for rid, s, e, d, p, dc, dg in zip(
-            cv["refs"],
-            cv["starts"],
-            cv["ends"],
-            cv["dists"],
-            cv["pvals"],
-            cv["dist_contigs"],
-            cv["dist_genomes"],
-        )
-    ]
+    def _fmt(val, fmt=".4f"):
+        return f"{val:{fmt}}" if np.isfinite(val) else "nan"
 
-    traces = {}
-    for ci in np.unique(bin_idx)[::-1]:
-        sel = bin_idx == ci
-        n = sel.sum()
-        x = np.empty(n * 3, dtype=object)
-        x[0::3], x[1::3], x[2::3] = cv["starts"][sel], cv["ends"][sel], None
-        y = np.empty(n * 3, dtype=object)
-        y[0::3], y[1::3], y[2::3] = cv["ys"][sel], cv["ys"][sel], None
-        sh = np.array(hovers, dtype=object)[sel]
-        text = np.empty(n * 3, dtype=object)
-        text[0::3], text[1::3], text[2::3] = sh, sh, None
-        traces[bin_colors[ci]] = {
-            "x": x.tolist(),
-            "y": y.tolist(),
-            "text": text.tolist(),
-        }
+    d_intervals = cv["d_intervals"]
+    folds = cv["folds"]
+    strands = cv["strands"]
+    n_items = len(cv["refs"])
+    hovers = []
+    for i in range(n_items):
+        rid = cv["refs"][i]
+        s, e = int(cv["starts"][i]), int(cv["ends"][i])
+        d, p = cv["dists"][i], cv["pvals"][i]
+        dc, dg = cv["dist_contigs"][i], cv["dist_genomes"][i]
+        strand_str = f" ({strands[i]})" if strands is not None else ""
+        h = f"{rid}{strand_str}<br>Pos: {s:,}-{e:,}<br>Dist: {_fmt(d)}"
+        h += f"  p: {_fmt(p, '.3e')}"
+        if folds is not None:
+            h += f"  fold: {_fmt(folds[i], '.3f')}"
+        h += f"<br>Contig: {_fmt(dc)}  Genome: {_fmt(dg)}"
+        if d_intervals is not None:
+            h += f"  D-int: {d_intervals[i]}"
+        if leaf_distances and rid in leaf_distances:
+            h += f"<br>Tree dist: {leaf_distances[rid]:.4f}"
+        hovers.append(h)
 
+    traces = _build_interval_traces(
+        cv["starts"], cv["ends"], cv["ys"], hovers, bin_idx, bin_colors,
+    )
     return traces, cv["cmin"], cv["cmax"]
 
 
@@ -604,10 +643,7 @@ def make_continuous_colorbar(
         # Binned p-value colorbar matching PVAL_BINS
         bins = PVAL_BINS
         n = len(bins) - 1
-        colors = _pval_bin_colors(scheme)
-        if flip:
-            # Reverse colors: whitish goes to low p-values
-            colors = list(reversed(colors))
+        colors = _pval_bin_colors(scheme, flip=flip)
         edges = np.linspace(0, 1, n + 1)
         scale = [[edges[i + j], colors[i]] for i in range(n) for j in (0, 1)]
         # Tick labels at bin boundaries
@@ -710,51 +746,6 @@ def make_colorbar(bin_edges, colors, y_center=0.5, length=None, flip=False):
         hoverinfo="skip",
         showlegend=False,
     )
-
-
-class ColorMapper:
-    """Encapsulates colorscale mapping logic with optional flip support."""
-
-    def __init__(self, scheme: str, flip: bool = False):
-        self.scheme = scheme
-        self.flip = flip
-        self._binned_cache: dict[tuple, tuple] = {}
-        self._colorscale_cache: dict[str, list] = {}
-
-    def get_binned_colors(self, thresholds: tuple) -> tuple:
-        """Return (bin_edges, colors) for discrete coloring with caching."""
-        key = (thresholds, self.scheme, self.flip)
-        if key not in self._binned_cache:
-            n_bins = len(thresholds)
-            frac = [i / max(n_bins - 1, 1) for i in range(n_bins)]
-            colors = list(px.colors.sample_colorscale(self.scheme, frac))
-            if self.flip:
-                colors = list(reversed(colors))
-            edges = (0.0,) + thresholds
-            self._binned_cache[key] = (edges, tuple(colors))
-        return self._binned_cache[key]
-
-    def get_continuous_colors(self, n_bins: int = 64) -> list:
-        """Return sampled colors for continuous coloring."""
-        key = (self.scheme, n_bins, self.flip)
-        if key not in self._colorscale_cache:
-            fracs = [i / max(n_bins - 1, 1) for i in range(n_bins)]
-            colors = px.colors.sample_colorscale(self.scheme, fracs)
-            if self.flip:
-                colors = list(reversed(colors))
-            self._colorscale_cache[key] = colors
-        return self._colorscale_cache[key]
-
-    def get_plotly_colorscale(self) -> list:
-        """Return full Plotly colorscale (for colorbars), optionally flipped."""
-        if not self.flip:
-            return self.scheme
-        orig = px.colors.get_colorscale(self.scheme)
-        return [[1 - pos, col] for pos, col in reversed(orig)]
-
-    def reverse_colors(self, colors: list) -> list:
-        """Reverse a color list if flip is enabled."""
-        return list(reversed(colors)) if self.flip else colors
 
 
 def compute_y_ticks(
@@ -1604,6 +1595,8 @@ def nearest_value(value, values):
 
 
 def make_slider_marks(values):
+    """Build slider marks. Interior marks use zero-width space so Dash
+    renders a tick mark without visible text (empty string hides the tick)."""
     if not values:
         return {}
     return {
@@ -1742,8 +1735,14 @@ def build_layout(
             dcc.Store(id="strand-store", data="both"),
             dcc.Store(id="mode-store", data="focus"),
             dcc.Store(id="color-by-store", data="dist"),
-            dcc.Store(id="sign-store", data="both"),
+            dcc.Store(id="fold-store", data="both"),
             dcc.Store(id="colorscale-flip-store", data=False),
+            dcc.Store(id="interval-count-store", data=0),
+            html.Div(id="keyboard-listener", tabIndex="0",
+                      style={"position": "fixed", "top": 0, "left": 0,
+                             "width": "100%", "height": "100%",
+                             "zIndex": -1, "opacity": 0}),
+            dcc.Store(id="keyboard-nav-store", data=0),
             dcc.Download(id="download-data"),
             dcc.Download(id="download-plot"),
             # ── Control panel ────────────────────────────────────────────────
@@ -1880,26 +1879,26 @@ def build_layout(
                             "gap": 0,
                         },
                     ),
-                    # Sign toggle: < / both / > (non-enum only)
+                    # Fold toggle: <1 / both / >1 (non-enum only)
                     html.Div(
                         [
                             divider(),
-                            control_label("Sign:"),
+                            control_label("Fold:"),
                             html.Button(
-                                "<",
-                                id="sign-lt-btn",
+                                "<1",
+                                id="fold-lt-btn",
                                 n_clicks=0,
                                 style=toggle_style(False, "left"),
                             ),
                             html.Button(
                                 "both",
-                                id="sign-both-btn",
+                                id="fold-both-btn",
                                 n_clicks=0,
                                 style=toggle_style(True, "middle"),
                             ),
                             html.Button(
-                                ">",
-                                id="sign-gt-btn",
+                                ">1",
+                                id="fold-gt-btn",
                                 n_clicks=0,
                                 style=toggle_style(False, "right"),
                             ),
@@ -2142,32 +2141,6 @@ def build_layout(
     )
 
 
-def extract_ranges(relayout):
-    """Extract y and x ranges from relayoutData."""
-    if not relayout:
-        return no_update, no_update
-
-    if any(k.endswith(".autorange") for k in relayout):
-        return None, None
-
-    # Y range
-    if "yaxis.range[0]" in relayout and "yaxis.range[1]" in relayout:
-        y = [relayout["yaxis.range[0]"], relayout["yaxis.range[1]"]]
-    elif "yaxis.range" in relayout:
-        y = relayout["yaxis.range"]
-    else:
-        y = no_update
-
-    # X range (check both panel positions)
-    for key in ("xaxis2", "xaxis4"):
-        if f"{key}.range[0]" in relayout and f"{key}.range[1]" in relayout:
-            return y, [relayout[f"{key}.range[0]"], relayout[f"{key}.range[1]"]]
-        if f"{key}.range" in relayout:
-            return y, relayout[f"{key}.range"]
-
-    return y, no_update
-
-
 # =============================================================================
 # CALLBACK FACTORIES
 # =============================================================================
@@ -2393,6 +2366,24 @@ def create_app(
     )
 
     # ---- Navigation callbacks ----
+    app.clientside_callback(
+        """
+        function(id) {
+            document.addEventListener('keydown', function(e) {
+                if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA'
+                    || e.target.tagName === 'SELECT') return;
+                var prev = document.getElementById('prev-query-btn');
+                var next = document.getElementById('next-query-btn');
+                if (e.key === 'ArrowLeft' && prev) { prev.click(); }
+                else if (e.key === 'ArrowRight' && next) { next.click(); }
+            });
+            return window.dash_clientside.no_update;
+        }
+        """,
+        Output("keyboard-nav-store", "data"),
+        Input("keyboard-listener", "id"),
+    )
+
     @app.callback(
         Output("query-dropdown", "value"),
         Input("prev-query-btn", "n_clicks"),
@@ -2410,12 +2401,17 @@ def create_app(
             idx = (idx + 1) % len(seq_ids)
         return seq_ids[idx]
 
-    @app.callback(Output("query-title", "children"), Input("query-dropdown", "value"))
-    def update_title(seq_id):
+    @app.callback(
+        Output("query-title", "children"),
+        Input("query-dropdown", "value"),
+        Input("interval-count-store", "data"),
+    )
+    def update_title(seq_id, n_intervals):
         if seq_id is None:
             return ""
         idx = seq_ids.index(seq_id) if seq_id in seq_ids else 0
-        return f"{seq_id}  ({idx + 1}/{len(seq_ids)})"
+        count_str = f"  [{n_intervals} intervals]" if n_intervals else ""
+        return f"{seq_id}  ({idx + 1}/{len(seq_ids)}){count_str}"
 
     # ---- Range stores (clientside for zero-latency zoom/pan/scroll) ----
     app.clientside_callback(
@@ -2486,6 +2482,7 @@ def create_app(
         ["strand-fwd-btn", "strand-both-btn", "strand-rev-btn"],
         ["+", "both", "-"],
         "both",
+        reset_ranges=False,
     )
 
     # ---- Mode (focus/overlap) toggle ----
@@ -2510,12 +2507,12 @@ def create_app(
         app, "color-by-store", "colorby-dist-btn", "colorby-pval-btn", "dist", "pval"
     )
 
-    # ---- Sign toggle (< / both / >) ----
+    # ---- Fold toggle (<1 / both / >1) ----
     _make_toggle_callbacks(
         app,
-        "sign-store",
-        ["sign-lt-btn", "sign-both-btn", "sign-gt-btn"],
-        ["<", "both", ">"],
+        "fold-store",
+        ["fold-lt-btn", "fold-both-btn", "fold-gt-btn"],
+        ["<1", "both", ">1"],
         "both",
         reset_ranges=False,
     )
@@ -2543,9 +2540,61 @@ def create_app(
             "fontSize": "12px",
         }
 
+    # ---- Shared helpers for callbacks ----
+    @lru_cache(maxsize=CACHE_SIZE)
+    def _filtered_tree_data(seq_id):
+        """Cached per-query tree pruning for 'filtered' prune mode."""
+        query_ret = get_query_retained_leaves(app.df, seq_id)
+        if not query_ret:
+            return None
+        qt = prune_tree(app.full_tree, query_ret)
+        qd = tree_data_for(qt, seq_id)
+        qdf = add_tip_order(app.df, qd["tip_order"])
+        return qd, make_cached_filter(qdf, enum_only)
+
+    def _resolve_prune(prune_mode, seq_id):
+        """Return (cur_data, do_filter) for the given prune mode."""
+        if prune_mode == "full":
+            return full_data, filter_full
+        elif prune_mode == "pruned":
+            cd = pruned_data if has_pruned else full_data
+            flt = filter_pruned if has_pruned else filter_full
+            return cd, flt
+        elif prune_mode == "filtered":
+            result = _filtered_tree_data(seq_id)
+            if result is not None:
+                return result
+            return full_data, filter_full
+        return full_data, filter_full
+
+    def _resolve_filter(do_filter, seq_id, tip_order, strand_val,
+                        mode=None, focus_val=None, overlap_val=None,
+                        pval_log=None, fold_val=None):
+        """Return (df_filtered, bin_edges, colors) for current filter state."""
+        if enum_only:
+            if mode == "focus":
+                d = nearest_value(
+                    focus_val if focus_val is not None else dist_ths[0], dist_ths
+                )
+                d_lo = d_hi = d
+            else:
+                if isinstance(overlap_val, (list, tuple)) and len(overlap_val) == 2:
+                    d_lo = nearest_value(overlap_val[0], dist_ths)
+                    d_hi = nearest_value(overlap_val[1], dist_ths)
+                else:
+                    d_lo, d_hi = dist_ths[0], dist_ths[-1]
+            df_f = do_filter(seq_id, tuple(tip_order), d_hi, d_lo, strand_val)
+            return df_f
+        else:
+            pval_th = 10.0**pval_log if pval_log is not None and pval_log < 0 else None
+            fold_f = fold_val if fold_val and fold_val != "both" else None
+            df_f = do_filter(seq_id, tuple(tip_order), strand_val, pval_th, fold_f)
+            return df_f
+
     # ---- Main figure update ----
     @app.callback(
         Output("graph", "figure"),
+        Output("interval-count-store", "data"),
         Input("query-dropdown", "value"),
         Input("dist-slider-focus", "value"),
         Input("dist-slider-overlap", "value"),
@@ -2557,7 +2606,7 @@ def create_app(
         Input("strand-store", "data"),
         Input("color-by-store", "data"),
         Input("pval-slider", "value"),
-        Input("sign-store", "data"),
+        Input("fold-store", "data"),
         Input("colorscale-flip-store", "data"),
         Input("prune-store", "data") if has_pruned else State("prune-store", "data"),
     )
@@ -2573,66 +2622,26 @@ def create_app(
         strand,
         color_by,
         pval_log,
-        sign_val,
+        fold_val,
         flip_colorscale,
         prune_mode,
     ):
         if seq_id is None:
-            return go.Figure()
+            return go.Figure(), 0
 
-        # Select tree data
-        if prune_mode == "full":
-            cur_data = full_data
-            do_filter = filter_full
-        elif prune_mode == "pruned":
-            cur_data = pruned_data if has_pruned else full_data
-            do_filter = filter_pruned if has_pruned else filter_full
-        elif prune_mode == "filtered":
-            # Dynamic filtered-specific pruning
-            query_retained = get_query_retained_leaves(app.df, seq_id)
-            if query_retained:
-                query_tree = prune_tree(app.full_tree, query_retained)
-                query_data_dynamic = tree_data_for(query_tree, seq_id)
-                cur_data = query_data_dynamic
-                query_df_dynamic = add_tip_order(
-                    app.df, query_data_dynamic["tip_order"]
-                )
-                do_filter = make_cached_filter(query_df_dynamic, enum_only)
-            else:
-                cur_data = full_data
-                do_filter = filter_full
-        else:
-            cur_data = full_data
-            do_filter = filter_full
-
+        cur_data, do_filter = _resolve_prune(prune_mode, seq_id)
         tip_order = cur_data["tip_order"]
         leaf_dist = cur_data["leaf_distances"]
         strand_val = strand if has_strand and strand != "both" else None
 
-        if enum_only:
-            # Resolve distance thresholds
-            if mode == "focus":
-                d = nearest_value(
-                    focus_val if focus_val is not None else dist_ths[0], dist_ths
-                )
-                d_lo = d_hi = d
-            else:
-                if isinstance(overlap_val, (list, tuple)) and len(overlap_val) == 2:
-                    d_lo = nearest_value(overlap_val[0], dist_ths)
-                    d_hi = nearest_value(overlap_val[1], dist_ths)
-                else:
-                    d_lo, d_hi = dist_ths[0], dist_ths[-1]
-
-            df_filt = do_filter(seq_id, tuple(tip_order), d_hi, d_lo, strand_val)
-            bin_edges, colors = get_binned_colors(dist_ths, scheme)
-        else:
-            # Convert log slider value to p-value cutoff (slider=0 → p≤1 → no filter)
-            pval_th = 10.0**pval_log if pval_log is not None and pval_log < 0 else None
-            sign_filter = sign_val if sign_val and sign_val != "both" else None
-            df_filt = do_filter(
-                seq_id, tuple(tip_order), strand_val, pval_th, sign_filter
-            )
-            bin_edges, colors = None, None
+        df_filt = _resolve_filter(
+            do_filter, seq_id, tip_order, strand_val,
+            mode=mode, focus_val=focus_val, overlap_val=overlap_val,
+            pval_log=pval_log, fold_val=fold_val,
+        )
+        bin_edges, colors = (
+            get_binned_colors(dist_ths, scheme) if enum_only else (None, None)
+        )
 
         # Sequence length
         seq_len = get_seq_len(df_filt)
@@ -2646,7 +2655,7 @@ def create_app(
                     do_filter(seq_id, tuple(tip_order), None, None, None)
                 )
         if not seq_len or seq_len <= 0:
-            return go.Figure()
+            return go.Figure(), 0
 
         n_tips = len(tip_order)
 
@@ -2667,7 +2676,11 @@ def create_app(
             else cur_data["phylo_layout"]
         )
 
-        return build_figure(
+        n_intervals = int(
+            (df_filt["INTERVAL_START"] != df_filt["INTERVAL_END"]).sum()
+        ) if not df_filt.empty else 0
+
+        fig = build_figure(
             layout[0],
             tip_order,
             layout[2],
@@ -2690,6 +2703,7 @@ def create_app(
             scheme=scheme,
             flip_colorscale=flip_colorscale,
         )
+        return fig, n_intervals
 
     # ---- Data export ----
     @app.callback(
@@ -2704,7 +2718,7 @@ def create_app(
         State("prune-store", "data"),
         State("strand-store", "data"),
         State("pval-slider", "value"),
-        State("sign-store", "data"),
+        State("fold-store", "data"),
         prevent_initial_call=True,
     )
     def export_data(
@@ -2718,56 +2732,18 @@ def create_app(
         prune_mode,
         strand,
         pval_log,
-        sign_val,
+        fold_val,
     ):
         if seq_id is None:
             return no_update
 
-        if prune_mode == "full":
-            cur_data = full_data
-            do_filter = filter_full
-        elif prune_mode == "pruned":
-            cur_data = pruned_data if has_pruned else full_data
-            do_filter = filter_pruned if has_pruned else filter_full
-        elif prune_mode == "filtered":
-            query_retained = get_query_retained_leaves(app.df, seq_id)
-            if query_retained:
-                query_tree = prune_tree(app.full_tree, query_retained)
-                query_data_dynamic = tree_data_for(query_tree, seq_id)
-                cur_data = query_data_dynamic
-                query_df_dynamic = add_tip_order(
-                    app.df, query_data_dynamic["tip_order"]
-                )
-                do_filter = make_cached_filter(query_df_dynamic, enum_only)
-            else:
-                cur_data = full_data
-                do_filter = filter_full
-        else:
-            cur_data = full_data
-            do_filter = filter_full
-
+        cur_data, do_filter = _resolve_prune(prune_mode, seq_id)
         strand_val = strand if has_strand else None
-        if enum_only:
-            if mode == "focus":
-                d = nearest_value(
-                    focus_val if focus_val is not None else dist_ths[0], dist_ths
-                )
-                d_lo = d_hi = d
-            else:
-                if isinstance(overlap_val, (list, tuple)) and len(overlap_val) == 2:
-                    d_lo = nearest_value(overlap_val[0], dist_ths)
-                    d_hi = nearest_value(overlap_val[1], dist_ths)
-                else:
-                    d_lo, d_hi = dist_ths[0], dist_ths[-1]
-            df_exp = do_filter(
-                seq_id, tuple(cur_data["tip_order"]), d_hi, d_lo, strand_val
-            )
-        else:
-            pval_th = 10.0**pval_log if pval_log is not None and pval_log < 0 else None
-            sign_filter = sign_val if sign_val and sign_val != "both" else None
-            df_exp = do_filter(
-                seq_id, tuple(cur_data["tip_order"]), strand_val, pval_th, sign_filter
-            )
+        df_exp = _resolve_filter(
+            do_filter, seq_id, cur_data["tip_order"], strand_val,
+            mode=mode, focus_val=focus_val, overlap_val=overlap_val,
+            pval_log=pval_log, fold_val=fold_val,
+        )
 
         # Visible genomes
         if y_rng is None:
@@ -2887,7 +2863,7 @@ def parse_args():
         "--enum-only",
         action="store_true",
         default=False,
-        help="Input is enum-only format (7-column TSV with DIST_TH instead of DIST/PERCENTILE)",
+        help="Input is enum-only format (TSV with DIST_TH instead of DIST/PERCENTILE/FOLD)",
     )
     p.add_argument("--port", "-p", type=int, default=8080, help="Port to serve on")
     p.add_argument(
