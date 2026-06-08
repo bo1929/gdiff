@@ -34,21 +34,21 @@ struct mesh_t
 
 struct record_t
 {
-  uint64_t bix;
-  uint64_t L;
-  uint64_t a;     // 1-based reported start coordinate on the source query
-  uint64_t b;     // 1-based reported end/boundary coordinate on the source query
-  uint64_t nbins; // The number of bins in the interval [a_bin, b_bin)
-  uint64_t a_bin; // 1-based inclusive bin coordinate on the source query
-  uint64_t b_bin; // 1-based exclusive bin coordinate on the source query
-  bool is_rc;     // Is the source query on the reverse complement strand?
-  bool is_ref;    // Is this record from the strand with the lower MLE distance?
-  double d;       // MLE distance for this interval
-  double d_q;     // MLE distance of the source query (e.g., contig)
-  double I;       // observed Fisher information I(d)
-  uint8_t mask;   // Which thresholds cover the interval [a_bin, b_bin)?
-  double d_low;   // Lower bound of the satisfied distance thresholds
-  double d_high;  // Upper bound of the satisfied distance threshold
+  uint64_t bix;    // batch index of the source query
+  uint64_t L;      // effective query length (enmers + k - 1)
+  uint64_t a;      // 1-based inclusive start site on query
+  uint64_t b;      // 1-based inclusive end site on query
+  uint64_t nbins;  // number of bins covered: b_bin - a_bin
+  uint64_t a_bin;  // 1-based inclusive bin start
+  uint64_t b_bin;  // 1-based exclusive bin end
+  bool is_rc;      // Is the source query on the reverse-complement strand?
+  bool is_ref;     // Is the source strand has the lower MLE distance
+  double d;        // MLE distance for this interval in [d_eps, d_ub]
+  double d_q;      // MLE distance for the source query (e.g., contig)
+  double I;        // Observed Fisher information I(d)
+  uint8_t mask;    // Which thresholds cover the interval [a_bin, b_bin)?
+  double d_low;    // Lower bound of the satisfied distance thresholds
+  double d_high;   // Upper bound of the satisfied distance threshold
   double percentile = std::numeric_limits<double>::quiet_NaN();
   double fold = std::numeric_limits<double>::quiet_NaN();
 
@@ -88,6 +88,15 @@ struct record_t
   }
 };
 
+// Breakpoints of an extracted interval
+// 1-based half-open bin range [a_bin, b_bin) with the threshold that covers it.
+struct bp_t
+{
+  uint64_t a_bin;
+  uint64_t b_bin;
+  size_t ix;
+};
+
 inline interval_t get_rinterval(const interval_t& ab_bin, uint64_t bin_shift, uint64_t enmers, uint32_t k, bool is_last)
 {
   const uint64_t a = ((ab_bin.first - 1) << bin_shift) + 1;
@@ -115,8 +124,8 @@ public:
   void compute_prefhistsum();
   // void skip_mer(uint64_t i); // TODO: Anything better than ignoring?
   void aggregate_mer(uint32_t hdist_min, uint64_t i);
-  void extract_intervals_mx(uint64_t tau, size_t ix = 0);
-  void extract_intervals_sx(uint64_t tau, size_t ix = 0);
+  void extract_intervals_mx(uint64_t tau, uint64_t lix, uint64_t rix, size_t ix = 0);
+  void extract_intervals_sx(uint64_t tau, uint64_t lix, uint64_t rix, size_t ix = 0);
   void expand_intervals(double chisq_th, size_t ix = 0);
   void extract_histogram(uint64_t a, uint64_t b, vec<uint64_t>& v, uint64_t& u, uint64_t& t) const;
   static inline void add_to(T& dest, const T& source)
@@ -169,11 +178,12 @@ public:
   void map_sequences(std::ostream& sout, const str& rid);
 
 private:
-  double compute_mle_dist(const vec<uint64_t>& v, uint64_t u, uint64_t t);
+
   void search_mers(const char* cseq, uint64_t len, DIM<T>& dim_fw, DIM<T>& dim_rc);
   void enumerate_intervals(std::ostream& sout, const str& rid, DIM<T>& dim, bool rc, size_t ix = 0);
   void save_mesh(const DIM<T>& dim);
-  void collect_contiguous(DIM<T>& dim, uint8_t th_bv, double d_q, bool is_rc, bool is_ref);
+  void extract_ordered_intervals(DIM<T>& dim, double d_q, bool is_rc, bool is_ref, uint64_t tau_eff);
+  void make_records(DIM<T>& dim, const vec<bp_t>& bp_v, double d_q, bool is_rc, bool is_ref);
   void test_significance(const uint64_t nsamples = 100, const uint64_t ntries = 250);
   bool sample_mesh_distance(const uint64_t mix, const uint64_t bix, const interval_t& ab);
   bool sample_metropolis_hastings(const xy_t& init, uint64_t S = 50, uint64_t B = 100);
@@ -196,6 +206,7 @@ private:
   uint64_t enmers; // Number of expected k-mers in current query (= len - k + 1)
   uint64_t nbins;  // Number of bins  (= ceil(enmers / bin_len))
   uint64_t bix;    // Index of the current query in the this batch
+  vec<size_t> sthix_v;
   vec<mesh_t> meshes_v;
   vec<record_t> records_v;
   vec<xy_t> samples_v;

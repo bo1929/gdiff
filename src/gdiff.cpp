@@ -61,7 +61,7 @@ void MapSC::write_header()
 
 void MapSC::map()
 {
-  *(output_stream) << std::setprecision(10);
+  *(output_stream) << std::setprecision(5);
   write_header();
 
   // Load all query sequences once? Might be inefficient

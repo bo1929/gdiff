@@ -5,56 +5,50 @@
 #include <cstdint>
 #include <sys/types.h>
 #include <vector>
+#include <boost/math/tools/minima.hpp>
 #include "types.hpp"
 
-class PLLH
+static constexpr double d_eps = 0;
+static constexpr double d_ub = 0.33;
+
+template<typename T>
+class LLH
 {
+  static constexpr size_t WIDTH = std::is_same_v<T, double> ? 1 : RWIDTH;
+  static_assert(std::is_same_v<T, double> || std::is_same_v<T, cm512_t>, "LLH supports only double or cm512_t");
+
 public:
-  PLLH(uint32_t h, uint32_t k, double rho, uint32_t hdist_th)
-    : h(h)
-    , k(k)
+  const uint32_t k;
+  const uint32_t h;
+  const double rho;
+  const uint32_t hdist_th;
+  const T extrema;
+  std::vector<uint64_t> binom_coef_k;
+  std::vector<uint64_t> binom_coef_hnk;
+
+  LLH(uint32_t k, uint32_t h, double rho, uint32_t hdist_th, T extrema)
+    : k(k)
+    , h(h)
     , rho(rho)
     , hdist_th(hdist_th)
+    , extrema(extrema)
     , binom_coef_k(k + 1)
     , binom_coef_hnk(hdist_th + 1)
+    , fdc_v(hdist_th + 1)
+    , sdc_v(hdist_th + 1)
   {
+    // Binomial coefficients for the likelihood model.
     const uint32_t nh = k - h;
-
     binom_coef_k[0] = 1;
-    for (uint32_t d = 0; d < k; ++d) {
+    for (uint32_t d = 0; d < k; ++d)
       binom_coef_k[d + 1] = (binom_coef_k[d] * (k - d)) / (d + 1);
-    }
     binom_coef_hnk[0] = 0;
     uint64_t vc = 1;
     for (uint32_t d = 1; d <= hdist_th; ++d) {
       vc = (vc * (nh - d + 1)) / d;
       binom_coef_hnk[d] = binom_coef_k[d] - vc;
     }
-  }
 
-  const uint32_t h;
-  const uint32_t k;
-  const double rho;
-  const uint32_t hdist_th;
-  std::vector<uint64_t> binom_coef_k;
-  std::vector<uint64_t> binom_coef_hnk;
-};
-
-template<typename T>
-class LLH : public PLLH
-{
-  static constexpr size_t WIDTH = std::is_same_v<T, double> ? 1 : RWIDTH;
-  static_assert(std::is_same_v<T, double> || std::is_same_v<T, cm512_t>, "LLH supports only double or cm512_t");
-
-public:
-  const T extrema;
-
-  LLH(uint32_t k, uint32_t h, double rho, uint32_t hdist_th, T extrema)
-    : PLLH(h, k, rho, hdist_th)
-    , extrema(extrema)
-    , fdc_v(hdist_th + 1)
-    , sdc_v(hdist_th + 1)
-  {
     if constexpr (std::is_same_v<T, double>) {
       sign = extrema < 0 ? -1.0 : 1.0;
       const double axtrema = extrema * sign;
@@ -192,6 +186,15 @@ public:
     }
     ll_dd += static_cast<double>(u) * compute_sdc_u(D);
     return -ll_dd;
+  }
+
+  double mle(const uint64_t* v_r, uint64_t u_r)
+  {
+    set_counts(v_r, u_r);
+    auto f = [&](const double& D) { return (*this)(D); };
+    xy_t result = boost::math::tools::brent_find_minima(f, d_eps, d_ub, 24);
+    if (std::isnan(result.first)) result.first = d_ub;
+    return result.first;
   }
 
 private:

@@ -5,33 +5,27 @@
 
 static constexpr double tol = 1e-6;
 
-TEST_SUITE("PLLH") {
+TEST_SUITE("LLH binomial coefficients") {
 
 TEST_CASE("binom_coef_k for k=27") {
-  PLLH p(11, 27, 0.5, 4);
-  // C(27,0)=1, C(27,1)=27, C(27,2)=351
-  CHECK(p.binom_coef_k[0] == 1);
-  CHECK(p.binom_coef_k[1] == 27);
-  CHECK(p.binom_coef_k[2] == 351);
-  CHECK(p.binom_coef_k[27] == 1);
-  // Symmetry: C(27,k) == C(27, 27-k)
+  LLH<double> llh(27, 11, 0.5, 4, 0.1);
+  CHECK(llh.binom_coef_k[0] == 1);
+  CHECK(llh.binom_coef_k[1] == 27);
+  CHECK(llh.binom_coef_k[2] == 351);
+  CHECK(llh.binom_coef_k[27] == 1);
   for (uint32_t d = 0; d <= 27; ++d)
-    CHECK(p.binom_coef_k[d] == p.binom_coef_k[27 - d]);
+    CHECK(llh.binom_coef_k[d] == llh.binom_coef_k[27 - d]);
 }
 
 TEST_CASE("binom_coef_hnk[0] is always 0") {
-  PLLH p(11, 27, 0.5, 4);
-  CHECK(p.binom_coef_hnk[0] == 0);
+  LLH<double> llh(27, 11, 0.5, 4, 0.1);
+  CHECK(llh.binom_coef_hnk[0] == 0);
 }
 
 TEST_CASE("binom_coef_hnk relation: C(k,d) - C(k-h,d)") {
-  // For h=11, k=27, nh=16
-  // binom_coef_hnk[d] = C(27,d) - C(16,d)
-  PLLH p(11, 27, 0.5, 4);
-  // C(16,1)=16, so binom_coef_hnk[1] = 27 - 16 = 11
-  CHECK(p.binom_coef_hnk[1] == 11);
-  // C(16,2)=120, so binom_coef_hnk[2] = 351 - 120 = 231
-  CHECK(p.binom_coef_hnk[2] == 231);
+  LLH<double> llh(27, 11, 0.5, 4, 0.1);
+  CHECK(llh.binom_coef_hnk[1] == 11);
+  CHECK(llh.binom_coef_hnk[2] == 231);
 }
 
 } // TEST_SUITE

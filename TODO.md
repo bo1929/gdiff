@@ -54,9 +54,5 @@ Actionable items from the current review of `map.cpp`/`map.hpp`, `gamma.hpp`, `g
 - **Explore inversion detection from strand-specific high/low distance patterns.**
 - **Investigate distance-vector models for tree-distance estimation.**
 
-## Plotting
-
-- **Make `plot.py` header-aware for the current output schema.**
-- **Use contig length when scaling interval plots.**
-- **Improve navigation/selection without zooming away from context.**
-- **Add color handling for NaN/no-match and bounded distance intervals.**
+## Update the ground truth
+- Make the regression tests applicable to future changes

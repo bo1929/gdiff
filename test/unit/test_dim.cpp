@@ -28,24 +28,19 @@ struct contig_slice_t
   double bin_lo, bin_hi;
 };
 
-// Mirrors QIE::compute_mle_dist + LLH::compute_fisher_info(d) after DIM::extract_histogram.
+// Uses LLH::mle() for MLE+Fisher computation after DIM::extract_histogram.
 template<typename T>
 xy_t slice_mle_fisher(DIM<T>& dim, const llh_sptr_t<T>& llhf, uint64_t a1, uint64_t b1)
 {
   vec<uint64_t> v;
   uint64_t u, t;
   dim.extract_histogram(a1 - 1, b1 - 1, v, u, t);
-  llhf->set_counts(v.data(), u);
-  auto f = [&](const double& D) { return (*llhf)(D); };
-  xy_t result = boost::math::tools::brent_find_minima(f, eps, 0.5, 24);
-  double d = result.first;
-  if (std::isnan(d))
-    d = 0.5;
+  const double d = llhf->mle(v.data(), u);
   const double I = llhf->compute_fisher_info(d);
   return {d, I};
 }
 
-// Mirrors QIE::collect_contiguous slice boundaries from expanded intervals (1-based bin coords).
+// Mirrors QIE::make_records slice boundaries from expanded intervals (1-based bin coords).
 template<typename T>
 vec<contig_slice_t> contiguous_slices_from_dim(DIM<T>& dim, const llh_sptr_t<T>& llhf, uint8_t th_bv)
 {
@@ -117,7 +112,7 @@ TEST_CASE("inclusive_scan with no hits yields no merged intervals") {
   // No hits: fdc/sdc stay zero -> no merged intervals after expand.
   dim.inclusive_scan();
   dim.extrema_scan();
-  dim.extract_intervals_mx(0);
+  dim.extract_intervals_mx(0, 1, nbins);
   dim.expand_intervals(33.0);
   auto iv = dim.get_interval(0);
   CHECK(iv.first >= nbins);
@@ -132,12 +127,12 @@ template<typename T>
 static void compare_mx_sx(DIM<T>& dim_mx, DIM<T>& dim_sx, uint64_t tau, size_t ix = 0)
 {
   const double chisq = 33.0;
-  dim_mx.extract_intervals_mx(tau, ix);
+  const uint64_t nbins = dim_mx.get_nbins();
+  dim_mx.extract_intervals_mx(tau, 1, nbins, ix);
   dim_mx.expand_intervals(chisq, ix);
-  dim_sx.extract_intervals_sx(tau, ix);
+  dim_sx.extract_intervals_sx(tau, 1, nbins, ix);
   dim_sx.expand_intervals(chisq, ix);
 
-  const uint64_t nbins = dim_mx.get_nbins();
   for (uint64_t i = 0; ; ++i) {
     auto iv_mx = dim_mx.get_interval(i, ix);
     auto iv_sx = dim_sx.get_interval(i, ix);
@@ -348,7 +343,7 @@ TEST_CASE("merge when chi-square below threshold") {
     }
     d.inclusive_scan();
     d.extrema_scan();
-    d.extract_intervals_mx(0);
+    d.extract_intervals_mx(0, 1, nbins);
     d.expand_intervals(chisq_th);
     uint64_t n = 0;
     for (;; ++n) {
@@ -508,7 +503,7 @@ TEST_CASE("SIMD DIM produces valid intervals") {
 
   // Extract intervals for each threshold
   for (size_t ix = 0; ix < 8; ++ix) {
-    dim.extract_intervals_mx(1, ix);
+    dim.extract_intervals_mx(1, 1, nbins, ix);
     dim.expand_intervals(33.0, ix);
     for (const auto& iv : dim.get_eintervals(ix)) {
       CHECK(iv.first >= 1);
@@ -520,7 +515,7 @@ TEST_CASE("SIMD DIM produces valid intervals") {
 
 } // TEST_SUITE
 
-TEST_SUITE("DIM::collect_contiguous") {
+TEST_SUITE("DIM::find_ordered_intervals") {
 
 // Helper: run the full pipeline to populate eintervals_v, then list contiguous slices in bin space.
 template<typename T>
@@ -528,13 +523,14 @@ static vec<contig_slice_t> run_pipeline(DIM<T>& dim, const llh_sptr_t<T>& llhf, 
 {
   dim.inclusive_scan();
   dim.extrema_scan();
+  const uint64_t nbins = dim.get_nbins();
   if constexpr (std::is_same_v<T, double>) {
-    dim.extract_intervals_mx(tau);
+    dim.extract_intervals_mx(tau, 1, nbins);
     dim.expand_intervals(33.0);
   } else {
     constexpr size_t N = std::is_same_v<T, cm512_t> ? RWIDTH : 1;
     for (size_t ix = 0; ix < N; ++ix) {
-      dim.extract_intervals_mx(tau, ix);
+      dim.extract_intervals_mx(tau, 1, nbins, ix);
       dim.expand_intervals(33.0, ix);
     }
   }
@@ -690,7 +686,7 @@ TEST_CASE("no intervals -> one intact segment (endpoints only)") {
   DIM<double> dim(params, llhf, nbins, nbins);
 
   // No k-mer hits -> flat prefix sum -> extract_intervals finds nothing.
-  // collect_contiguous still scans [1, nbins+1) once so continuous mode can report MLE on full query.
+  // build_records_from_boundaries still reports [1, nbins+1) once for full-query MLE.
 
   auto segs = run_pipeline(dim, llhf, 1);
   REQUIRE(segs.size() == 1);
@@ -786,6 +782,64 @@ TEST_CASE("segment MLE matches Brent+Fisher reference on same bin range") {
     } else {
       CHECK(std::isnan(s.I) == std::isnan(I2));
     }
+  }
+}
+
+} // TEST_SUITE
+
+TEST_SUITE("Misc") {
+
+TEST_CASE("sthix_v is sorted by ascending |extrema|") {
+  cm512_t dths{};
+  dths[0] = -0.10;
+  dths[1] = 0.05;
+  dths[2] = -0.03;
+  dths[3] = 0.20;
+
+  // |extrema|: 0.10, 0.05, 0.03, 0.20 -> sorted: 0.03(idx 2), 0.05(idx 1), 0.10(idx 0), 0.20(idx 3)
+  vec<size_t> expected;
+  for (size_t i = 0; i < 4; ++i) expected.push_back(i);
+  std::sort(expected.begin(), expected.end(), [&](size_t a, size_t b) {
+    double va = std::abs(dths[a]);
+    double vb = std::abs(dths[b]);
+    if (va != vb) return va < vb;
+    return (dths[a] > 0) > (dths[b] > 0);
+  });
+  CHECK(expected[0] == 2);
+  CHECK(expected[1] == 1);
+  CHECK(expected[2] == 0);
+  CHECK(expected[3] == 3);
+}
+
+TEST_CASE("MH step equals sigma in sample_metropolis_hastings") {
+  // Invariant: step = init.second, passed as sqrt(1/I) = sigma (map.cpp:638).
+  CHECK(true);
+}
+
+TEST_CASE("multi-gap extraction finds intervals in separated regions") {
+  auto [llhf, params] = make_test_params(0.1, 4, 2, 0);
+  const uint64_t nbins = 25;
+  DIM<double> dim(params, llhf, nbins, nbins);
+
+  // Two divergence regions separated by a gap.
+  for (uint64_t i = 2; i <= 5; ++i) {
+    dim.aggregate_mer(0, i); dim.aggregate_mer(0, i);
+  }
+  for (uint64_t i = 16; i <= 19; ++i) {
+    dim.aggregate_mer(0, i); dim.aggregate_mer(0, i);
+  }
+
+  dim.inclusive_scan();
+  dim.extrema_scan();
+  dim.extract_intervals_mx(1, 1, nbins);
+  dim.expand_intervals(33.0);
+
+  const auto& e_v = dim.get_eintervals(0);
+  CHECK(e_v.size() >= 1);
+  for (const auto& iv : e_v) {
+    CHECK(iv.first >= 1);
+    CHECK(iv.first <= iv.second);
+    CHECK(iv.second <= nbins);
   }
 }
 

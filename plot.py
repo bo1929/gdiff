@@ -176,13 +176,14 @@ def filter_intervals_continuous(
     """Filter intervals by query, strand, p-value cutoff, and fold change.
 
     strand: '+', '-', or 'both'. When 'both', pick strand with lowest DIST_CONTIG per interval.
-    pval_th: if set, keep only rows with PERCENTILE <= pval_th.
+    pval_th: if set, keep only rows with PERCENTILE <= pval_th (NaN rows are dropped).
+    If pval_th is None (no filter), NaN PERCENTILE rows are kept.
     fold: "<1" keeps FOLD < 1 (closer than expected), ">1" keeps FOLD > 1 (more distant).
     """
     df_q = df[df["QUERY_ID"] == seq_id].copy()
 
     if pval_th is not None and "PERCENTILE" in df_q.columns:
-        df_q = df_q[df_q["PERCENTILE"].isna() | (df_q["PERCENTILE"] <= pval_th)]
+        df_q = df_q[df_q["PERCENTILE"] <= pval_th]
 
     if fold is not None and "FOLD" in df_q.columns:
         if fold == "<1":

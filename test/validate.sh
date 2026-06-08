@@ -9,8 +9,8 @@ cat genome_names.txt | \
   '../gdiff sketch `echo ${sketching_options}` -i genomes/{}.fna.gz -o sketches/{}.skc > /dev/null 2>&1'
 
 for arg in "$@"; do
-	# The segmentation mode with --enum-only
 	if [[ "$arg" == "enum" ]]; then
+    echo "Testing with --enum-only"
 		SECONDS=0
 		export mapping_options="-d 0.10 -l 9900 --chisq 10000 --enum-only"
 		cat genome_pairs.txt | \
@@ -22,8 +22,8 @@ for arg in "$@"; do
 		for f in est/*.enum.txt; do diff -q "$f" "gt/$(basename "$f")"; done
 	fi
 
-	# The default mode with MLE distances
 	if [[ "$arg" == "cont" ]]; then
+    echo "Testing in the default mode"
 		SECONDS=0
 		export mapping_options="-d 0.10 -l 9900 --chisq 33.00051"
 		cat genome_pairs.txt | \
@@ -33,12 +33,12 @@ for arg in "$@"; do
 		printf '%dh:%dm:%ds\n' $((SECONDS/3600)) $((SECONDS%3600/60)) $((SECONDS%60))
 
 		diff <(cd est && ls *.cont.txt | sort) <(cd gt && ls *.cont.txt | sort)
-		# for f in est/*.cont.txt; do diff -q "$f" "gt/$(basename "$f")"; done
-		for f in est/*.cont.txt; do 
-      # cut -f1,2,3,4,5,7,8 "$f" | tail -n+2 > /tmp/est
-      cut -f1,2,3,4,5,6,7 "$f" | tail -n+2 > /tmp/est
-      cut -f1,2,3,4,5,6,7 "gt/$(basename "$f")" | tail -n+2 > /tmp/gt
-      diff -q /tmp/est /tmp/gt
-    done
+		for f in est/*.cont.txt; do diff -q "$f" "gt/$(basename "$f")"; done
+		# for f in est/*.cont.txt; do 
+      # # cut -f1,2,3,4,5,7,8 "$f" | tail -n+2 > /tmp/est
+      # cut -f1,2,3,4,5,6,7 "$f" | tail -n+2 > /tmp/est
+      # cut -f1,2,3,4,5,6,7 "gt/$(basename "$f")" | tail -n+2 > /tmp/gt
+      # diff -q /tmp/est /tmp/gt
+    # done
 	fi
 done
