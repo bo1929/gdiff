@@ -51,12 +51,8 @@ bool MapSC::validate_configuration()
 
 void MapSC::write_header()
 {
-  if (enum_only) {
-    (*output_stream) << "QUERY_ID\tSEQ_LEN\tINTERVAL_START\tINTERVAL_END\tSTRAND\tREF_ID\tDIST_TH\n";
-  } else {
-    (*output_stream)
-      << "QUERY_ID\tSEQ_LEN\tINTERVAL_START\tINTERVAL_END\tSTRAND\tREF_ID\tDIST\tMASK\tD_INTERVAL\tDIST_CONTIG\tDIST_GENOME\tPERCENTILE\tFOLD\n";
-  }
+  (*output_stream)
+    << "QUERY_ID\tSEQ_LEN\tINTERVAL_START\tINTERVAL_END\tSTRAND\tREF_ID\tDIST\tMASK\tD_INTERVAL\tDIST_CONTIG\tDIST_GENOME\tPERCENTILE\tFOLD\n";
 }
 
 void MapSC::map()
@@ -89,8 +85,8 @@ void MapSC::map()
   sketch_stream.close();
 
   size_t n = dist_th.size();
-  params_t<double> params_single(n, dist_th.front(), hdist_th, tau, chisq, bin_shift, nsamples, enum_only);
-  params_t<cm512_t> params_multiple(n, {0}, hdist_th, tau, chisq, bin_shift, nsamples, enum_only);
+  params_t<double> params_single(n, dist_th.front(), hdist_th, tau, chisq, bin_shift, sample_size, enum_only);
+  params_t<cm512_t> params_multiple(n, {0}, hdist_th, tau, chisq, bin_shift, sample_size, enum_only);
   std::copy(dist_th.begin(), dist_th.end(), params_multiple.dist_th.begin());
 
   // Per-sketch result buffers
@@ -229,17 +225,17 @@ void SketchSC::save()
 SketchSC::SketchSC(CLI::App& sc)
 {
   set_sketch_defaults();
-  sc.add_option("-i,--input-path", input_path, "Input FASTA/FASTQ file <path> (or URL) (gzip compatible).")
+  sc.add_option("-i,--input-path", input_path, "Input FASTA/FASTQ file <path> (or URL) (gzip compatible)")
     ->required()
     ->check(url_validator | CLI::ExistingFile);
-  sc.add_option("-o,--output-path", sketch_path, "Path to store the resulting binary sketch file.")->required();
-  sc.add_option("-k,--mer-len", k, "Length of k-mers. [27]")->check(CLI::Range(19, 32))->check(CLI::PositiveNumber);
-  sc.add_option("-w,--win-len", w, "Length of the minimizer window (w>=k). [k+6]")->check(CLI::PositiveNumber);
-  sc.add_option("-h,--num-positions", h, "Number of positions for the LSH. [k-16]")->check(CLI::PositiveNumber);
-  sc.add_option("-m,--modulo-lsh", m, "Modulo value to partition LSH space. [2]")->check(CLI::PositiveNumber);
-  sc.add_option("-r,--residue-lsh", r, "A k-mer x will be included only if r = LSH(x) mod m. [1]")
+  sc.add_option("-o,--output-path", sketch_path, "Path to store the resulting binary sketch file")->required();
+  sc.add_option("-k,--mer-len", k, "Length of k-mers [27]")->check(CLI::Range(19, 32))->check(CLI::PositiveNumber);
+  sc.add_option("-w,--win-len", w, "Length of the minimizer window (w>=k) [k+6]")->check(CLI::PositiveNumber);
+  sc.add_option("-h,--num-positions", h, "Number of positions for the LSH [k-16]")->check(CLI::PositiveNumber);
+  sc.add_option("-m,--modulo-lsh", m, "Modulo value to partition LSH space [2]")->check(CLI::PositiveNumber);
+  sc.add_option("-r,--residue-lsh", r, "A k-mer x will be included only if r = LSH(x) mod m [1]")
     ->check(CLI::NonNegativeNumber);
-  sc.add_flag("--frac,!--no-frac", frac, "Include k-mers with r <= LSH(x) mod m. [true]");
+  sc.add_flag("--frac,!--no-frac", frac, "Include k-mers with r <= LSH(x) mod m [true]");
   sc.callback([&]() {
     if (!(sc.count("-w") + sc.count("--win-len"))) {
       w = k + 6;
@@ -253,18 +249,19 @@ SketchSC::SketchSC(CLI::App& sc)
 
 MapSC::MapSC(CLI::App& sc)
 {
-  sc.add_option("-q,--query-path", query_path, "Query FASTA/FASTQ file <path> (or URL) (gzip compatible).")
+  sc.add_option("-q,--query-path", query_path, "Query FASTA/FASTQ file <path> (or URL) (gzip compatible)")
     ->required()
     ->check(url_validator | CLI::ExistingFile);
-  sc.add_option("-i,--sketch-path", sketch_path, "Sketch file at <path> to query.")->required()->check(CLI::ExistingFile);
-  sc.add_option("-o,--output-path", output_path, "Write output to a file at <path>. [stdout]");
-  sc.add_option("--hdist-th", hdist_th, "Maximum Hamming distance for a k-mer to match. [4]")
+  sc.add_option("-i,--sketch-path", sketch_path, "Sketch file at <path> to query")->required()->check(CLI::ExistingFile);
+  sc.add_option("-o,--output-path", output_path, "Write output to a file at <path> [stdout]");
+  sc.add_option("--hdist-th", hdist_th, "Maximum Hamming distance for a k-mer to match [4]")
     ->check(CLI::Range(0, static_cast<int>(hdist_bound)));
-  sc.add_option("--chisq", chisq, "Chi-square threshold. [33.00051]")->check(CLI::NonNegativeNumber);
+  sc.add_option("--chisq", chisq, "Chi-square threshold [33.00051]")->check(CLI::NonNegativeNumber);
   sc.add_option("-d,--dist-th", dist_th, "Distance threshold(s) - provide exactly 1 or 8 values")->required()->expected(1, 8);
-  sc.add_option("-l,--min-length", tau, "Minimum interval length.")->required()->check(CLI::PositiveNumber);
-  sc.add_option("-b,--bin-shift", bin_shift, "Group consecutive k-mers into bins of size 2^b. [0]")->check(CLI::Range(0, 62));
-  sc.add_flag("--enum-only,!--no-enum-only", enum_only, "Enumerate intervals without MLE distance estimation. [false]");
+  sc.add_option("-l,--min-length", tau, "Minimum interval length")->required()->check(CLI::PositiveNumber);
+  sc.add_option("-b,--bin-shift", bin_shift, "Group consecutive k-mers into bins of size 2^b [0]")->check(CLI::Range(0, 62));
+  sc.add_flag("--enum-only,!--no-enum-only", enum_only, "Enumerate intervals without MLE distance estimation [false]");
+  sc.add_option("--sample-size", sample_size, "Samples for significance test (0: skip) [200]")->check(CLI::NonNegativeNumber);
   sc.callback([&]() {
     if (!validate_configuration()) {
       error_exit("Invalid configuration!");
@@ -316,8 +313,8 @@ void MergeSC::merge()
 
 MergeSC::MergeSC(CLI::App& sc)
 {
-  sc.add_option("-i,--sketch-paths", sketch_paths, "Input sketch files to merge.")->required()->check(CLI::ExistingFile);
-  sc.add_option("-o,--output-path", output_path, "Path to store the merged sketch file.")->required();
+  sc.add_option("-i,--sketch-paths", sketch_paths, "Input sketch files to merge")->required()->check(CLI::ExistingFile);
+  sc.add_option("-o,--output-path", output_path, "Path to store the merged sketch file")->required();
 }
 
 void InfoSC::info()
@@ -386,7 +383,7 @@ void InfoSC::info()
 
 InfoSC::InfoSC(CLI::App& sc)
 {
-  sc.add_option("-i,--sketch-path", sketch_path, "Sketch file (single or multi) to inspect.")
+  sc.add_option("-i,--sketch-path", sketch_path, "Sketch file (single or multi) to inspect")
     ->required()
     ->check(CLI::ExistingFile);
 }
@@ -402,20 +399,20 @@ int main(int argc, char** argv)
   app.fallthrough();
 
   bool verbose = false;
-  app.add_flag("--verbose,!--no-verbose", verbose, "Increased verbosity and progress report.");
+  app.add_flag("--verbose,!--no-verbose", verbose, "Increased verbosity and progress report");
   app.require_subcommand();
-  app.add_option("--seed", seed, "Random seed for the LSH and other parts that require randomness. [0]");
+  app.add_option("--seed", seed, "Random seed for the LSH and other parts that require randomness [0]");
   app.callback([&]() {
     if (app.count("--seed")) {
       gen.seed(seed);
     }
   });
-  app.add_option("--num-threads", num_threads, "Number of threads for parallel sketch processing. [1]");
+  app.add_option("--num-threads", num_threads, "Number of threads for parallel sketch processing [1]");
 
-  auto& sc_sketch = *app.add_subcommand("sketch", "Create sketches from FASTA/FASTQ files.");
-  auto& sc_map = *app.add_subcommand("map", "Map queries and extract distance-based patterns from sketches.");
-  auto& sc_merge = *app.add_subcommand("merge", "Merge multiple sketches into a single sketch file.");
-  auto& sc_info = *app.add_subcommand("info", "Show metadata for all sketches in a sketch file.");
+  auto& sc_sketch = *app.add_subcommand("sketch", "Create sketches from FASTA/FASTQ files");
+  auto& sc_map = *app.add_subcommand("map", "Map queries and extract distance-based patterns from sketches");
+  auto& sc_merge = *app.add_subcommand("merge", "Merge multiple sketches into a single sketch file");
+  auto& sc_info = *app.add_subcommand("info", "Show metadata for all sketches in a sketch file");
 
   SketchSC krepp_sketch(sc_sketch);
   MapSC krepp_map(sc_map);
@@ -475,6 +472,3 @@ int main(int argc, char** argv)
 
   return 0;
 }
-
-// TODO: Rename the tool, add header text. Check the --help descriptions and defaults
-// TODO: Also the name!!!

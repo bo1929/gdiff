@@ -52,16 +52,16 @@ TEST_CASE("params_t with cm512_t") {
 TEST_SUITE("record_t") {
 
 TEST_CASE("intact detection is record-local") {
-  record_t full(0, 100, 1, 100, 1, 11, false, true, 0.1, 0.1, 10.0, 1, {0.0, 0.2});
+  record_t full(0, 100, {1, 100}, {1, 11}, false, 0.1, 10.0, 0);
   CHECK(full.is_intact());
   CHECK(full.nbins == 10);
-  CHECK(full.get_interval().first == 0);
-  CHECK(full.get_interval().second == 10);
+  CHECK(full.get_interval().a == 0);
+  CHECK(full.get_interval().b == 10);
 
-  record_t partial(0, 100, 1, 90, 1, 10, true, false, 0.1, 0.1, 10.0, 1, {0.0, 0.2});
+  record_t partial(0, 100, {1, 90}, {1, 10}, true, 0.1, 10.0, 0);
   CHECK_FALSE(partial.is_intact());
-  CHECK(partial.get_interval().first == 0);
-  CHECK(partial.get_interval().second == 9);
+  CHECK(partial.get_interval().a == 0);
+  CHECK(partial.get_interval().b == 9);
 }
 
 TEST_CASE("reference strand gets two-sided significance percentile") {
@@ -75,7 +75,7 @@ TEST_CASE("reference strand gets two-sided significance percentile") {
 
 TEST_CASE("null overlap uses half-open bin boundaries") {
   const auto overlaps_half_open = [](const interval_t& lhs, const interval_t& rhs) {
-    return lhs.first < rhs.second && rhs.first < lhs.second;
+    return lhs.a < rhs.b && rhs.a < lhs.b;
   };
   CHECK(overlaps_half_open({0, 5}, {4, 6}));
   CHECK_FALSE(overlaps_half_open({0, 5}, {5, 8}));
@@ -87,28 +87,28 @@ TEST_CASE("coordinate helpers preserve output conventions") {
   const uint32_t k = 5;
 
   auto row = get_rinterval({1, 2}, 2, enmers, k, false);
-  CHECK(row.first == 1);
-  CHECK(row.second == 5);
+  CHECK(row.a == 1);
+  CHECK(row.b == 5);
 
   row = get_rinterval({2, 4}, 2, enmers, k, true);
-  CHECK(row.first == 5);
-  CHECK(row.second == enmers + k - 1);
+  CHECK(row.a == 5);
+  CHECK(row.b == enmers + k - 1);
 
   auto iv = get_einterval({1, 3}, 2, enmers, k);
-  CHECK(iv.first == 1);
-  CHECK(iv.second == 14);
+  CHECK(iv.a == 1);
+  CHECK(iv.b == 14);
 
   iv = get_einterval({3, 3}, 2, enmers, k);
-  CHECK(iv.first == 9);
-  CHECK(iv.second == 14);
+  CHECK(iv.a == 9);
+  CHECK(iv.b == 14);
 
   iv = get_einterval({1, 1}, 0, 1, k);
-  CHECK(iv.first == 1);
-  CHECK(iv.second == k);
+  CHECK(iv.a == 1);
+  CHECK(iv.b == k);
 
   row = get_rinterval({1, 3}, 0, 2, k, true);
-  CHECK(row.first == 1);
-  CHECK(row.second == k + 1);
+  CHECK(row.a == 1);
+  CHECK(row.b == k + 1);
 }
 
 } // TEST_SUITE

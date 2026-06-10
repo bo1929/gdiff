@@ -56,7 +56,8 @@ QIE<T>::QIE(const params_t<T>& params,
   if constexpr (std::is_same_v<T, double>) {
     sthix_v = {0};
   } else {
-    for (size_t ti = 0; ti < WIDTH; ++ti) sthix_v.push_back(ti);
+    for (size_t ti = 0; ti < WIDTH; ++ti)
+      sthix_v.push_back(ti);
     std::sort(sthix_v.begin(), sthix_v.end(), [&](size_t a, size_t b) {
       const double va = std::abs(at(llhf->get_extrema(), a));
       const double vb = std::abs(at(llhf->get_extrema(), b));
@@ -64,17 +65,28 @@ QIE<T>::QIE(const params_t<T>& params,
       return at(llhf->get_sign(), a) > at(llhf->get_sign(), b); // positive first
     });
   }
+  for (size_t ix : sthix_v) {
+    if (at(llhf->get_sign(), ix) > 0)
+      ltix_v.push_back(ix);
+    else
+      gtix_v.push_back(ix);
+  }
   const uint64_t u64m = std::numeric_limits<uint64_t>::max();
   mask_lr = ((u64m >> (64 - k)) << 32) + ((u64m << 32) >> (64 - k));
   mask_bp = u64m >> ((32 - k) * 2);
-  if (!params.enum_only) {
-    v_acc.assign(hdist_bound + 1, 0); // For SIMD alignment, set to 8
+  skip_test = (params.sample_size == 0);
+  keep_hist = (!params.enum_only || !skip_test);
+  if (keep_hist) {
+    // For SIMD alignment, bound is set to 8
+    v_acc.assign(hdist_bound + 1, 0);
+    v_scratch.assign(hdist_bound + 1, 0);
   }
 }
 
 template<typename T>
 void QIE<T>::map_sequences(std::ostream& sout, const str& rid)
 {
+
   for (bix = 0; bix < batch_size; ++bix) {
     const char* cseq = seq_batch[bix].data();
     const uint64_t len = seq_batch[bix].size();
@@ -100,69 +112,62 @@ void QIE<T>::map_sequences(std::ostream& sout, const str& rid)
     DIM<T> dim_rc(params, llhf, nbins, enmers);
     search_mers(cseq, len, dim_fw, dim_rc);
 
-    // Extract intervals for all thresholds
     const uint64_t tau_eff = std::min(params.tau_bin, nbins) - 1;
+    const size_t srprev = records_v.size(); // record index before this query
+
+    // Extract intervals for all thresholds
     for (auto* dim : {&dim_fw, &dim_rc}) {
       dim->inclusive_scan();
       dim->extrema_scan();
-      // dim->release_accumulators();
-      if (params.enum_only) {
-        if constexpr (std::is_same_v<T, double>) {
-          /* dim->extract_intervals_sx(tau_eff, 1, nbins); */
-          dim->extract_intervals_mx(tau_eff, 1, nbins);
-          dim->expand_intervals(params.chisq);
-        } else {
-          for (size_t i = 0; i < WIDTH; ++i) {
-            /* dim->extract_intervals_sx(tau_eff, 1, nbins, i); */
-            dim->extract_intervals_mx(tau_eff, 1, nbins, i);
-            dim->expand_intervals(params.chisq, i);
-          }
-        }
-      }
     }
 
-    if (params.enum_only) {
-      if constexpr (std::is_same_v<T, double>) {
-        enumerate_intervals(sout, rid, dim_fw, false);
-        enumerate_intervals(sout, rid, dim_rc, true);
-      } else {
-        for (size_t i = 0; i < WIDTH; ++i) {
-          enumerate_intervals(sout, rid, dim_fw, false, i);
-          enumerate_intervals(sout, rid, dim_rc, true, i);
+    if (!params.enum_only || !skip_test) {
+      for (DIM<T>& dim : {dim_fw, dim_rc}) {
+        const bool is_rc = (dim == &dim_rc);
+        for (size_t ix = 0; ix < WIDTH; ++ix) {
+          dim->extract_intervals_mx(tau_eff, 1, nbins, ix);
+          dim->expand_intervals(params.chisq, ix);
+          for (const auto& iv : dim->get_intervals(ix))
+            emit_record(dim, iv.a, iv.b + 1, ix, is_rc);
         }
       }
-    } else {
-      for (auto* dim : {&dim_fw, &dim_rc}) {
-        dim->compute_prefhistsum();
-      }
+      continue;
+    }
 
-      // Extract per-query histograms, compute per-query MLE, accumulate into genome-wide histogram
-      vec<uint64_t> v_q_fw, v_q_rc;
-      uint64_t u_q_fw = 0, u_q_rc = 0, t_q_fw = 0, t_q_rc = 0;
-      dim_fw.extract_histogram(0, nbins, v_q_fw, u_q_fw, t_q_fw);
-      dim_rc.extract_histogram(0, nbins, v_q_rc, u_q_rc, t_q_rc);
-      const double d_q_fw = llhf->mle(v_q_fw.data(), u_q_fw);
-      const double d_q_rc = llhf->mle(v_q_rc.data(), u_q_rc);
+    // Extract per-query histograms and compute per-query MLE
+    for (auto* dim : {&dim_fw, &dim_rc})
+      dim->compute_prefhistsum();
+    vec<uint64_t> v_q_fw, v_q_rc;
+    uint64_t u_q_fw = 0, u_q_rc = 0, t_q;
+    dim_fw.extract_histogram(0, nbins, v_q_fw, u_q_fw, t_q);
+    dim_rc.extract_histogram(0, nbins, v_q_rc, u_q_rc, t_q);
+    const double d_q_fw = llhf->mle(v_q_fw.data(), u_q_fw);
+    const double d_q_rc = llhf->mle(v_q_rc.data(), u_q_rc);
+    // Reference is the one with the lower distance among fw/rc strands.
+    const bool is_ref = std::isnan(d_q_rc) || (!std::isnan(d_q_fw) && d_q_fw <= d_q_rc);
 
-      // Reference is the one with the lower distance among fw/rc strands.
-      const bool is_ref = std::isnan(d_q_rc) || (!std::isnan(d_q_fw) && d_q_fw <= d_q_rc);
+    if (!skip_test) {
       save_mesh(is_ref ? dim_fw : dim_rc);
-
-      extract_ordered_intervals(dim_fw, d_q_fw, false, is_ref, tau_eff);
-      extract_ordered_intervals(dim_rc, d_q_rc, true, !is_ref, tau_eff);
-      add_to_acc(v_acc, u_acc, is_ref ? v_q_fw : v_q_rc, is_ref ? u_q_fw : u_q_rc);
     }
+
+    extract_ordered_intervals(dim_fw, false, tau_eff);
+    extract_ordered_intervals(dim_rc, true, tau_eff);
+
+    // Fill per-query fields once the reference strand is known
+    for (size_t ri = srprev; ri < records_v.size(); ++ri) {
+      record_t& r = records_v[ri];
+      r.is_ref = (r.is_rc != is_ref);
+      r.d_q = r.is_rc ? d_q_rc : d_q_fw;
+    }
+
+    add_to_acc(v_acc, u_acc, is_ref ? v_q_fw : v_q_rc, is_ref ? u_q_fw : u_q_rc);
   }
 
-  if (!params.enum_only) {
-    uint64_t t_acc = 0;
-    for (auto c : v_acc) {
-      t_acc += c;
-    }
-    d_acc = llhf->mle(v_acc.data(), u_acc);
-    test_significance(params.nsamples, 250);
-    report_contiguous(sout, rid);
-  }
+  // The genome-wide accumulator and its MLE exist whenever histograms were kept
+  if (keep_hist) d_acc = llhf->mle(v_acc.data(), u_acc);
+  if (!skip_test) test_significance(params.sample_size, 250);
+
+  report_contiguous(sout, rid);
 }
 
 template<typename T>
@@ -171,10 +176,11 @@ DIM<T>::DIM(const params_t<T>& params, const llh_sptr_t<T>& llhf, uint64_t nbins
   , llhf(llhf)
   , nbins(nbins)
   , nmers(nmers)
+  , keep_hist(!params.enum_only || params.sample_size > 0)
 {
   fdc_v.resize(nbins); // Alternative?: fdc_v.reserve(nbins);
   sdc_v.resize(nbins); // Alternative?: sdc_v.reserve(nbins);
-  if (!params.enum_only) {
+  if (keep_hist) {
     // Note that aggregate_mer() accumulates into rows 1 to nbins
     // At the end, compute_prefhistsum() converts in-place
     hdisthist_v.assign((nbins + 1) * (params.hdist_th + 1), 0);
@@ -188,7 +194,7 @@ void DIM<T>::aggregate_mer(uint32_t hdist_min, uint64_t i)
   // The bin index is i, multiple k-mers in the same bin accumulate here
   if (hdist_min <= params.hdist_th) {
     t_q++;
-    if (!params.enum_only) hdisthist_v[((i + 1) * (params.hdist_th + 1)) + hdist_min]++;
+    if (keep_hist) hdisthist_v[((i + 1) * (params.hdist_th + 1)) + hdist_min]++;
     add_to(sdc_v[i], llhf->get_sdc(hdist_min));
     add_to(fdc_v[i], llhf->get_fdc(hdist_min));
   } else {
@@ -210,8 +216,8 @@ void DIM<T>::release_accumulators() noexcept
 template<typename T>
 interval_t DIM<T>::get_interval(uint64_t i, size_t ix) const
 {
-  if ((ix < eintervals_v.size()) && (i < eintervals_v[ix].size())) {
-    return eintervals_v[ix][i];
+  if ((ix < intervals_v.size()) && (i < intervals_v[ix].size())) {
+    return intervals_v[ix][i];
   } else {
     return {nbins, nbins};
   }
@@ -374,7 +380,7 @@ void DIM<T>::extract_intervals_mx(const uint64_t tau, const uint64_t lix, const 
   uint64_t b_prev = std::numeric_limits<uint64_t>::max();
 
   if (rix >= lix + tau && at(fdps_v[rix], ix) < at(fdps_v[lix], ix)) {
-    rintervals_v[ix].emplace_back(lix, rix);
+    intervals_v[ix].emplace_back(lix, rix);
     return;
   }
 
@@ -382,18 +388,18 @@ void DIM<T>::extract_intervals_mx(const uint64_t tau, const uint64_t lix, const 
     const double fdpmax_a = at(fdpmax_v[a - 1], ix);
     const double fdps_a = at(fdps_v[a], ix);
 
-    if (fdpmax_a >= fdps_a) continue;               // Condition 1
+    if (fdpmax_a >= fdps_a) continue; // Condition 1
 
     while ((b_curr + 1) <= rix && (at(fdsmin_v[b_curr + 1], ix) < fdps_a))
-      ++b_curr;                                     // Condition 2
+      ++b_curr; // Condition 2
 
     const uint64_t b_star = b_curr;
-    if (b_star < (a + tau)) continue;                // Condition 3
-    if (at(fdps_v[b_star], ix) >= fdps_a) continue;  // Condition 4
-    if (b_star == b_prev) continue;                  // Condition 6
+    if (b_star < (a + tau)) continue;               // Condition 3
+    if (at(fdps_v[b_star], ix) >= fdps_a) continue; // Condition 4
+    if (b_star == b_prev) continue;                 // Condition 6
 
-    if (at(fdps_v[b_star], ix) >= fdpmax_a) {        // Condition 5
-      rintervals_v[ix].emplace_back(a, b_star);
+    if (at(fdps_v[b_star], ix) >= fdpmax_a) { // Condition 5
+      intervals_v[ix].emplace_back(a, b_star);
       b_prev = b_star;
     }
   }
@@ -407,7 +413,7 @@ void DIM<T>::extract_intervals_sx(const uint64_t tau, const uint64_t lix, const 
   // Hence, the pointer into the list is monotone across record highs which is O(k) total
   const uint64_t gap_len = rix - lix + 1;
   if (gap_len >= 1 + tau && at(fdps_v[rix], ix) < at(fdps_v[lix], ix)) {
-    rintervals_v[ix].emplace_back(lix, rix);
+    intervals_v[ix].emplace_back(lix, rix);
     return;
   }
 
@@ -454,8 +460,8 @@ void DIM<T>::extract_intervals_sx(const uint64_t tau, const uint64_t lix, const 
     if (b_star < a + tau) continue; // Skip if no valid right endpoint in [a+tau, nbins]
     if (b_star == b_prev) continue; // Skip if b* was already claimed
 
-    if (fdps_bstar >= fdpmax_a) {               // Left maximal
-      rintervals_v[ix].emplace_back(a, b_star); // 1-based inclusive coordinates
+    if (fdps_bstar >= fdpmax_a) {              // Left maximal
+      intervals_v[ix].emplace_back(a, b_star); // 1-based inclusive coordinates
       b_prev = b_star;
     }
   }
@@ -464,18 +470,18 @@ void DIM<T>::extract_intervals_sx(const uint64_t tau, const uint64_t lix, const 
 template<typename T>
 void DIM<T>::expand_intervals(const double chisq_th, const size_t ix)
 {
-  if (rintervals_v[ix].empty()) {
-    return;
-  }
+  auto& iv_ix = intervals_v[ix];
+  if (iv_ix.empty()) return;
 
   double fdiff, sdiff, chisq_val;
   uint64_t a, ap, b, bp;
-  ap = rintervals_v[ix][0].first;
-  bp = rintervals_v[ix][0].second;
+  size_t w = 0;
+  ap = iv_ix[0].a;
+  bp = iv_ix[0].b;
 
-  for (uint64_t i = 1; i < rintervals_v[ix].size(); ++i) {
-    a = rintervals_v[ix][i].first;
-    b = rintervals_v[ix][i].second;
+  for (size_t i = 1; i < iv_ix.size(); ++i) {
+    a = iv_ix[i].a;
+    b = iv_ix[i].b;
     fdiff = at(fdps_v[b], ix) - at(fdps_v[ap], ix);
     sdiff = at(sdps_v[ap], ix) - at(sdps_v[b], ix);
     // chisq_val = (sdiff > 0.0) ? (fdiff * fdiff) / sdiff : std::numeric_limits<double>::infinity();
@@ -485,26 +491,21 @@ void DIM<T>::expand_intervals(const double chisq_th, const size_t ix)
       a = ap;
       // b = std::max(bp, b); // This is not necessary due to maximality and monotonicity of a's
     } else {
-      eintervals_v[ix].emplace_back(ap, bp); // 1-based inclusive coordinates
+      iv_ix[w++] = {ap, bp}; // 1-based inclusive coordinates
     }
 
     ap = a;
     bp = b;
   }
 
-  fdiff = at(fdps_v[bp], ix) - at(fdps_v[ap], ix);
-  sdiff = at(sdps_v[ap], ix) - at(sdps_v[bp], ix);
-  // chisq_val = (sdiff > 0.0) ? (fdiff * fdiff) / sdiff : std::numeric_limits<double>::infinity();
-  chisq_val = ((fdiff * fdiff) + eps) / (sdiff + eps);
-  eintervals_v[ix].emplace_back(ap, bp); // 1-based inclusive coordinates
-  rintervals_v[ix].clear();
-  rintervals_v[ix].shrink_to_fit();
+  iv_ix[w++] = {ap, bp}; // 1-based inclusive coordinates
+  iv_ix.resize(w);
 }
 
 template<typename T>
 void DIM<T>::compute_prefhistsum()
 {
-  if (params.enum_only) return;
+  if (!keep_hist) return;
   const uint32_t W = params.hdist_th + 1;
   // Add each row to the previous in-place to get prefix sums
   for (uint64_t i = 0; i < nbins; ++i) {
@@ -538,21 +539,12 @@ void DIM<T>::extract_histogram(uint64_t a, uint64_t b, vec<uint64_t>& v, uint64_
 }
 
 template<typename T>
-void QIE<T>::extract_ordered_intervals(DIM<T>& dim, double d_q, bool is_rc, bool is_ref, uint64_t tau_eff)
+void QIE<T>::extract_ordered_intervals(DIM<T>& dim, bool is_rc, uint64_t tau_eff)
 {
   const uint64_t nbins = dim.get_nbins();
-  vec<bp_t> bp_v;
+  bp_v.clear();
 
-  // Partition threshold indices by sign so that opposite-sign groups are processed independently
-  vec<size_t> ltix_v, gtix_v;
-  for (size_t ix : sthix_v) {
-    if (at(llhf->get_sign(), ix) > 0)
-      ltix_v.push_back(ix);
-    else
-      gtix_v.push_back(ix);
-  }
-
-  for (const auto& ix_v : {ltix_v, gtix_v}) {
+  for (const vec<size_t>& ix_v : {ltix_v, gtix_v}) {
     if (ix_v.empty()) continue;
 
     const size_t psize = bp_v.size();
@@ -571,8 +563,7 @@ void QIE<T>::extract_ordered_intervals(DIM<T>& dim, double d_q, bool is_rc, bool
       // Find gaps between existing intervals and extract new ones there.
       uint64_t prev = 1;
       for (const auto& s : bp_v) {
-        if (s.a_bin >= prev + tau_eff + 1)
-          dim.extract_intervals_mx(tau_eff, prev, s.a_bin - 1, ix);
+        if (s.a_bin >= prev + tau_eff + 1) dim.extract_intervals_mx(tau_eff, prev, s.a_bin - 1, ix);
         prev = std::max(prev, s.b_bin);
       }
 
@@ -581,53 +572,61 @@ void QIE<T>::extract_ordered_intervals(DIM<T>& dim, double d_q, bool is_rc, bool
       }
       dim.expand_intervals(params.chisq, ix);
 
-      for (const auto& iv : dim.get_eintervals(ix))
-        bp_v.push_back({iv.first, iv.second + 1, ix});
+      for (const auto& iv : dim.get_intervals(ix))
+        bp_v.push_back({iv.a, iv.b + 1, ix});
     }
 
     merge_bp();
   }
 
-  make_records(dim, bp_v, d_q, is_rc, is_ref);
+  make_records(dim, bp_v, is_rc);
 }
 
 template<typename T>
-void QIE<T>::make_records(DIM<T>& dim, const vec<bp_t>& bp_v, double d_q, bool is_rc, bool is_ref)
+void QIE<T>::make_records(DIM<T>& dim, const vec<bp_t>& bp_v, bool is_rc)
 {
-  const uint64_t L = enmers + k - 1;
+  const uint64_t nbins = dim.get_nbins();
 
   if (bp_v.empty()) {
     // No intervals extracted: report the full query.
-    vec<uint64_t> v;
+    emit_record(dim, 1, nbins + 1, size_t(-1), is_rc);
+    return;
+  }
+
+  uint64_t prev = 1;
+  for (const auto& s : bp_v) {
+    if (s.a_bin > prev) emit_record(dim, prev, s.a_bin, size_t(-1), is_rc);
+    emit_record(dim, s.a_bin, s.b_bin, s.ix, is_rc);
+    prev = s.b_bin;
+  }
+  if (prev <= nbins) emit_record(dim, prev, nbins + 1, size_t(-1), is_rc);
+}
+
+template<typename T>
+void QIE<T>::emit_record(DIM<T>& dim, uint64_t a_bin, uint64_t b_bin, size_t th_ix, bool is_rc)
+{
+  const uint64_t L = enmers + k - 1;
+  const bool is_last = (b_bin == dim.get_nbins() + 1);
+
+  double d = std::numeric_limits<double>::quiet_NaN();
+  double I = std::numeric_limits<double>::quiet_NaN();
+  if (keep_hist) {
     uint64_t u, t;
-    dim.extract_histogram(0, dim.get_nbins(), v, u, t);
-    const double d = llhf->mle(v.data(), u);
-    const double I = llhf->compute_fisher_info(d);
-    records_v.emplace_back(bix, L, 1, L, 1, dim.get_nbins() + 1, is_rc, is_ref, d, d_q, I, 0, xy_t{d_eps, 1.0});
-  } else {
-    for (size_t si = 0; si < bp_v.size(); ++si) {
-      const auto& s = bp_v[si];
-      const bool is_last = (si + 1 == bp_v.size());
-
-      const uint8_t mask = static_cast<uint8_t>(1u << s.ix);
-      xy_t d_range{d_eps, d_ub};
-      const double ext = at(llhf->get_extrema(), s.ix);
-      if (ext > 0.0) {
-        d_range.second = std::min(d_range.second, ext);
-      } else {
-        d_range.first = std::max(d_range.first, -ext);
-      }
-
-      vec<uint64_t> v;
-      uint64_t u, t;
-      dim.extract_histogram(s.a_bin - 1, s.b_bin - 1, v, u, t);
-      const double d = llhf->mle(v.data(), u);
-      const double I = llhf->compute_fisher_info(d);
-      const auto [a, b] = get_rinterval({s.a_bin, s.b_bin}, params.bin_shift, enmers, k, is_last);
-      assert(a < b);
-      records_v.emplace_back(bix, L, a, b, s.a_bin, s.b_bin, is_rc, is_ref, d, d_q, I, mask, d_range);
+    dim.extract_histogram(a_bin - 1, b_bin - 1, v_scratch, u, t);
+    d = llhf->mle(v_scratch.data(), u);
+    I = llhf->compute_fisher_info(d);
+    // MLE at the upper boundary is unreliable - mark NA.
+    if (d >= d_ub - eps || std::isnan(d)) {
+      d = std::numeric_limits<double>::quiet_NaN();
+      I = std::numeric_limits<double>::quiet_NaN();
     }
   }
+
+  const interval_t bin_iv{a_bin, b_bin};
+  const interval_t seq_iv = get_rinterval(bin_iv, params.bin_shift, enmers, k, is_last);
+  assert(seq_iv.a < seq_iv.b);
+
+  records_v.emplace_back(bix, L, seq_iv, bin_iv, is_rc, d, I, th_ix);
 }
 
 template<typename T>
@@ -645,7 +644,7 @@ void QIE<T>::save_mesh(const DIM<T>& dim)
   mesh_t m(bix, nbins_q, dim.get_nmers());
 
   if (nbins_q <= npoints + 1) {
-     // Short source query: every boundary 0, 1, ..., nbins_q
+    // Short source query: every boundary 0, 1, ..., nbins_q
     m.points_v.resize(nbins_q + 1);
     std::iota(m.points_v.begin(), m.points_v.end(), uint64_t(0));
   } else {
@@ -694,7 +693,7 @@ bool QIE<T>::sample_mesh_distance(const uint64_t mix, const uint64_t bix, const 
 
   // Reject any window that overlaps with the current interval
   // Samples from other contigs are independent by construction
-  if (m.bix == bix && m.points_v[i] < ab.second && ab.first < m.points_v[j]) {
+  if (m.bix == bix && m.points_v[i] < ab.b && ab.a < m.points_v[j]) {
     return false;
   }
 
@@ -758,7 +757,7 @@ bool QIE<T>::sample_metropolis_hastings(const xy_t& init, uint64_t S, uint64_t B
 }
 
 template<typename T>
-void QIE<T>::test_significance(const uint64_t nsamples, const uint64_t ntries)
+void QIE<T>::test_significance(const uint64_t sample_size, const uint64_t ntries)
 {
   // Weight each query by its bin count to sample proportionally.
   // Null summaries with fewer than 2 points cannot yield any interval.
@@ -774,7 +773,7 @@ void QIE<T>::test_significance(const uint64_t nsamples, const uint64_t ntries)
     return;
   }
   std::discrete_distribution<size_t> rvix(weights.begin(), weights.end());
-  samples_v.reserve(nsamples);
+  samples_v.reserve(sample_size);
 
   for (auto& r : records_v) {
     samples_v.clear();
@@ -785,7 +784,7 @@ void QIE<T>::test_significance(const uint64_t nsamples, const uint64_t ntries)
       warn_pmsg(qid_batch[r.bix], "has a full length interval; skipping significance test");
       continue;
     }
-    while ((n < nsamples) && (t < ntries)) {
+    while ((n < sample_size) && (t < ntries)) {
       ++t;
       const uint64_t mix = rvix(gen);
       if (sample_mesh_distance(mix, r.bix, ab)) {
@@ -802,7 +801,7 @@ void QIE<T>::test_significance(const uint64_t nsamples, const uint64_t ntries)
       }
     }
 
-    if (samples_v.size() < (nsamples / 2)) {
+    if (samples_v.size() < (sample_size / 2)) {
       warn_pmsg(qid_batch[r.bix], "not enough non-overlapping meshes; skipping significance test");
       continue;
     }
@@ -853,41 +852,39 @@ xy_t QIE<T>::score_gamma(const record_t& r, const vec<xy_t>& samples_v) const
 
 template<typename T>
 void QIE<T>::report_contiguous(std::ostream& sout, const str& rid) const
-{ // TODO: Revisit?
+{
   for (const auto& r : records_v) {
-    const char strand = r.is_ref ? '-' : '+';
+    const char strand = std::isnan(r.d_q) ? '.' : (r.is_ref ? '-' : '+');
+
+    const uint8_t mask = (r.th_ix != size_t(-1)) ? static_cast<uint8_t>(1u << r.th_ix) : 0;
+    xy_t d_range{d_eps, d_ub};
+    if (r.th_ix != size_t(-1)) {
+      const double ext = at(llhf->get_extrema(), r.th_ix);
+      if (ext > 0.0)
+        d_range.second = std::min(d_range.second, ext);
+      else
+        d_range.first = std::max(d_range.first, -ext);
+    }
+
     std::ostringstream d_bin;
     d_bin.flags(sout.flags());
     d_bin.precision(sout.precision());
-    d_bin << '(' << r.d_low << ", " << r.d_high << ')';
+    d_bin << '(' << d_range.first << ", " << d_range.second << ')';
     write_tsv(sout,
               qid_batch[r.bix],
               r.L,
-              r.a,
-              r.b,
+              r.seq_iv.a,
+              r.seq_iv.b,
               strand,
               rid,
               r.d,
-              static_cast<uint32_t>(r.mask),
+              static_cast<uint32_t>(mask),
               d_bin.str(),
               r.d_q,
               d_acc,
               r.percentile,
               r.fold)
       << '\n';
-  }
-}
-
-template<typename T>
-void QIE<T>::enumerate_intervals(std::ostream& sout, const str& rid, DIM<T>& dim, bool is_rc, size_t ix)
-{
-  const char strand = is_rc ? '-' : '+';
-  const double dist_th = at(params.dist_th, ix);
-  const uint64_t L = enmers + k - 1;
-  for (const auto& ab : dim.get_eintervals(ix)) {
-    const auto [a, b] = get_einterval(ab, params.bin_shift, enmers, k);
-    assert(a < b);
-    write_tsv(sout, qid_batch[bix], L, a, b, strand, rid, dist_th) << '\n';
   }
 }
 

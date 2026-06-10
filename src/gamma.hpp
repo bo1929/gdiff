@@ -9,7 +9,6 @@
 #include <boost/math/distributions/gamma.hpp>
 #include "types.hpp"
 
-
 typedef boost::math::policies::policy<boost::math::policies::max_series_iterations<1000000>> hpolicy;
 
 // Latent-Gamma model with additive Gaussian noise:

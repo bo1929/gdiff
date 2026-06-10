@@ -74,14 +74,14 @@ TEST_CASE("end-to-end with real sketch and query" * doctest::skip(!test_data_ava
     // Could be empty (no intervals) for this pair -- that's also valid
     // Just verify no crash and well-formed output
     if (!output.empty()) {
-      // Each line should have exactly 6 tabs (7 columns)
+      // Both modes now use unified output: 12 tabs (13 columns)
       std::istringstream iss(output);
       std::string line;
       while (std::getline(iss, line)) {
         if (line.empty()) continue;
         int tabs = 0;
         for (char c : line) if (c == '\t') tabs++;
-        CHECK(tabs == 6);
+        CHECK(tabs == 12);
       }
     }
   }

@@ -31,7 +31,18 @@ using inc_t = uint64_t;
 using enc_t = uint32_t;
 using str = std::string;
 using strstream = std::stringstream;
-using interval_t = std::pair<uint64_t, uint64_t>;
+struct interval_t
+{
+  uint64_t a;
+  uint64_t b;
+
+  interval_t() = default;
+  interval_t(uint64_t a, uint64_t b)
+    : a(a)
+    , b(b)
+  {
+  }
+};
 using xy_t = std::pair<double, double>;
 using rseq_sptr_t = std::shared_ptr<RSeq>;
 using qseq_sptr_t = std::shared_ptr<QSeq>;
@@ -62,15 +73,15 @@ struct hmer_t
 template<typename T>
 struct params_t
 {
-  size_t n;           // Number of distance thresholds given, also equals to WIDTH later
-  T dist_th;          // Distance threshold used for detection across varying scales
-  uint32_t hdist_th;  // Hamming distance threshold used for k-mer search
-  uint64_t tau;       // The minimum length threshold in sites
-  uint64_t tau_bin;   // The minimum length threshold in number of bins instead of sites
-  double chisq;       // Chi-square threshold in the statistical test for interval merging
-  uint64_t bin_shift; // Shift value for fast bin index calculation
-  uint64_t bin_size;  // Bin size in sites, equals to pow(2, bin_shift)
-  uint64_t nsamples;  // Total number of intervals drawn from the genome per test
+  size_t n;             // Number of distance thresholds given, also equals to WIDTH later
+  T dist_th;            // Distance threshold used for detection across varying scales
+  uint32_t hdist_th;    // Hamming distance threshold used for k-mer search
+  uint64_t tau;         // The minimum length threshold in sites
+  uint64_t tau_bin;     // The minimum length threshold in number of bins instead of sites
+  double chisq;         // Chi-square threshold in the statistical test for interval merging
+  uint64_t bin_shift;   // Shift value for fast bin index calculation
+  uint64_t bin_size;    // Bin size in sites, equals to pow(2, bin_shift)
+  uint64_t sample_size; // Number of null samples for significance test (0 = skip)
   bool enum_only;
 
   params_t(size_t n,
@@ -79,7 +90,7 @@ struct params_t
            uint64_t tau,
            double chisq,
            uint64_t bin_shift,
-           uint64_t nsamples,
+           uint64_t sample_size,
            bool enum_only)
     : n(n)
     , dist_th(dist_th)
@@ -89,7 +100,7 @@ struct params_t
     , chisq(chisq)
     , bin_shift(bin_shift)
     , bin_size(uint64_t(1) << bin_shift)
-    , nsamples(nsamples)
+    , sample_size(sample_size)
     , enum_only(enum_only)
   {
   }

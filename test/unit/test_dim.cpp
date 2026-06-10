@@ -52,10 +52,10 @@ vec<contig_slice_t> contiguous_slices_from_dim(DIM<T>& dim, const llh_sptr_t<T>&
 
   vec<uint64_t> pts = {1, nbins + 1};
   for (size_t ti = 0; ti < W; ++ti) {
-    if (!(th_bv & (1u << ti)) || dim.get_eintervals(ti).empty()) continue;
-    for (const auto& iv : dim.get_eintervals(ti)) {
-      pts.push_back(iv.first);
-      pts.push_back(iv.second + 1);
+    if (!(th_bv & (1u << ti)) || dim.get_intervals(ti).empty()) continue;
+    for (const auto& iv : dim.get_intervals(ti)) {
+      pts.push_back(iv.a);
+      pts.push_back(iv.b + 1);
     }
   }
 
@@ -73,10 +73,10 @@ vec<contig_slice_t> contiguous_slices_from_dim(DIM<T>& dim, const llh_sptr_t<T>&
     double bin_hi = 1.0;
     for (size_t ti = 0; ti < W; ++ti) {
       if (!(th_bv & (1u << ti))) continue;
-      const auto& ev = dim.get_eintervals(ti);
-      while (ti_ix[ti] < ev.size() && ev[ti_ix[ti]].second < a)
+      const auto& ev = dim.get_intervals(ti);
+      while (ti_ix[ti] < ev.size() && ev[ti_ix[ti]].b < a)
         ++ti_ix[ti];
-      if (ti_ix[ti] >= ev.size() || ev[ti_ix[ti]].first > a) continue;
+      if (ti_ix[ti] >= ev.size() || ev[ti_ix[ti]].a > a) continue;
       mask |= static_cast<uint8_t>(1u << ti);
       const double ext = at_th(llhf->get_extrema(), ti);
       if (ext > 0.0)
@@ -115,7 +115,7 @@ TEST_CASE("inclusive_scan with no hits yields no merged intervals") {
   dim.extract_intervals_mx(0, 1, nbins);
   dim.expand_intervals(33.0);
   auto iv = dim.get_interval(0);
-  CHECK(iv.first >= nbins);
+  CHECK(iv.a >= nbins);
 }
 
 } // TEST_SUITE
@@ -137,11 +137,11 @@ static void compare_mx_sx(DIM<T>& dim_mx, DIM<T>& dim_sx, uint64_t tau, size_t i
     auto iv_mx = dim_mx.get_interval(i, ix);
     auto iv_sx = dim_sx.get_interval(i, ix);
     INFO("mismatch at interval ", i, " for tau=", tau, " ix=", ix,
-         ": mx=(", iv_mx.first, ",", iv_mx.second, ")",
-         " sx=(", iv_sx.first, ",", iv_sx.second, ")");
-    CHECK(iv_mx.first == iv_sx.first);
-    CHECK(iv_mx.second == iv_sx.second);
-    if (iv_mx.first >= nbins) break;
+         ": mx=(", iv_mx.a, ",", iv_mx.b, ")",
+         " sx=(", iv_sx.a, ",", iv_sx.b, ")");
+    CHECK(iv_mx.a == iv_sx.a);
+    CHECK(iv_mx.b == iv_sx.b);
+    if (iv_mx.a >= nbins) break;
   }
 }
 
@@ -262,7 +262,7 @@ TEST_CASE("edge cases: full-range dip does not shortcut when nbins < 1 + tau") {
   dim_sx.extrema_scan();
   const uint64_t tau = 6; // 1 + tau > nbins: early shortcut must not emit (1, nbins)
   compare_mx_sx(dim_mx, dim_sx, tau);
-  CHECK(dim_mx.get_interval(0, 0).first >= nbins);
+  CHECK(dim_mx.get_interval(0, 0).a >= nbins);
 }
 
 TEST_CASE("edge cases: no k-mers at all") {
@@ -348,7 +348,7 @@ TEST_CASE("merge when chi-square below threshold") {
     uint64_t n = 0;
     for (;; ++n) {
       const interval_t iv = d.get_interval(n);
-      if (iv.first >= nbins) break;
+      if (iv.a >= nbins) break;
     }
     return n;
   };
@@ -505,10 +505,10 @@ TEST_CASE("SIMD DIM produces valid intervals") {
   for (size_t ix = 0; ix < 8; ++ix) {
     dim.extract_intervals_mx(1, 1, nbins, ix);
     dim.expand_intervals(33.0, ix);
-    for (const auto& iv : dim.get_eintervals(ix)) {
-      CHECK(iv.first >= 1);
-      CHECK(iv.first <= iv.second);
-      CHECK(iv.second <= nbins);
+    for (const auto& iv : dim.get_intervals(ix)) {
+      CHECK(iv.a >= 1);
+      CHECK(iv.a <= iv.b);
+      CHECK(iv.b <= nbins);
     }
   }
 }
@@ -834,12 +834,12 @@ TEST_CASE("multi-gap extraction finds intervals in separated regions") {
   dim.extract_intervals_mx(1, 1, nbins);
   dim.expand_intervals(33.0);
 
-  const auto& e_v = dim.get_eintervals(0);
+  const auto& e_v = dim.get_intervals(0);
   CHECK(e_v.size() >= 1);
   for (const auto& iv : e_v) {
-    CHECK(iv.first >= 1);
-    CHECK(iv.first <= iv.second);
-    CHECK(iv.second <= nbins);
+    CHECK(iv.a >= 1);
+    CHECK(iv.a <= iv.b);
+    CHECK(iv.b <= nbins);
   }
 }
 
