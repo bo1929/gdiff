@@ -76,6 +76,7 @@ QIE<T>::QIE(const params_t<T>& params,
   mask_bp = u64m >> ((32 - k) * 2);
   skip_test = (params.sample_size == 0);
   keep_hist = (!params.enum_only || !skip_test);
+  coordinates_only = (!params.enum_only || !skip_test);
   if (keep_hist) {
     // For SIMD alignment, bound is set to 8
     v_acc.assign(hdist_bound + 1, 0);
@@ -121,52 +122,43 @@ void QIE<T>::map_sequences(std::ostream& sout, const str& rid)
       dim->extrema_scan();
     }
 
-    if (!params.enum_only || !skip_test) {
-      for (DIM<T>& dim : {dim_fw, dim_rc}) {
-        const bool is_rc = (dim == &dim_rc);
-        for (size_t ix = 0; ix < WIDTH; ++ix) {
-          dim->extract_intervals_mx(tau_eff, 1, nbins, ix);
-          dim->expand_intervals(params.chisq, ix);
-          for (const auto& iv : dim->get_intervals(ix))
-            emit_record(dim, iv.a, iv.b + 1, ix, is_rc);
-        }
-      }
+    if (params.enum_only) {
+      extract_simple_intervals(dim_fw, false, tau_eff);
+      extract_simple_intervals(dim_rc, true, tau_eff);
       continue;
     }
 
     // Extract per-query histograms and compute per-query MLE
-    for (auto* dim : {&dim_fw, &dim_rc})
+    for (auto* dim : {&dim_fw, &dim_rc}) {
       dim->compute_prefhistsum();
+    }
+
     vec<uint64_t> v_q_fw, v_q_rc;
     uint64_t u_q_fw = 0, u_q_rc = 0, t_q;
     dim_fw.extract_histogram(0, nbins, v_q_fw, u_q_fw, t_q);
     dim_rc.extract_histogram(0, nbins, v_q_rc, u_q_rc, t_q);
     const double d_q_fw = llhf->mle(v_q_fw.data(), u_q_fw);
     const double d_q_rc = llhf->mle(v_q_rc.data(), u_q_rc);
-    // Reference is the one with the lower distance among fw/rc strands.
-    const bool is_ref = std::isnan(d_q_rc) || (!std::isnan(d_q_fw) && d_q_fw <= d_q_rc);
+    const double d_diff =
+      (std::isnan(d_q_fw) || std::isnan(d_q_rc)) ? std::numeric_limits<double>::quiet_NaN() : d_q_fw - d_q_rc;
 
-    if (!skip_test) {
-      save_mesh(is_ref ? dim_fw : dim_rc);
-    }
+    const bool is_ref = std::isnan(d_diff) ? false : (d_diff < 0);
+    if (!skip_test) save_mesh(is_ref ? dim_fw : dim_rc);
 
     extract_ordered_intervals(dim_fw, false, tau_eff);
     extract_ordered_intervals(dim_rc, true, tau_eff);
 
-    // Fill per-query fields once the reference strand is known
     for (size_t ri = srprev; ri < records_v.size(); ++ri) {
       record_t& r = records_v[ri];
-      r.is_ref = (r.is_rc != is_ref);
       r.d_q = r.is_rc ? d_q_rc : d_q_fw;
+      r.d_diff = d_diff;
     }
 
     add_to_acc(v_acc, u_acc, is_ref ? v_q_fw : v_q_rc, is_ref ? u_q_fw : u_q_rc);
   }
 
-  // The genome-wide accumulator and its MLE exist whenever histograms were kept
   if (keep_hist) d_acc = llhf->mle(v_acc.data(), u_acc);
   if (!skip_test) test_significance(params.sample_size, 250);
-
   report_contiguous(sout, rid);
 }
 
@@ -539,34 +531,51 @@ void DIM<T>::extract_histogram(uint64_t a, uint64_t b, vec<uint64_t>& v, uint64_
 }
 
 template<typename T>
+void QIE<T>::extract_simple_intervals(DIM<T>& dim, bool is_rc, uint64_t tau_eff)
+{
+  if constexpr (std::is_same_v<T, double>) {
+    dim.extract_intervals_mx(tau_eff, 1, nbins);
+    dim.expand_intervals(params.chisq);
+    for (const auto& iv : dim.get_intervals(0))
+      emit_record(dim, iv.a, iv.b + 1, 0, is_rc);
+  } else {
+    for (size_t ix = 0; ix < WIDTH; ++ix) {
+      dim.extract_intervals_mx(tau_eff, 1, nbins, ix);
+      dim.expand_intervals(params.chisq, ix);
+      for (const auto& iv : dim.get_intervals(ix))
+        emit_record(dim, iv.a, iv.b + 1, ix, is_rc);
+    }
+  }
+}
+
+template<typename T>
 void QIE<T>::extract_ordered_intervals(DIM<T>& dim, bool is_rc, uint64_t tau_eff)
 {
   const uint64_t nbins = dim.get_nbins();
   bp_v.clear();
 
-  for (const vec<size_t>& ix_v : {ltix_v, gtix_v}) {
-    if (ix_v.empty()) continue;
+  for (const auto* ix_v : {&ltix_v, &gtix_v}) {
+    if (ix_v->empty()) continue;
 
-    const size_t psize = bp_v.size();
+    const size_t sbprev = bp_v.size();
 
-    // Sort newly appended entries and merge into the already-sorted prefix.
-    auto merge_bp = [&]() {
-      if (bp_v.size() <= psize) return;
-      auto nit = std::next(bp_v.begin(), psize);
+    auto merge_bp = [&]() { // Merge newly appended entries in a sorted manner.
+      if (bp_v.size() <= sbprev) return;
+      auto nit = std::next(bp_v.begin(), sbprev);
       auto cmp = [](const bp_t& a, const bp_t& b) { return a.a_bin < b.a_bin; };
       std::sort(nit, bp_v.end(), cmp);
       std::inplace_merge(bp_v.begin(), nit, bp_v.end(), cmp);
     };
 
-    for (size_t ix : ix_v) {
+    for (size_t ix : *ix_v) {
       merge_bp();
-      // Find gaps between existing intervals and extract new ones there.
+
       uint64_t prev = 1;
+      // Find gaps between existing intervals and extract new ones.
       for (const auto& s : bp_v) {
         if (s.a_bin >= prev + tau_eff + 1) dim.extract_intervals_mx(tau_eff, prev, s.a_bin - 1, ix);
         prev = std::max(prev, s.b_bin);
       }
-
       if (nbins >= prev + tau_eff) {
         dim.extract_intervals_mx(tau_eff, prev, nbins, ix);
       }
@@ -579,27 +588,18 @@ void QIE<T>::extract_ordered_intervals(DIM<T>& dim, bool is_rc, uint64_t tau_eff
     merge_bp();
   }
 
-  make_records(dim, bp_v, is_rc);
-}
-
-template<typename T>
-void QIE<T>::make_records(DIM<T>& dim, const vec<bp_t>& bp_v, bool is_rc)
-{
-  const uint64_t nbins = dim.get_nbins();
-
   if (bp_v.empty()) {
-    // No intervals extracted: report the full query.
+    // No intervals extracted; report the full query.
     emit_record(dim, 1, nbins + 1, size_t(-1), is_rc);
-    return;
+  } else {
+    uint64_t prev = 1;
+    for (const auto& s : bp_v) {
+      if (s.a_bin > prev) emit_record(dim, prev, s.a_bin, size_t(-1), is_rc);
+      emit_record(dim, s.a_bin, s.b_bin, s.ix, is_rc);
+      prev = s.b_bin;
+    }
+    if (prev <= nbins) emit_record(dim, prev, nbins + 1, size_t(-1), is_rc);
   }
-
-  uint64_t prev = 1;
-  for (const auto& s : bp_v) {
-    if (s.a_bin > prev) emit_record(dim, prev, s.a_bin, size_t(-1), is_rc);
-    emit_record(dim, s.a_bin, s.b_bin, s.ix, is_rc);
-    prev = s.b_bin;
-  }
-  if (prev <= nbins) emit_record(dim, prev, nbins + 1, size_t(-1), is_rc);
 }
 
 template<typename T>
@@ -610,7 +610,7 @@ void QIE<T>::emit_record(DIM<T>& dim, uint64_t a_bin, uint64_t b_bin, size_t th_
 
   double d = std::numeric_limits<double>::quiet_NaN();
   double I = std::numeric_limits<double>::quiet_NaN();
-  if (keep_hist) {
+  if (coordinates_only) {
     uint64_t u, t;
     dim.extract_histogram(a_bin - 1, b_bin - 1, v_scratch, u, t);
     d = llhf->mle(v_scratch.data(), u);
@@ -623,7 +623,7 @@ void QIE<T>::emit_record(DIM<T>& dim, uint64_t a_bin, uint64_t b_bin, size_t th_
   }
 
   const interval_t bin_iv{a_bin, b_bin};
-  const interval_t seq_iv = get_rinterval(bin_iv, params.bin_shift, enmers, k, is_last);
+  const interval_t seq_iv = get_coordinates(bin_iv, params.bin_shift, enmers, k, is_last);
   assert(seq_iv.a < seq_iv.b);
 
   records_v.emplace_back(bix, L, seq_iv, bin_iv, is_rc, d, I, th_ix);
@@ -644,11 +644,11 @@ void QIE<T>::save_mesh(const DIM<T>& dim)
   mesh_t m(bix, nbins_q, dim.get_nmers());
 
   if (nbins_q <= npoints + 1) {
-    // Short source query: every boundary 0, 1, ..., nbins_q
+    // Short source query: keep every boundary 0, 1, ..., nbins_q
     m.points_v.resize(nbins_q + 1);
     std::iota(m.points_v.begin(), m.points_v.end(), uint64_t(0));
   } else {
-    // Long source query: sample npoints interior boundaries from {1, ..., nbins_q-1}.
+    // Long source query: sample interior boundaries from {1, ..., nbins_q-1}.
     m.points_v.reserve(npoints + 2);
     m.points_v.push_back(0);
     for (uint64_t j = nbins_q - npoints; j < nbins_q; ++j) {
@@ -664,6 +664,7 @@ void QIE<T>::save_mesh(const DIM<T>& dim)
     m.points_v.push_back(nbins_q);
   }
 
+  // Copy histograms with the corresponding mesh entries.
   const size_t P = m.points_v.size();
   m.hists_v.resize(P * W);
   for (size_t i = 0; i < P; ++i) {
@@ -788,6 +789,7 @@ void QIE<T>::test_significance(const uint64_t sample_size, const uint64_t ntries
       ++t;
       const uint64_t mix = rvix(gen);
       if (sample_mesh_distance(mix, r.bix, ab)) {
+#ifdef MCMC
         const auto [d, I] = samples_v.back();
         const size_t nsprev = samples_v.size() - 1;
         if (sample_metropolis_hastings({d, std::sqrt(1.0 / I)})) {
@@ -796,6 +798,9 @@ void QIE<T>::test_significance(const uint64_t sample_size, const uint64_t ntries
           samples_v.resize(nsprev);
           warn_pmsg(qid_batch[r.bix], "metropolis-hastings returned an invalid sample; skipping significance test");
         }
+#else
+        ++n;
+#endif
       } else {
         warn_pmsg(qid_batch[r.bix], "mesh sampling returned an invalid sample; skipping significance test");
       }
@@ -811,7 +816,8 @@ void QIE<T>::test_significance(const uint64_t sample_size, const uint64_t ntries
       continue;
     }
     // The null-sampled strand gets a two-sided test; the opposite strand keeps the low-distance tail.
-    r.percentile = r.is_ref ? (2.0 * std::min(prob, 1.0 - prob)) : prob;
+    const bool is_ref = std::isnan(r.d_diff) ? false : (r.is_rc ? r.d_diff > 0 : r.d_diff < 0);
+    r.percentile = is_ref ? (2.0 * std::min(prob, 1.0 - prob)) : prob;
     r.fold = (median > eps) ? (r.d / median) : std::numeric_limits<double>::quiet_NaN();
   }
 }
@@ -852,9 +858,9 @@ xy_t QIE<T>::score_gamma(const record_t& r, const vec<xy_t>& samples_v) const
 
 template<typename T>
 void QIE<T>::report_contiguous(std::ostream& sout, const str& rid) const
-{
+{ // Revisit this
   for (const auto& r : records_v) {
-    const char strand = std::isnan(r.d_q) ? '.' : (r.is_ref ? '-' : '+');
+    const char strand = std::isnan(r.d_diff) ? '.' : (r.d_diff < 0 ? '-' : '+');
 
     const uint8_t mask = (r.th_ix != size_t(-1)) ? static_cast<uint8_t>(1u << r.th_ix) : 0;
     xy_t d_range{d_eps, d_ub};
@@ -881,6 +887,7 @@ void QIE<T>::report_contiguous(std::ostream& sout, const str& rid) const
               static_cast<uint32_t>(mask),
               d_bin.str(),
               r.d_q,
+              r.d_diff,
               d_acc,
               r.percentile,
               r.fold)

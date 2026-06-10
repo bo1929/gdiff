@@ -40,7 +40,7 @@ xy_t slice_mle_fisher(DIM<T>& dim, const llh_sptr_t<T>& llhf, uint64_t a1, uint6
   return {d, I};
 }
 
-// Mirrors QIE::make_records slice boundaries from expanded intervals (1-based bin coords).
+// Mirrors QIE::extract_ordered_intervals and emit_record (1-based bin coords).
 template<typename T>
 vec<contig_slice_t> contiguous_slices_from_dim(DIM<T>& dim, const llh_sptr_t<T>& llhf, uint8_t th_bv)
 {

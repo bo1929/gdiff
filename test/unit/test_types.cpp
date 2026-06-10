@@ -86,27 +86,27 @@ TEST_CASE("coordinate helpers preserve output conventions") {
   const uint64_t enmers = 10;
   const uint32_t k = 5;
 
-  auto row = get_rinterval({1, 2}, 2, enmers, k, false);
+  auto row = get_coordinates({1, 2}, 2, enmers, k, false);
   CHECK(row.a == 1);
   CHECK(row.b == 5);
 
-  row = get_rinterval({2, 4}, 2, enmers, k, true);
+  row = get_coordinates({2, 4}, 2, enmers, k, true);
   CHECK(row.a == 5);
   CHECK(row.b == enmers + k - 1);
 
-  auto iv = get_einterval({1, 3}, 2, enmers, k);
+  auto iv = get_pintervals({1, 3}, 2, enmers, k);
   CHECK(iv.a == 1);
   CHECK(iv.b == 14);
 
-  iv = get_einterval({3, 3}, 2, enmers, k);
+  iv = get_pintervals({3, 3}, 2, enmers, k);
   CHECK(iv.a == 9);
   CHECK(iv.b == 14);
 
-  iv = get_einterval({1, 1}, 0, 1, k);
+  iv = get_pintervals({1, 1}, 0, 1, k);
   CHECK(iv.a == 1);
   CHECK(iv.b == k);
 
-  row = get_rinterval({1, 3}, 0, 2, k, true);
+  row = get_coordinates({1, 3}, 0, 2, k, true);
   CHECK(row.a == 1);
   CHECK(row.b == k + 1);
 }

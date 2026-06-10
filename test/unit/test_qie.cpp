@@ -95,14 +95,14 @@ TEST_CASE("end-to-end with real sketch and query" * doctest::skip(!test_data_ava
     std::string output = sout.str();
 
     if (!output.empty()) {
-      // Continuous mode: 12 tabs (13 columns)
+      // Continuous mode: 13 tabs (14 columns)
       std::istringstream iss(output);
       std::string line;
       while (std::getline(iss, line)) {
         if (line.empty()) continue;
         int tabs = 0;
         for (char c : line) if (c == '\t') tabs++;
-        CHECK(tabs == 12);
+        CHECK(tabs == 13);
       }
     }
   }

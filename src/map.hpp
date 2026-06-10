@@ -10,6 +10,10 @@
 #include "rqseq.hpp"
 #include "sketch.hpp"
 
+// When defined, Metropolis-Hastings MCMC adds posterior draws.
+// Otherwise, only the MLE from mesh sampling is used.
+#define MCMC
+
 static constexpr double eps = 1e-7;        // Tolerance for floating-point comparisons
 static constexpr uint32_t hdist_bound = 7; // Hamming distance bound for the SIMD alignment
 
@@ -43,9 +47,9 @@ struct record_t
   double d;          // MLE distance for this interval in [d_eps, d_ub]
   double I;          // Observed Fisher information I(d)
   size_t th_ix;      // Threshold index; size_t(-1) = background
-  // Per-query fields, filled once the reference strand is known
-  bool is_ref = false;                                   // Is the source strand the reference (lower MLE distance)?
-  double d_q = std::numeric_limits<double>::quiet_NaN(); // MLE distance for the source query (e.g., contig)
+  // Per-query fields, filled once both strands' distances are known
+  double d_q = std::numeric_limits<double>::quiet_NaN();    // MLE distance for the source query (e.g., contig)
+  double d_diff = std::numeric_limits<double>::quiet_NaN(); // d_q_fw - d_q_rc (neg = fw is ref)
   double percentile = std::numeric_limits<double>::quiet_NaN();
   double fold = std::numeric_limits<double>::quiet_NaN();
 
@@ -76,14 +80,14 @@ struct bp_t
   size_t ix;
 };
 
-inline interval_t get_rinterval(const interval_t& bin_iv, uint64_t bin_shift, uint64_t enmers, uint32_t k, bool is_last)
+inline interval_t get_coordinates(const interval_t& bin_iv, uint64_t bin_shift, uint64_t enmers, uint32_t k, bool is_last)
 {
   const uint64_t a = ((bin_iv.a - 1) << bin_shift) + 1;
   const uint64_t b = is_last ? (enmers + k - 1) : std::min(((bin_iv.b - 1) << bin_shift) + 1, enmers + 1);
   return {a, b};
 }
 
-inline interval_t get_einterval(const interval_t& bin_iv, uint64_t bin_shift, uint64_t enmers, uint32_t k)
+inline interval_t get_pintervals(const interval_t& bin_iv, uint64_t bin_shift, uint64_t enmers, uint32_t k)
 {
   const uint64_t a = ((bin_iv.a - 1) << bin_shift) + 1;
   const uint64_t b = std::min(bin_iv.b << bin_shift, enmers) + k - 1;
@@ -126,6 +130,7 @@ public:
   get_interval(uint64_t i, size_t ix = 0) const; // i-th merged interval in 1-based inclusive bin coordinates
 
 private:
+  const bool keep_hist;
   const params_t<T>& params;
   const llh_sptr_t<T> llhf;  // log-likelihood function for all calculations
   const uint64_t nbins;      // number of bins
@@ -133,15 +138,13 @@ private:
   uint64_t t_q = 0;          // total number of k-mers hits below hdist_th per query sequence
   uint64_t u_q = 0;          // total number misses per query sequence
   vec<uint64_t> hdisthist_v; // D[i][j] is the number of hits with HD=j, [(nbins+1) x (hdist_th+1)] row-major; D[0][j]=0
-  const bool keep_hist;
-  vec<T> fdc_v;    // The f' contribution c_i of the k-mer (bin) starting at i
-  vec<T> sdc_v;    // The f'' contribution s_i of the k-mer (bin) starting at i
-  vec<T> fdps_v;   // C[i] = sum(c_0, ..., c_{i}), C[0] = 0 (length n) (shifted by 1 w.r.t. fdc_v)
-  vec<T> sdps_v;   // S[i] = sum(s_0, ..., s_{i}), S[0] = 0 (length n) (shifted by 1 w.r.t. sdc_v)
-  vec<T> fdpmax_v; // H[i] = max(C_1, ..., C_{i}), H_0 = -inf, H_{n+1} = inf (length n+1)
-  vec<T> fdsmin_v; // L[i] = min(C_{i}, ..., C_n), L_0 = inf, L_{n+1}= -inf (length n+1)
-  // 1-based inclusive bin coordinates per threshold; raw after extract_intervals_*, then merged in place by expand_intervals
-  arr<vec<interval_t>, WIDTH> intervals_v;
+  vec<T> fdc_v;              // The f' contribution c_i of the k-mer (bin) starting at i
+  vec<T> sdc_v;              // The f'' contribution s_i of the k-mer (bin) starting at i
+  vec<T> fdps_v;             // C[i] = sum(c_0, ..., c_{i}), C[0] = 0 (length n) (shifted by 1 w.r.t. fdc_v)
+  vec<T> sdps_v;             // S[i] = sum(s_0, ..., s_{i}), S[0] = 0 (length n) (shifted by 1 w.r.t. sdc_v)
+  vec<T> fdpmax_v;           // H[i] = max(C_1, ..., C_{i}), H_0 = -inf, H_{n+1} = inf (length n+1)
+  vec<T> fdsmin_v;           // L[i] = min(C_{i}, ..., C_n), L_0 = inf, L_{n+1}= -inf (length n+1)
+  arr<vec<interval_t>, WIDTH> intervals_v; // 1-based inclusive bin coordinates per threshold
 };
 
 template<typename T>
@@ -161,7 +164,7 @@ private:
   void search_mers(const char* cseq, uint64_t len, DIM<T>& dim_fw, DIM<T>& dim_rc);
   void save_mesh(const DIM<T>& dim);
   void extract_ordered_intervals(DIM<T>& dim, bool is_rc, uint64_t tau_eff);
-  void make_records(DIM<T>& dim, const vec<bp_t>& bp_v, bool is_rc);
+  void extract_simple_intervals(DIM<T>& dim, bool is_rc, uint64_t tau_eff);
   void emit_record(DIM<T>& dim, uint64_t a_bin, uint64_t b_bin, size_t th_ix, bool is_rc);
   void test_significance(const uint64_t sample_size = 100, const uint64_t ntries = 250);
   bool sample_mesh_distance(const uint64_t mix, const uint64_t bix, const interval_t& bin_iv);
@@ -179,6 +182,9 @@ private:
   const uint32_t h;
   const uint32_t m;
   llh_sptr_t<T> llhf;
+  bool skip_test;
+  bool keep_hist;
+  bool coordinates_only;
   uint64_t mask_bp;
   uint64_t mask_lr;
   uint64_t onmers;     // Number of observed k-mers in current query (e.g., due to Ns)
@@ -196,8 +202,6 @@ private:
   vec<uint64_t> v_acc;
   uint64_t u_acc = 0;
   double d_acc = std::numeric_limits<double>::quiet_NaN();
-  bool skip_test;
-  bool keep_hist;
 };
 
 template<typename... Args>
