@@ -821,6 +821,7 @@ void QIE<T>::report_contiguous(std::ostream& sout, const str& rid) const
               r.seq_iv.a,
               r.seq_iv.b,
               report_strand(r.is_rc, r.d_diff),
+              static_cast<uint32_t>(r.is_rc),
               rid,
               r.d,
               static_cast<uint32_t>(mask),

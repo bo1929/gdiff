@@ -86,7 +86,17 @@ __all__ = [
     "ARROW_HEIGHT_MAX",
     "ARROW_BODY_HEIGHT_RATIO",
     "ARROW_STEM_WIDTH",
+    # gdiff distance bounds (match src/map.hpp)
+    "D_EPS",
+    "D_UB",
 ]
+
+# =============================================================================
+# GDIFF DISTANCE BOUNDS (match src/map.hpp: d_eps, d_ub)
+# =============================================================================
+
+D_EPS = 1e-5
+D_UB = 1.0
 
 # =============================================================================
 # LAYOUT

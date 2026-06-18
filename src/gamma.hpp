@@ -63,8 +63,6 @@ public:
     return boost::math::cdf(boost::math::gamma_distribution<double, hpolicy>(shape, scale), x);
   }
 
-  // Fitting
-
   // Fit Gamma directly to draws via quantile matching.
   [[nodiscard]] static params_t fit_from_samples(const std::vector<double>& x_v)
   {
@@ -186,8 +184,8 @@ private:
   }
 
   // 2D Nelder-Mead in (log shape, log scale), takes linear-space parameters.
-  // Stops when both objective spread and simplex diameter fall below tolerance;
-  // the diameter check catches flat-likelihood drift that the objective only misses.
+  // Stops when both objective spread and simplex diameter fall below tolerance.
+  // The diameter check catches flat-likelihood drift that the objective only misses.
   template<typename Obj>
   [[nodiscard]] static params_t nelder_mead_bivariate(params_t p0, Obj&& obj, const Config& cfg)
   {

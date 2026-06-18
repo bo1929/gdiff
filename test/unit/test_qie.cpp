@@ -13,16 +13,17 @@ static const std::string TEST_DIR = "test/";
 static const std::string GENOMES_DIR = TEST_DIR + "genomes/";
 static const std::string SKETCHES_DIR = TEST_DIR + "sketches/";
 
-// Unified TSV: 15 columns (14 tabs)
-static constexpr int k_out_cols = 15;
-static constexpr int k_out_tabs = 14;
+// Unified TSV: 16 columns (15 tabs)
+static constexpr int k_out_cols = 16;
+static constexpr int k_out_tabs = 15;
 static constexpr int k_col_strand = 4;
-static constexpr int k_col_dist = 6;
-static constexpr int k_col_mask = 7;
-static constexpr int k_col_strand_diff = 11;
-static constexpr int k_col_percentile = 12;
-static constexpr int k_col_fold = 13;
-static constexpr int k_col_qvalue = 14;
+static constexpr int k_col_is_rc = 5;
+static constexpr int k_col_dist = 7;
+static constexpr int k_col_mask = 8;
+static constexpr int k_col_strand_diff = 12;
+static constexpr int k_col_percentile = 13;
+static constexpr int k_col_fold = 14;
+static constexpr int k_col_qvalue = 15;
 
 static bool test_data_available()
 {
@@ -246,6 +247,21 @@ TEST_CASE("known pair: three operating modes" * doctest::skip(!test_data_availab
 
   strand_chars_valid(out_enum);
   strand_chars_valid(out_cont);
+
+  auto is_rc_valid = [](const std::string& s) {
+    std::istringstream iss(s);
+    std::string line;
+    while (std::getline(iss, line)) {
+      if (line.empty()) continue;
+      const auto fields = split_tsv(line);
+      if (static_cast<int>(fields.size()) != k_out_cols) continue;
+      CHECK((fields[k_col_is_rc] == "0" || fields[k_col_is_rc] == "1"));
+    }
+  };
+
+  is_rc_valid(out_enum);
+  is_rc_valid(out_cont);
+  is_rc_valid(out_lite);
 
   CHECK(any_finite_col(out_enum, k_col_percentile));
   CHECK(any_finite_col(out_cont, k_col_percentile));

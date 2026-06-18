@@ -18,6 +18,199 @@ from plotly.subplots import make_subplots
 from plotrc import *  # noqa: F403
 
 # =============================================================================
+# GDIFF TSV SCHEMA
+# =============================================================================
+
+GDIFF_COLUMNS = [
+    "QUERY_ID",
+    "SEQ_LEN",
+    "INTERVAL_START",
+    "INTERVAL_END",
+    "STRAND",
+    "IS_RC",
+    "REF_ID",
+    "DIST",
+    "MASK",
+    "D_INTERVAL",
+    "DIST_CONTIG",
+    "STRAND_DIFF",
+    "DIST_GENOME",
+    "PERCENTILE",
+    "FOLD",
+    "QVALUE",
+]
+
+PLOT_DIST_COL = "_PLOT_DIST"
+
+# STRAND: '+' = closer (lower-distance) strand, '-' = farther, '.' = unknown.
+STRAND_LABELS = {"+": "closer", "-": "farther", ".": "unknown"}
+
+
+def clamp_distance(val) -> float:
+    """Clamp finite distances to the valid MLE open interval [D_EPS, D_UB)."""
+    if val is None or (isinstance(val, float) and np.isnan(val)):
+        return float("nan")
+    try:
+        d = float(val)
+    except (TypeError, ValueError):
+        return float("nan")
+    if not np.isfinite(d) or d < D_EPS or d >= D_UB:
+        return float("nan")
+    return d
+
+
+def format_strand_diff(val) -> Optional[str]:
+    """Format STRAND_DIFF for hover text (finite diff or sentinel labels)."""
+    if val is None or (isinstance(val, float) and np.isnan(val)):
+        return None
+    try:
+        d = float(val)
+    except (TypeError, ValueError):
+        return None
+    if np.isfinite(d):
+        return f"{d:.4g}"
+    if d == float("-inf"):
+        return "fw only"
+    if d == float("inf"):
+        return "rc only"
+    return None
+
+
+def has_informative_strand(df: pd.DataFrame) -> bool:
+    """True when STRAND has at least one '+' or '-' row (not only '.')."""
+    if "STRAND" not in df.columns:
+        return False
+    chars = df["STRAND"].astype(str).str.strip().str[:1]
+    return chars.isin(["+", "-"]).any()
+
+
+def parse_is_rc(val) -> float:
+    """Normalize IS_RC to 0 (forward) or 1 (reverse-complement)."""
+    if val is None or (isinstance(val, float) and np.isnan(val)):
+        return float("nan")
+    s = str(val).strip().lower()
+    if s in ("1", "true", "rc", "yes"):
+        return 1.0
+    if s in ("0", "false", "fw", "no"):
+        return 0.0
+    try:
+        return 1.0 if int(float(s)) else 0.0
+    except (ValueError, TypeError):
+        return float("nan")
+
+
+def is_rc_label(val) -> str:
+    """Return 'fw' or 'rc' for hover text."""
+    if val is None or (isinstance(val, float) and np.isnan(val)):
+        return "?"
+    return "rc" if int(val) else "fw"
+
+
+def has_is_rc_column(df: pd.DataFrame) -> bool:
+    """True when IS_RC is present with at least one parsed value."""
+    if "IS_RC" not in df.columns:
+        return False
+    parsed = df["IS_RC"].map(parse_is_rc)
+    return parsed.notna().any()
+
+
+def is_enum_lite_dataframe(df: pd.DataFrame) -> bool:
+    """Enum lite: 15-column output with no segment MLE or significance testing."""
+    if "DIST" not in df.columns or "MASK" not in df.columns:
+        return False
+    dist_ok = df["DIST"].notna() & np.isfinite(df["DIST"])
+    if dist_ok.any():
+        return False
+    if "PERCENTILE" in df.columns:
+        p_ok = df["PERCENTILE"].notna() & np.isfinite(df["PERCENTILE"])
+        if p_ok.any():
+            return False
+    return True
+
+
+def parse_d_interval_upper(val) -> float:
+    """Return the upper bound from a D_INTERVAL string like '(0, 0.1)'."""
+    if not isinstance(val, str) or not val.startswith("("):
+        return float("nan")
+    try:
+        parts = val.strip("()").split(",")
+        return float(parts[1].strip())
+    except (ValueError, IndexError):
+        return float("nan")
+
+
+def normalize_gdiff_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """Add optional columns and a unified distance column for plotting."""
+    df = df.copy()
+    for col in ("STRAND_DIFF", "QVALUE", "DIST_CONTIG", "DIST_GENOME", "FOLD"):
+        if col not in df.columns:
+            df[col] = np.nan
+    if "STRAND" in df.columns:
+        df["STRAND"] = df["STRAND"].astype(str).str.strip().str[:1]
+        df.loc[~df["STRAND"].isin(["+", "-", "."]), "STRAND"] = "."
+    if "IS_RC" in df.columns:
+        df["IS_RC"] = df["IS_RC"].map(parse_is_rc)
+    if "DIST" in df.columns:
+        df["DIST"] = pd.to_numeric(df["DIST"], errors="coerce").map(clamp_distance)
+    if "DIST_CONTIG" in df.columns:
+        df["DIST_CONTIG"] = pd.to_numeric(df["DIST_CONTIG"], errors="coerce").map(
+            clamp_distance
+        )
+    if "DIST_GENOME" in df.columns:
+        df["DIST_GENOME"] = pd.to_numeric(df["DIST_GENOME"], errors="coerce").map(
+            clamp_distance
+        )
+    if "DIST_TH" in df.columns:
+        df[PLOT_DIST_COL] = pd.to_numeric(df["DIST_TH"], errors="coerce")
+    else:
+        df[PLOT_DIST_COL] = pd.to_numeric(
+            df["DIST"] if "DIST" in df.columns else np.nan, errors="coerce"
+        )
+        if "D_INTERVAL" in df.columns:
+            missing = df[PLOT_DIST_COL].isna()
+            if missing.any():
+                df.loc[missing, PLOT_DIST_COL] = df.loc[missing, "D_INTERVAL"].map(
+                    parse_d_interval_upper
+                )
+    if PLOT_DIST_COL in df.columns:
+        df[PLOT_DIST_COL] = pd.to_numeric(df[PLOT_DIST_COL], errors="coerce")
+    return df
+
+
+def detect_plot_mode(
+    df: pd.DataFrame,
+    enum_only: Optional[bool] = None,
+) -> str:
+    """Return 'legacy_enum', 'enum', or 'continuous'.
+
+    legacy_enum: 7-column DIST_TH ground truth.
+    enum: 15-column enum lite (no segment MLE / no significance).
+    continuous: segment MLE output (continuous mode or enum + significance test).
+    """
+    if enum_only is True:
+        return "legacy_enum" if "DIST_TH" in df.columns else "enum"
+    if "DIST_TH" in df.columns and "PERCENTILE" not in df.columns:
+        return "legacy_enum"
+    if "DIST" in df.columns and "MASK" in df.columns:
+        if is_enum_lite_dataframe(df):
+            return "enum"
+        return "continuous"
+    raise ValueError(
+        "Unrecognized TSV format. Expected legacy enum (DIST_TH), "
+        "15-column enum lite (DIST/MASK, NaN MLE), or continuous/enum+test "
+        "(finite DIST and/or PERCENTILE)."
+    )
+
+
+def is_enum_plot_mode(mode: str) -> bool:
+    return mode in ("legacy_enum", "enum")
+
+
+def load_gdiff_tsv(path: str) -> pd.DataFrame:
+    return normalize_gdiff_dataframe(pd.read_csv(path, sep="\t"))
+
+
+# =============================================================================
 # DATA LOADING & FILTERING
 # =============================================================================
 
@@ -93,16 +286,26 @@ def get_query_retained_leaves(df: pd.DataFrame, query: str) -> set[str]:
     return set(df_q[df_q["INTERVAL_START"] != df_q["INTERVAL_END"]]["REF_ID"].unique())
 
 
+def compute_distance_range(df: pd.DataFrame) -> tuple[float, float]:
+    """Adaptive [min, max] distance range clamped to valid MLE bounds."""
+    if df.empty or "DIST" not in df.columns:
+        return D_EPS, min(0.5, D_UB - D_EPS)
+    finite = df["DIST"].replace([np.inf, -np.inf], np.nan).dropna()
+    if finite.empty:
+        return D_EPS, min(0.5, D_UB - D_EPS)
+    d_min = max(float(finite.min()), D_EPS)
+    d_max = min(float(finite.max()), D_UB - D_EPS)
+    if d_max <= d_min:
+        d_max = min(d_min + 0.01, D_UB - D_EPS)
+    return d_min, d_max
+
+
 def get_distance_thresholds(df: pd.DataFrame) -> list[float]:
-    """Return sorted unique DIST_TH values.
-
-    Args:
-        df: Input dataframe with DIST_TH column.
-
-    Returns:
-        Sorted list of unique distance thresholds.
-    """
-    return sorted(df["DIST_TH"].unique())
+    """Return sorted unique plotting distance values."""
+    if PLOT_DIST_COL not in df.columns:
+        return []
+    vals = df[PLOT_DIST_COL].dropna().unique()
+    return sorted(float(v) for v in vals)
 
 
 def get_sequence_identifiers(df: pd.DataFrame) -> list[str]:
@@ -145,22 +348,25 @@ def filter_intervals(
     tip_order: list[str],
     dist_hi: float,
     dist_lo: Optional[float] = None,
-    strand: Optional[str] = None,
+    direction: Optional[str] = None,
 ) -> pd.DataFrame:
-    """Filter intervals by query, distance threshold, and strand."""
+    """Filter intervals by query, distance threshold, and forward/rc direction."""
     df_q = df[df["QUERY_ID"] == seq_id].copy()
 
-    if strand and strand != "both" and "STRAND" in df_q.columns:
-        df_q = df_q[df_q["STRAND"] == strand]
+    if direction and direction != "both" and "IS_RC" in df_q.columns:
+        want_rc = direction == "rc"
+        df_q = df_q[df_q["IS_RC"] == (1.0 if want_rc else 0.0)]
 
     grp_cols = ["REF_ID", "y", "QUERY_ID", "INTERVAL_START", "INTERVAL_END", "SEQ_LEN"]
-    if "STRAND" in df_q.columns:
+    if "IS_RC" in df_q.columns:
+        grp_cols.append("IS_RC")
+    elif "STRAND" in df_q.columns:
         grp_cols.append("STRAND")
-    df_q = df_q.groupby(grp_cols, as_index=False)["DIST_TH"].min()
+    df_q = df_q.groupby(grp_cols, as_index=False)[PLOT_DIST_COL].min()
 
-    df_q = df_q[df_q["DIST_TH"] <= dist_hi]
+    df_q = df_q[df_q[PLOT_DIST_COL] <= dist_hi]
     if dist_lo is not None:
-        df_q = df_q[df_q["DIST_TH"] >= dist_lo]
+        df_q = df_q[df_q[PLOT_DIST_COL] >= dist_lo]
 
     return df_q.dropna(subset=["y"]).sort_values("y")
 
@@ -170,43 +376,32 @@ def filter_intervals_continuous(
     seq_id: str,
     tip_order: list[str],
     strand: Optional[str] = None,
-    pval_th: Optional[float] = None,
+    sig_th: Optional[float] = None,
+    sig_col: str = "PERCENTILE",
     fold: Optional[str] = None,
 ) -> pd.DataFrame:
-    """Filter intervals by query, strand, p-value cutoff, and fold change.
+    """Filter intervals by query, strand, significance cutoff, and fold change.
 
-    strand: '+', '-', or 'both'. When 'both', pick strand with lowest DIST_CONTIG per interval.
-    pval_th: if set, keep only rows with PERCENTILE <= pval_th (NaN rows are dropped).
-    If pval_th is None (no filter), NaN PERCENTILE rows are kept.
-    fold: "<1" keeps FOLD < 1 (closer than expected), ">1" keeps FOLD > 1 (more distant).
+    strand: '+', '-', or 'both'. '+' = closer strand, '-' = farther strand.
+    sig_th: if set, keep rows with sig_col <= sig_th (NaN rows dropped).
+    sig_col: 'PERCENTILE' (p-value) or 'QVALUE' (BH-adjusted).
+    fold: '<1' keeps FOLD < 1 (closer), '>1' keeps FOLD > 1 (more distant).
     """
     df_q = df[df["QUERY_ID"] == seq_id].copy()
 
-    if pval_th is not None and "PERCENTILE" in df_q.columns:
-        df_q = df_q[df_q["PERCENTILE"] <= pval_th]
+    if sig_th is not None and sig_col in df_q.columns:
+        sig = pd.to_numeric(df_q[sig_col], errors="coerce")
+        df_q = df_q[sig.notna() & np.isfinite(sig) & (sig <= sig_th)]
 
     if fold is not None and "FOLD" in df_q.columns:
+        fold_v = pd.to_numeric(df_q["FOLD"], errors="coerce")
         if fold == "<1":
-            df_q = df_q[df_q["FOLD"].isna() | (df_q["FOLD"] < 1.0)]
+            df_q = df_q[fold_v.notna() & np.isfinite(fold_v) & (fold_v < 1.0)]
         elif fold == ">1":
-            df_q = df_q[df_q["FOLD"].isna() | (df_q["FOLD"] > 1.0)]
+            df_q = df_q[fold_v.notna() & np.isfinite(fold_v) & (fold_v > 1.0)]
 
     if strand and strand != "both" and "STRAND" in df_q.columns:
         df_q = df_q[df_q["STRAND"] == strand]
-    elif (
-        strand == "both" and "STRAND" in df_q.columns and "DIST_CONTIG" in df_q.columns
-    ):
-        # Pick strand with lowest DIST_CONTIG for each (REF_ID, start, end)
-        df_q = df_q.loc[
-            df_q.groupby(["REF_ID", "INTERVAL_START", "INTERVAL_END"])[
-                "DIST_CONTIG"
-            ].idxmin()
-        ].copy()
-    elif strand == "both" and "STRAND" in df_q.columns and "DIST" in df_q.columns:
-        # Fallback to DIST if DIST_CONTIG not available
-        df_q = df_q.loc[
-            df_q.groupby(["REF_ID", "INTERVAL_START", "INTERVAL_END"])["DIST"].idxmin()
-        ].copy()
 
     return df_q.dropna(subset=["y"]).sort_values("y")
 
@@ -215,18 +410,32 @@ def make_cached_filter(df: pd.DataFrame, enum_only=True):
     if enum_only:
 
         @lru_cache(maxsize=CACHE_SIZE)
-        def cached(seq_id, tip_order_tuple, dist_hi, dist_lo, strand):
+        def cached(seq_id, tip_order_tuple, dist_hi, dist_lo, direction):
             return filter_intervals(
-                df, seq_id, list(tip_order_tuple), dist_hi, dist_lo, strand
+                df, seq_id, list(tip_order_tuple), dist_hi, dist_lo, direction
             )
 
         return cached
     else:
 
         @lru_cache(maxsize=CACHE_SIZE)
-        def cached_cont(seq_id, tip_order_tuple, strand, pval_th=None, fold=None):
+        def cached_cont(
+            seq_id,
+            tip_order_tuple,
+            strand,
+            sig_log=None,
+            sig_col="PERCENTILE",
+            fold=None,
+        ):
+            sig_th = 10.0**sig_log if sig_log is not None and sig_log < 0 else None
             return filter_intervals_continuous(
-                df, seq_id, list(tip_order_tuple), strand, pval_th, fold
+                df,
+                seq_id,
+                list(tip_order_tuple),
+                strand,
+                sig_th,
+                sig_col,
+                fold,
             )
 
         return cached_cont
@@ -466,19 +675,33 @@ def batch_by_color(df, bin_edges, colors, leaf_distances=None, flip=False):
     starts = df["INTERVAL_START"].values[mask]
     ends = df["INTERVAL_END"].values[mask]
     ys = df["y"].values[mask]
-    dists = df["DIST_TH"].values[mask]
+    dists = df[PLOT_DIST_COL].values[mask]
     refs = df["REF_ID"].values[mask]
     cidx = assign_color_indices(dists, bin_edges, len(colors))
 
-    hovers = [
-        f"{rid}<br>Pos: {s:,}-{e:,}<br>Dist: {d:.3f}"
-        + (
-            f"<br>Tree dist: {leaf_distances[rid]:.4f}"
-            if leaf_distances and rid in leaf_distances
-            else ""
-        )
-        for rid, s, e, d in zip(refs, starts, ends, dists)
-    ]
+    hovers = []
+    masks = df["MASK"].values[mask] if "MASK" in df.columns else None
+    strands = df["STRAND"].values[mask] if "STRAND" in df.columns else None
+    is_rcs = df["IS_RC"].values[mask] if "IS_RC" in df.columns else None
+    d_intervals = (
+        df["D_INTERVAL"].values[mask] if "D_INTERVAL" in df.columns else None
+    )
+    for i, (rid, s, e, d) in enumerate(zip(refs, starts, ends, dists)):
+        strand_str = ""
+        if strands is not None:
+            st = strands[i]
+            if st in STRAND_LABELS:
+                strand_str = f" ({st} {STRAND_LABELS[st]})"
+        h = f"{rid}{strand_str}<br>Pos: {s:,}-{e:,}<br>Dist: {d:.4f}"
+        if is_rcs is not None:
+            h += f"  dir: {is_rc_label(is_rcs[i])}"
+        if masks is not None:
+            h += f"  mask: {int(masks[i])}"
+        if d_intervals is not None:
+            h += f"  D-int: {d_intervals[i]}"
+        if leaf_distances and rid in leaf_distances:
+            h += f"<br>Tree dist: {leaf_distances[rid]:.4f}"
+        hovers.append(h)
 
     return _build_interval_traces(starts, ends, ys, hovers, cidx, colors,
                                    descending=True)
@@ -540,15 +763,28 @@ def compute_color_values(df, color_by, dist_range):
         df["D_INTERVAL"].values[mask] if "D_INTERVAL" in df.columns else None
     )
     folds = df["FOLD"].values[mask] if "FOLD" in df.columns else None
+    qvalues = (
+        df["QVALUE"].values[mask] if "QVALUE" in df.columns else None
+    )
+    strand_diffs = (
+        df["STRAND_DIFF"].values[mask] if "STRAND_DIFF" in df.columns else None
+    )
     strands = df["STRAND"].values[mask] if "STRAND" in df.columns else None
+    is_rcs = df["IS_RC"].values[mask] if "IS_RC" in df.columns else None
 
     # Select color column
-    if color_by == "pval":
-        raw_colors = pvals
+    if color_by in ("pval", "qval"):
+        sig_src = qvalues if color_by == "qval" else pvals
+        if sig_src is None:
+            sig_src = pvals
+        raw_colors = sig_src
         cmin, cmax = 0.0, 1.0
     else:  # "dist"
         raw_colors = dists
-        cmin, cmax = dist_range
+        cmin = max(dist_range[0], D_EPS)
+        cmax = min(dist_range[1], D_UB - D_EPS)
+        if cmax <= cmin:
+            cmax = min(cmin + 0.01, D_UB - D_EPS)
 
     return {
         "starts": starts,
@@ -561,7 +797,10 @@ def compute_color_values(df, color_by, dist_range):
         "dist_genomes": dist_genomes,
         "d_intervals": d_intervals,
         "folds": folds,
+        "qvalues": qvalues,
+        "strand_diffs": strand_diffs,
         "strands": strands,
+        "is_rcs": is_rcs,
         "raw_colors": raw_colors,
         "cmin": cmin,
         "cmax": cmax,
@@ -573,7 +812,7 @@ def batch_by_continuous_color(
 ):
     """Create traces with continuous or binned coloring for non-enum mode.
 
-    For 'pval' color_by: uses fixed p-value bins with whitish first bin.
+    For 'pval' / 'qval' color_by: uses fixed significance bins with whitish first bin.
     For 'dist' color_by: 65-bin continuous discretization (bin 0 = NaN gray).
 
     Each interval is rendered as 4 points (start, mid, end, None) so the
@@ -585,9 +824,11 @@ def batch_by_continuous_color(
     if cv is None:
         return {}, 0.0, 1.0
 
-    if color_by == "pval":
-        # Binned p-value coloring
-        bin_idx = _pval_bin_index(cv["pvals"])
+    if color_by in ("pval", "qval"):
+        sig_arr = cv["qvalues"] if color_by == "qval" else cv["pvals"]
+        if sig_arr is None:
+            sig_arr = cv["pvals"]
+        bin_idx = _pval_bin_index(sig_arr)
         bin_colors = _pval_bin_colors(scheme, flip=flip)
     else:
         # 64 color bins + 1 gray NaN bin at index 0
@@ -610,7 +851,10 @@ def batch_by_continuous_color(
 
     d_intervals = cv["d_intervals"]
     folds = cv["folds"]
+    qvalues = cv["qvalues"]
+    strand_diffs = cv["strand_diffs"]
     strands = cv["strands"]
+    is_rcs = cv["is_rcs"]
     n_items = len(cv["refs"])
     hovers = []
     for i in range(n_items):
@@ -618,12 +862,23 @@ def batch_by_continuous_color(
         s, e = int(cv["starts"][i]), int(cv["ends"][i])
         d, p = cv["dists"][i], cv["pvals"][i]
         dc, dg = cv["dist_contigs"][i], cv["dist_genomes"][i]
-        strand_str = f" ({strands[i]})" if strands is not None else ""
+        strand_str = ""
+        if strands is not None:
+            st = strands[i]
+            if st in STRAND_LABELS:
+                strand_str = f" ({st} {STRAND_LABELS[st]})"
         h = f"{rid}{strand_str}<br>Pos: {s:,}-{e:,}<br>Dist: {_fmt(d)}"
+        if is_rcs is not None:
+            h += f"  dir: {is_rc_label(is_rcs[i])}"
         h += f"  p: {_fmt(p, '.3e')}"
+        if qvalues is not None:
+            h += f"  q: {_fmt(qvalues[i], '.3e')}"
         if folds is not None:
             h += f"  fold: {_fmt(folds[i], '.3f')}"
         h += f"<br>Contig: {_fmt(dc)}  Genome: {_fmt(dg)}"
+        sd = format_strand_diff(strand_diffs[i]) if strand_diffs is not None else None
+        if sd is not None:
+            h += f"  d_diff: {sd}"
         if d_intervals is not None:
             h += f"  D-int: {d_intervals[i]}"
         if leaf_distances and rid in leaf_distances:
@@ -640,16 +895,16 @@ def make_continuous_colorbar(
     cmin, cmax, color_by, scheme, y_center=0.5, length=None, flip=False
 ):
     """Create a colorbar trace for non-enum mode."""
-    if color_by == "pval":
-        # Binned p-value colorbar matching PVAL_BINS
+    if color_by in ("pval", "qval"):
+        # Binned significance colorbar matching PVAL_BINS
         bins = PVAL_BINS
         n = len(bins) - 1
         colors = _pval_bin_colors(scheme, flip=flip)
         edges = np.linspace(0, 1, n + 1)
         scale = [[edges[i + j], colors[i]] for i in range(n) for j in (0, 1)]
-        # Tick labels at bin boundaries
         tickvals = [edges[i] for i in range(n + 1)]
         ticktext = [f"{v:g}" for v in bins]
+        sig_title = "q-value" if color_by == "qval" else "p-value"
         return go.Scatter(
             x=[None],
             y=[None],
@@ -661,7 +916,7 @@ def make_continuous_colorbar(
                 cmax=1,
                 color=[0],
                 colorbar=dict(
-                    title="p-value",
+                    title=sig_title,
                     len=length or COLORBAR_LEN,
                     x=COLORBAR_X,
                     y=y_center,
@@ -678,6 +933,8 @@ def make_continuous_colorbar(
         )
     else:
         title = "Distance"
+        cmax_plot = min(cmax, D_UB - D_EPS) if np.isfinite(cmax) else D_UB - D_EPS
+        cmin_plot = max(cmin, D_EPS) if np.isfinite(cmin) else D_EPS
         # Reverse colorscale if flipped (swap positions 0↔1)
         if flip:
             orig = px.colors.get_colorscale(scheme)
@@ -691,9 +948,9 @@ def make_continuous_colorbar(
             marker=dict(
                 colorscale=cs,
                 showscale=True,
-                cmin=cmin,
-                cmax=cmax,
-                color=[cmin],
+                cmin=cmin_plot,
+                cmax=cmax_plot,
+                color=[cmin_plot],
                 colorbar=dict(
                     title=title,
                     len=length or COLORBAR_LEN,
@@ -1721,7 +1978,14 @@ def control_panel(children):
 
 
 def build_layout(
-    seq_ids, dist_ths, has_pruned, has_strand=False, initial_prune=True, enum_only=True
+    seq_ids,
+    dist_ths,
+    has_pruned,
+    has_strand=False,
+    has_is_rc=False,
+    has_qvalue=False,
+    initial_prune=True,
+    enum_only=True,
 ):
     dmin = dist_ths[0] if dist_ths else 0.0
     dmax = dist_ths[-1] if dist_ths else 0.0
@@ -1734,8 +1998,10 @@ def build_layout(
             dcc.Store(id="tree-view-store", data="phylogeny"),
             dcc.Store(id="prune-store", data="pruned" if initial_prune else "full"),
             dcc.Store(id="strand-store", data="both"),
+            dcc.Store(id="direction-store", data="both"),
             dcc.Store(id="mode-store", data="focus"),
             dcc.Store(id="color-by-store", data="dist"),
+            dcc.Store(id="sig-metric-store", data="q" if has_qvalue else "p"),
             dcc.Store(id="fold-store", data="both"),
             dcc.Store(id="colorscale-flip-store", data=False),
             dcc.Store(id="interval-count-store", data=0),
@@ -1856,7 +2122,7 @@ def build_layout(
                             "alignItems": "center",
                         },
                     ),
-                    # Color-by toggle: dist / p-value (non-enum only)
+                    # Color-by toggle: dist / p-value / q-value (non-enum only)
                     html.Div(
                         [
                             divider(),
@@ -1870,6 +2136,12 @@ def build_layout(
                             html.Button(
                                 "p-value",
                                 id="colorby-pval-btn",
+                                n_clicks=0,
+                                style=toggle_style(False, "middle"),
+                            ),
+                            html.Button(
+                                "q-value",
+                                id="colorby-qval-btn",
                                 n_clicks=0,
                                 style=toggle_style(False, "right"),
                             ),
@@ -1910,11 +2182,38 @@ def build_layout(
                             "gap": 0,
                         },
                     ),
-                    # p-value filter slider (non-enum only)
+                    # Significance filter slider (non-enum only)
                     html.Div(
                         [
                             divider(),
-                            control_label("p ≤"),
+                            html.Span(
+                                "q \u2264" if has_qvalue else "p \u2264",
+                                id="sig-filter-label",
+                                style={
+                                    "fontWeight": "600",
+                                    "marginRight": f"{UI_LABEL_MARGIN}px",
+                                    "fontSize": UI_LABEL_SIZE,
+                                    "color": UI_LABEL_COLOR,
+                                    "whiteSpace": "nowrap",
+                                },
+                            ),
+                            html.Div(
+                                [
+                                    html.Button(
+                                        "p",
+                                        id="sig-p-btn",
+                                        n_clicks=0,
+                                        style=toggle_style(not has_qvalue, "left"),
+                                    ),
+                                    html.Button(
+                                        "q",
+                                        id="sig-q-btn",
+                                        n_clicks=0,
+                                        style=toggle_style(has_qvalue, "right"),
+                                    ),
+                                ],
+                                style={"display": "flex", "marginRight": 6},
+                            ),
                             html.Div(
                                 dcc.Slider(
                                     id="pval-slider",
@@ -1995,33 +2294,62 @@ def build_layout(
                         ],
                         style={"display": "flex", "alignItems": "center", "gap": 0},
                     ),
-                    # Strand toggle — only visible when strand data is present;
-                    # leading divider keeps separation correct whether visible or not
+                    # Enum: filter by physical strand (IS_RC: fw / rc)
                     html.Div(
                         [
                             divider(),
-                            control_label("Strand:"),
+                            control_label("Direction:"),
                             html.Button(
-                                "+ (fw)",
-                                id="strand-fwd-btn",
+                                "fw",
+                                id="direction-fw-btn",
                                 n_clicks=0,
                                 style=toggle_style(False, "left"),
                             ),
                             html.Button(
-                                "± (both)",
-                                id="strand-both-btn",
+                                "both",
+                                id="direction-both-btn",
                                 n_clicks=0,
                                 style=toggle_style(True, "middle"),
                             ),
                             html.Button(
-                                "− (rc)",
-                                id="strand-rev-btn",
+                                "rc",
+                                id="direction-rc-btn",
                                 n_clicks=0,
                                 style=toggle_style(False, "right"),
                             ),
                         ],
                         style={
-                            "display": "flex" if has_strand else "none",
+                            "display": "flex" if enum_only and has_is_rc else "none",
+                            "alignItems": "center",
+                            "gap": 0,
+                        },
+                    ),
+                    # Continuous: filter by closer/farther (STRAND + / -)
+                    html.Div(
+                        [
+                            divider(),
+                            control_label("Strand:"),
+                            html.Button(
+                                "+ (closer)",
+                                id="strand-plus-btn",
+                                n_clicks=0,
+                                style=toggle_style(False, "left"),
+                            ),
+                            html.Button(
+                                "both",
+                                id="strand-both-btn",
+                                n_clicks=0,
+                                style=toggle_style(True, "middle"),
+                            ),
+                            html.Button(
+                                "- (farther)",
+                                id="strand-minus-btn",
+                                n_clicks=0,
+                                style=toggle_style(False, "right"),
+                            ),
+                        ],
+                        style={
+                            "display": "flex" if (not enum_only and has_strand) else "none",
                             "alignItems": "center",
                             "gap": 0,
                         },
@@ -2253,13 +2581,15 @@ def create_app(
     tree_path: str,
     query: Optional[str] = None,
     annotation_path: Optional[str] = None,
-    enum_only: bool = False,
+    enum_only: Optional[bool] = None,
 ) -> Dash:
     """Create and configure the Dash application."""
-    df = pd.read_csv(input_path, sep="\t")
+    df = load_gdiff_tsv(input_path)
+    plot_mode = detect_plot_mode(df, enum_only=enum_only)
+    enum_ui = is_enum_plot_mode(plot_mode)
     df_annot = load_annotations(annotation_path)
 
-    if enum_only:
+    if plot_mode == "legacy_enum":
         required = {
             "QUERY_ID",
             "REF_ID",
@@ -2267,6 +2597,18 @@ def create_app(
             "INTERVAL_END",
             "SEQ_LEN",
             "DIST_TH",
+        }
+    elif plot_mode == "enum":
+        required = {
+            "QUERY_ID",
+            "REF_ID",
+            "INTERVAL_START",
+            "INTERVAL_END",
+            "SEQ_LEN",
+            "STRAND",
+            "DIST",
+            "MASK",
+            "D_INTERVAL",
         }
     else:
         required = {
@@ -2330,30 +2672,29 @@ def create_app(
         add_tip_order(df, query_data["tip_order"]) if has_query_pruned else full_df
     )
 
-    if enum_only:
+    if enum_ui:
         dist_ths = tuple(get_distance_thresholds(df))
         if not dist_ths:
             raise ValueError("No distance thresholds in data.")
-        # Adaptive distance range not needed for enum mode
-        global_dist_range = (0.0, 0.5)
+        global_dist_range = (D_EPS, min(0.5, D_UB - D_EPS))
     else:
-        dist_ths = ()  # Not used in continuous mode
-        # Compute adaptive distance range from data
-        d_min = float(df["DIST"].min()) if not df["DIST"].isna().all() else 0.0
-        d_max = float(df["DIST"].max()) if not df["DIST"].isna().all() else 0.5
-        if d_max <= d_min:
-            d_max = d_min + 0.01
-        global_dist_range = (d_min, d_max)
+        dist_ths = ()
+        global_dist_range = compute_distance_range(df)
 
     seq_ids = get_sequence_identifiers(df)
-    has_strand = "STRAND" in df.columns
+    has_strand = has_informative_strand(df)
+    has_is_rc = has_is_rc_column(df)
+    has_qvalue = (
+        "QVALUE" in df.columns
+        and (df["QVALUE"].notna() & np.isfinite(df["QVALUE"])).any()
+    )
 
-    filter_full = make_cached_filter(full_df, enum_only)
+    filter_full = make_cached_filter(full_df, enum_ui)
     filter_pruned = (
-        make_cached_filter(pruned_df, enum_only) if has_pruned else filter_full
+        make_cached_filter(pruned_df, enum_ui) if has_pruned else filter_full
     )
     filter_query = (
-        make_cached_filter(query_df, enum_only) if has_query_pruned else filter_full
+        make_cached_filter(query_df, enum_ui) if has_query_pruned else filter_full
     )
 
     app = Dash(__name__)
@@ -2361,9 +2702,16 @@ def create_app(
     # Store the full tree for dynamic query pruning
     app.full_tree = full_tree
     app.df = df
-    app.enum_only = enum_only
+    app.enum_only = enum_ui
+    app.plot_mode = plot_mode
     app.layout = build_layout(
-        seq_ids, dist_ths, has_pruned, has_strand=has_strand, enum_only=enum_only
+        seq_ids,
+        dist_ths,
+        has_pruned,
+        has_strand=has_strand,
+        has_is_rc=has_is_rc,
+        has_qvalue=has_qvalue,
+        enum_only=enum_ui,
     )
 
     # ---- Navigation callbacks ----
@@ -2476,11 +2824,21 @@ def create_app(
             "full",
         )
 
-    # ---- Strand toggle ----
+    # ---- Direction toggle (enum: fw/rc via IS_RC) ----
+    _make_toggle_callbacks(
+        app,
+        "direction-store",
+        ["direction-fw-btn", "direction-both-btn", "direction-rc-btn"],
+        ["fw", "both", "rc"],
+        "both",
+        reset_ranges=False,
+    )
+
+    # ---- Strand toggle (continuous: closer/farther via STRAND) ----
     _make_toggle_callbacks(
         app,
         "strand-store",
-        ["strand-fwd-btn", "strand-both-btn", "strand-rev-btn"],
+        ["strand-plus-btn", "strand-both-btn", "strand-minus-btn"],
         ["+", "both", "-"],
         "both",
         reset_ranges=False,
@@ -2504,9 +2862,31 @@ def create_app(
         )
 
     # ---- Color-by toggle (non-enum mode) ----
-    _make_two_button_toggle(
-        app, "color-by-store", "colorby-dist-btn", "colorby-pval-btn", "dist", "pval"
+    _make_toggle_callbacks(
+        app,
+        "color-by-store",
+        ["colorby-dist-btn", "colorby-pval-btn", "colorby-qval-btn"],
+        ["dist", "pval", "qval"],
+        "dist",
+        reset_ranges=False,
     )
+
+    # ---- Significance metric toggle (p vs q) ----
+    _make_toggle_callbacks(
+        app,
+        "sig-metric-store",
+        ["sig-p-btn", "sig-q-btn"],
+        ["p", "q"],
+        "q" if has_qvalue else "p",
+        reset_ranges=False,
+    )
+
+    @app.callback(
+        Output("sig-filter-label", "children"),
+        Input("sig-metric-store", "data"),
+    )
+    def update_sig_label(metric):
+        return "q \u2264" if metric == "q" else "p \u2264"
 
     # ---- Fold toggle (<1 / both / >1) ----
     _make_toggle_callbacks(
@@ -2551,7 +2931,7 @@ def create_app(
         qt = prune_tree(app.full_tree, query_ret)
         qd = tree_data_for(qt, seq_id)
         qdf = add_tip_order(app.df, qd["tip_order"])
-        return qd, make_cached_filter(qdf, enum_only)
+        return qd, make_cached_filter(qdf, enum_ui)
 
     def _resolve_prune(prune_mode, seq_id):
         """Return (cur_data, do_filter) for the given prune mode."""
@@ -2568,11 +2948,21 @@ def create_app(
             return full_data, filter_full
         return full_data, filter_full
 
-    def _resolve_filter(do_filter, seq_id, tip_order, strand_val,
-                        mode=None, focus_val=None, overlap_val=None,
-                        pval_log=None, fold_val=None):
-        """Return (df_filtered, bin_edges, colors) for current filter state."""
-        if enum_only:
+    def _resolve_filter(
+        do_filter,
+        seq_id,
+        tip_order,
+        strand_val=None,
+        direction_val=None,
+        mode=None,
+        focus_val=None,
+        overlap_val=None,
+        sig_log=None,
+        sig_metric="p",
+        fold_val=None,
+    ):
+        """Return filtered dataframe for current filter state."""
+        if enum_ui:
             if mode == "focus":
                 d = nearest_value(
                     focus_val if focus_val is not None else dist_ths[0], dist_ths
@@ -2584,13 +2974,24 @@ def create_app(
                     d_hi = nearest_value(overlap_val[1], dist_ths)
                 else:
                     d_lo, d_hi = dist_ths[0], dist_ths[-1]
-            df_f = do_filter(seq_id, tuple(tip_order), d_hi, d_lo, strand_val)
+            direction = (
+                direction_val
+                if has_is_rc and direction_val and direction_val != "both"
+                else None
+            )
+            df_f = do_filter(seq_id, tuple(tip_order), d_hi, d_lo, direction)
             return df_f
-        else:
-            pval_th = 10.0**pval_log if pval_log is not None and pval_log < 0 else None
-            fold_f = fold_val if fold_val and fold_val != "both" else None
-            df_f = do_filter(seq_id, tuple(tip_order), strand_val, pval_th, fold_f)
-            return df_f
+        sig_col = "QVALUE" if sig_metric == "q" else "PERCENTILE"
+        strand = strand_val if has_strand and strand_val and strand_val != "both" else None
+        df_f = do_filter(
+            seq_id,
+            tuple(tip_order),
+            strand,
+            sig_log,
+            sig_col,
+            fold_val if fold_val and fold_val != "both" else None,
+        )
+        return df_f
 
     # ---- Main figure update ----
     @app.callback(
@@ -2604,8 +3005,10 @@ def create_app(
         Input("y-range-store", "data"),
         Input("x-range-store", "data"),
         Input("tree-view-store", "data"),
+        Input("direction-store", "data"),
         Input("strand-store", "data"),
         Input("color-by-store", "data"),
+        Input("sig-metric-store", "data"),
         Input("pval-slider", "value"),
         Input("fold-store", "data"),
         Input("colorscale-flip-store", "data"),
@@ -2620,9 +3023,11 @@ def create_app(
         y_range,
         x_range,
         tree_mode,
+        direction,
         strand,
         color_by,
-        pval_log,
+        sig_metric,
+        sig_log,
         fold_val,
         flip_colorscale,
         prune_mode,
@@ -2633,27 +3038,30 @@ def create_app(
         cur_data, do_filter = _resolve_prune(prune_mode, seq_id)
         tip_order = cur_data["tip_order"]
         leaf_dist = cur_data["leaf_distances"]
-        strand_val = strand if has_strand and strand != "both" else None
+        strand_val = strand if (not enum_ui and has_strand and strand != "both") else None
+        direction_val = direction if (enum_ui and has_is_rc) else None
 
         df_filt = _resolve_filter(
-            do_filter, seq_id, tip_order, strand_val,
+            do_filter, seq_id, tip_order,
+            strand_val=strand_val,
+            direction_val=direction_val,
             mode=mode, focus_val=focus_val, overlap_val=overlap_val,
-            pval_log=pval_log, fold_val=fold_val,
+            sig_log=sig_log, sig_metric=sig_metric, fold_val=fold_val,
         )
         bin_edges, colors = (
-            get_binned_colors(dist_ths, scheme) if enum_only else (None, None)
+            get_binned_colors(dist_ths, scheme) if enum_ui else (None, None)
         )
 
         # Sequence length
         seq_len = get_seq_len(df_filt)
         if not seq_len or seq_len <= 0:
-            if enum_only:
+            if enum_ui:
                 seq_len = get_seq_len(
                     do_filter(seq_id, tuple(tip_order), dist_ths[-1], dist_ths[0], None)
                 )
             else:
                 seq_len = get_seq_len(
-                    do_filter(seq_id, tuple(tip_order), None, None, None)
+                    do_filter(seq_id, tuple(tip_order), None)
                 )
         if not seq_len or seq_len <= 0:
             return go.Figure(), 0
@@ -2698,7 +3106,7 @@ def create_app(
             x_limits=x_limits,
             y_limits=y_limits,
             leaf_distances=leaf_dist,
-            enum_only=enum_only,
+            enum_only=enum_ui,
             color_by=color_by,
             dist_range=global_dist_range,
             scheme=scheme,
@@ -2717,7 +3125,9 @@ def create_app(
         State("y-range-store", "data"),
         State("x-range-store", "data"),
         State("prune-store", "data"),
+        State("direction-store", "data"),
         State("strand-store", "data"),
+        State("sig-metric-store", "data"),
         State("pval-slider", "value"),
         State("fold-store", "data"),
         prevent_initial_call=True,
@@ -2731,19 +3141,30 @@ def create_app(
         y_rng,
         x_rng,
         prune_mode,
+        direction,
         strand,
-        pval_log,
+        sig_metric,
+        sig_log,
         fold_val,
     ):
         if seq_id is None:
             return no_update
 
         cur_data, do_filter = _resolve_prune(prune_mode, seq_id)
-        strand_val = strand if has_strand else None
+        strand_val = strand if (not enum_ui and has_strand and strand != "both") else None
+        direction_val = direction if (enum_ui and has_is_rc) else None
         df_exp = _resolve_filter(
-            do_filter, seq_id, cur_data["tip_order"], strand_val,
-            mode=mode, focus_val=focus_val, overlap_val=overlap_val,
-            pval_log=pval_log, fold_val=fold_val,
+            do_filter,
+            seq_id,
+            cur_data["tip_order"],
+            strand_val=strand_val,
+            direction_val=direction_val,
+            mode=mode,
+            focus_val=focus_val,
+            overlap_val=overlap_val,
+            sig_log=sig_log,
+            sig_metric=sig_metric,
+            fold_val=fold_val,
         )
 
         # Visible genomes
@@ -2758,7 +3179,7 @@ def create_app(
 
         # Visible x-range
         if x_rng is None:
-            if enum_only:
+            if enum_ui:
                 seq_len = get_seq_len(df_exp) or get_seq_len(
                     do_filter(
                         seq_id,
@@ -2770,7 +3191,7 @@ def create_app(
                 )
             else:
                 seq_len = get_seq_len(df_exp) or get_seq_len(
-                    do_filter(seq_id, tuple(cur_data["tip_order"]), None, None, None)
+                    do_filter(seq_id, tuple(cur_data["tip_order"]), None)
                 )
             x_min, x_max = 0, seq_len or 0
         else:
@@ -2787,7 +3208,11 @@ def create_app(
             columns=["y_order", "y"]
         )
 
-        tag = f"_{strand}" if has_strand else ""
+        tag = ""
+        if enum_ui and has_is_rc and direction and direction != "both":
+            tag = f"_{direction}"
+        elif not enum_ui and has_strand and strand and strand != "both":
+            tag = f"_{strand}"
         filename = f"{seq_id}{tag}_y{y_min}-{y_max}_x{x_min}-{x_max}.tsv"
         return dict(content=df_exp.to_csv(sep="\t", index=False), filename=filename)
 
@@ -2864,7 +3289,8 @@ def parse_args():
         "--enum-only",
         action="store_true",
         default=False,
-        help="Input is enum-only format (TSV with DIST_TH instead of DIST/PERCENTILE/FOLD)",
+        help="Force enum UI (legacy DIST_TH or 15-column enum lite). "
+        "Continuous/significance UI is auto-detected otherwise.",
     )
     p.add_argument("--port", "-p", type=int, default=8080, help="Port to serve on")
     p.add_argument(
@@ -2889,7 +3315,7 @@ if __name__ == "__main__":
         args.tree,
         query=args.query,
         annotation_path=args.annotation,
-        enum_only=args.enum_only,
+        enum_only=True if args.enum_only else None,
     )
 
     url = f"http://{args.host}:{args.port}"

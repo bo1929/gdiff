@@ -63,7 +63,7 @@ gdiff info -i reference.skc
 The default (continuous) output is a tab-separated file with these columns:
 
 ```
-QUERY_ID  SEQ_LEN  INTERVAL_START  INTERVAL_END  STRAND  REF_ID  DIST  MASK  D_INTERVAL  DIST_CONTIG  STRAND_DIFF  DIST_GENOME  PERCENTILE  FOLD  QVALUE
+QUERY_ID  SEQ_LEN  INTERVAL_START  INTERVAL_END  STRAND  IS_RC  REF_ID  DIST  MASK  D_INTERVAL  DIST_CONTIG  STRAND_DIFF  DIST_GENOME  PERCENTILE  FOLD  QVALUE
 ```
 
 An example row:
@@ -77,7 +77,8 @@ read1  5200  120  3041  +  ref_A  0.04  1  (0, 0.05)  0.06  -0.02  0.05  0.003  
 | `QUERY_ID` | Query sequence name |
 | `SEQ_LEN` | Query length in base pairs |
 | `INTERVAL_START`, `INTERVAL_END` | 1-based coordinates of the detected interval |
-| `STRAND` | `+` = reference strand (lower distance), `-` = opposite, `.` = unknown |
+| `STRAND` | `+` = closer (lower distance), `-` = farther, `.` = unknown |
+| `IS_RC` | `0` = forward strand, `1` = reverse-complement |
 | `REF_ID` | Reference genome the interval was found against |
 | `DIST` | MLE evolutionary distance for this interval (NaN in enum lite mode) |
 | `MASK` | Which distance threshold(s) triggered this interval (bitmask) |

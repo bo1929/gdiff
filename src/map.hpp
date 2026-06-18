@@ -38,8 +38,8 @@ inline char report_strand(const bool is_rc, const double d_diff) noexcept
 {
   if (std::isnan(d_diff)) return '.';
   if (std::isinf(d_diff)) {
-    if (d_diff < 0.0) return is_rc ? '.' : '-';
-    return is_rc ? '-' : '.';
+    if (d_diff < 0.0) return is_rc ? '.' : '+';
+    return is_rc ? '+' : '.';
   }
   return (is_rc == (d_diff > 0.0)) ? '+' : '-';
 }
