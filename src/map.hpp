@@ -4,6 +4,7 @@
 #include <utility>
 #include <sstream>
 #include <simde/x86/avx512.h>
+#include "random.hpp"
 #include "gamma.hpp"
 #include "llh.hpp"
 #include "lshf.hpp"

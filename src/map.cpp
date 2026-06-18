@@ -1,6 +1,4 @@
 #include "map.hpp"
-#include "gamma.hpp"
-#include "random.hpp"
 #include <boost/math/tools/minima.hpp>
 
 namespace {
@@ -530,8 +528,8 @@ void DIM<T>::extract_histogram(uint64_t a, uint64_t b, vec<uint64_t>& v, uint64_
   const uint64_t mers_b = std::min(b << params.bin_shift, nmers);
   const uint64_t mers_a = std::min(a << params.bin_shift, nmers);
   // TODO: The miss count (u) is based on all positions in [a,b), but search_mers() skips Ns.
-  // TODO: A better solution is needed for Ns in this case, skipping does not work.
   u = (mers_b - mers_a) - t;
+  // TODO: A better solution is needed for Ns in this case, skipping does not work.
 }
 
 template<typename T>
@@ -708,7 +706,7 @@ void QIE<T>::filter_sample(const record_t& r, vec<xy_t>& rsample_v, uint64_t sam
   rsample_v.reserve(null_v.size());
   for (const auto& s : null_v) {
     if (s.bix == r.bix && overlaps_half_open(s.bin_iv, r.bin_iv)) continue;
-    // TODO: Do we really need Fisher information, I, at this point (in general)?
+    //TODO: Do we really need Fisher information, I, at this point (in general)?
     if (!std::isfinite(s.I)) continue;
     const double d = validate_distance(s.d);
     if (!std::isfinite(d)) continue;
@@ -742,7 +740,7 @@ void QIE<T>::test_significance(const uint64_t sample_size)
 
     filter_sample(r, rsample_v, sample_size);
 
-    if (rsample_v.size() < (sample_size / 2)) {
+    if (rsample_v.size() < GammaModel::min_nsamples) {
       warn_pmsg(qid_batch[r.bix], "not enough null samples; skipping significance test");
       continue;
     }
@@ -763,18 +761,15 @@ void QIE<T>::test_significance(const uint64_t sample_size)
 template<typename T>
 xy_t QIE<T>::score_gamma(const record_t& r, const vec<xy_t>& samples_v) const
 { // TODO: NaNs and out of bound distances are not handled well
-  // Fit Gamma directly to MCMC posterior or MLE draws from reference likelihoods.
   const double d_obs = validate_distance(r.d);
   vec<double> d_v;
-  // TODO: We are not using the noise model here, just keep the distance.
-  // TODO: Simplify the gamma model and perhaps just remove the marginal noise model.
   d_v.reserve(samples_v.size());
   for (const auto& s : samples_v) {
-    if (const double d = validate_distance(s.first); std::isfinite(d)) d_v.push_back(d);
+    if (const double d = validate_distance(s.first); std::isfinite(d)) {
+      d_v.push_back(d);
+    }
   }
-  // Median of the latent Gamma distribution by binary search between distance lower and upper bounds.
-  // Uses plain gamma_cdf since the fit was on latent draws (no convolution with sigma_r).
-  xy_t result = GammaModel::score_from_samples(d_obs, d_v, d_eps, d_ub - d_eps);
+  auto result = GammaModel::score_from_samples(d_obs, d_v, d_eps, d_ub - d_eps);
   if (std::isfinite(result.second)) result.second = validate_distance(result.second);
   return result;
 }
