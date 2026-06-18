@@ -38,10 +38,10 @@ inline char report_strand(const bool is_rc, const double d_diff) noexcept
 {
   if (std::isnan(d_diff)) return '.';
   if (std::isinf(d_diff)) {
-    if (d_diff < 0.0) return is_rc ? '.' : '+';
-    return is_rc ? '+' : '.';
+    if (d_diff < 0.0) return is_rc ? '.' : '-';
+    return is_rc ? '-' : '.';
   }
-  return (is_rc == (d_diff > 0.0)) ? '-' : '+';
+  return (is_rc == (d_diff > 0.0)) ? '+' : '-';
 }
 
 inline double validate_distance(const double d)
@@ -77,7 +77,7 @@ struct record_t
   bool is_rc;        // Is the source query on the reverse-complement strand?
   double d;          // MLE distance for this interval in [d_eps, d_ub]
   double I;          // Observed Fisher information I(d)
-  size_t th_ix;      // Threshold index, negative values for the background
+  size_t th_ix;      // Threshold index; size_t(-1) reserved for background gaps (not reported anymore)
   // Per-query fields, filled once both strands' distances are known
   double d_q = nanx();    // MLE distance for the source strand (e.g., contig)
   double d_diff = nanx(); // strand_diff() encoding; see strand_diff()

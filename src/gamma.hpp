@@ -119,7 +119,7 @@ public:
     const double median = 0.5 * (lo + hi);
     if (!(median > eps) || !std::isfinite(median)) return {prob, NaN};
     return {prob, median};
-  // Returns {gamma_cdf(x), latent median} or NaN components on failure.
+    // Returns {gamma_cdf(x), latent median} or NaN components on failure.
   }
 
 private:
@@ -194,8 +194,8 @@ private:
     auto eval = [&](const coord_t& p) { return obj(std::exp(p.x), std::exp(p.y)); };
 
     std::array<coord_t, 3> S = {{{std::log(p0.shape), std::log(p0.scale)},
-                                {std::log(p0.shape) + cfg.nm_step, std::log(p0.scale)},
-                                {std::log(p0.shape), std::log(p0.scale) + cfg.nm_step}}};
+                                 {std::log(p0.shape) + cfg.nm_step, std::log(p0.scale)},
+                                 {std::log(p0.shape), std::log(p0.scale) + cfg.nm_step}}};
     std::array<double, 3> F = {eval(S[0]), eval(S[1]), eval(S[2])};
     sort3(S, F);
 

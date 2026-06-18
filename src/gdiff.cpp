@@ -1,4 +1,5 @@
 #include "gdiff.hpp"
+#include "random.hpp"
 
 void BaseLSH::set_lshf() { lshf = std::make_shared<LSHF>(k, h, m); }
 
@@ -95,7 +96,8 @@ void MapSC::map()
   std::atomic<uint32_t> done_count{0};
   std::mutex cerr_mtx;
 
-  auto worker = [&]() {
+  auto worker = [&](const uint32_t tseed) {
+    init_thread_rng(tseed);
     uint32_t i;
     while ((i = next_idx.fetch_add(1, std::memory_order_relaxed)) < nsketches) {
       // Each worker opens its own file handle so no stream sharing occurs
@@ -130,7 +132,7 @@ void MapSC::map()
   std::vector<std::thread> threads;
   threads.reserve(nthreads);
   for (uint32_t t = 0; t < nthreads; ++t) {
-    threads.emplace_back(worker);
+    threads.emplace_back([&, t]() { worker(t + 1); });
   }
   for (auto& t : threads) {
     t.join();
@@ -402,11 +404,7 @@ int main(int argc, char** argv)
   app.add_flag("--verbose,!--no-verbose", verbose, "Increased verbosity and progress report");
   app.require_subcommand();
   app.add_option("--seed", seed, "Random seed for the LSH and other parts that require randomness [0]");
-  app.callback([&]() {
-    if (app.count("--seed")) {
-      gen.seed(seed);
-    }
-  });
+  app.callback([&]() { init_thread_rng(0); });
   app.add_option("--num-threads", num_threads, "Number of threads for parallel sketch processing [1]");
 
   auto& sc_sketch = *app.add_subcommand("sketch", "Create sketches from FASTA/FASTQ files");
@@ -414,10 +412,10 @@ int main(int argc, char** argv)
   auto& sc_merge = *app.add_subcommand("merge", "Merge multiple sketches into a single sketch file");
   auto& sc_info = *app.add_subcommand("info", "Show metadata for all sketches in a sketch file");
 
-  SketchSC krepp_sketch(sc_sketch);
-  MapSC krepp_map(sc_map);
-  MergeSC krepp_merge(sc_merge);
-  InfoSC krepp_info(sc_info);
+  SketchSC gdiff_sketch(sc_sketch);
+  MapSC gdiff_map(sc_map);
+  MergeSC gdiff_merge(sc_merge);
+  InfoSC gdiff_info(sc_info);
 
   CLI11_PARSE(app, argc, argv);
   for (int i = 0; i < argc; ++i) {
@@ -435,11 +433,11 @@ int main(int argc, char** argv)
 
   if (sc_sketch.parsed()) {
     cerr_msg("Initializing the sketch...");
-    krepp_sketch.set_nrows();
-    krepp_sketch.set_lshf();
+    gdiff_sketch.set_nrows();
+    gdiff_sketch.set_lshf();
     std::chrono::duration<float> es_b = std::chrono::system_clock::now() - tstart;
-    krepp_sketch.create();
-    krepp_sketch.save();
+    gdiff_sketch.create();
+    gdiff_sketch.save();
     std::chrono::duration<float> es_s = std::chrono::system_clock::now() - tstart - es_b;
     cerr_msg("Done sketching & saving, elapsed: ", es_s.count(), " sec");
   }
@@ -447,7 +445,7 @@ int main(int argc, char** argv)
   if (sc_merge.parsed()) {
     cerr_msg("Merging sketches...");
     std::chrono::duration<float> es_b = std::chrono::system_clock::now() - tstart;
-    krepp_merge.merge();
+    gdiff_merge.merge();
     std::chrono::duration<float> es_s = std::chrono::system_clock::now() - tstart - es_b;
     cerr_msg("Done merging sketches, elapsed: ", es_s.count(), " sec");
   }
@@ -456,14 +454,14 @@ int main(int argc, char** argv)
     cerr_msg("Loading the sketch...");
     cerr_msg("Seeking query sequences in the sketch...");
     std::chrono::duration<float> es_b = std::chrono::system_clock::now() - tstart;
-    krepp_map.map();
+    gdiff_map.map();
     std::chrono::duration<float> es_s = std::chrono::system_clock::now() - tstart - es_b;
     cerr_msg("Done mapping sequences, elapsed: ", es_s.count(), " sec");
-    cerr_msg("Total number of sequences queried: ", krepp_map.get_total_qseq());
+    cerr_msg("Total number of sequences queried: ", gdiff_map.get_total_qseq());
   }
 
   if (sc_info.parsed()) {
-    krepp_info.info();
+    gdiff_info.info();
   }
 
   auto tend = std::chrono::system_clock::now();

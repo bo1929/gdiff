@@ -105,18 +105,18 @@ TEST_CASE("two-sided test and STRAND from d_diff encoding") {
   };
 
   CHECK(two_sided(false, -0.1));
-  CHECK(report_strand(false, -0.1) == '-');
+  CHECK(report_strand(false, -0.1) == '+');
   CHECK_FALSE(two_sided(true, -0.1));
-  CHECK(report_strand(true, -0.1) == '+');
+  CHECK(report_strand(true, -0.1) == '-');
   CHECK(two_sided(true, 0.1));
-  CHECK(report_strand(true, 0.1) == '-');
+  CHECK(report_strand(true, 0.1) == '+');
   CHECK_FALSE(two_sided(false, 0.1));
-  CHECK(report_strand(false, 0.1) == '+');
+  CHECK(report_strand(false, 0.1) == '-');
 
   CHECK(two_sided(false, 0.0));
-  CHECK(report_strand(false, 0.0) == '-');
+  CHECK(report_strand(false, 0.0) == '+');
   CHECK_FALSE(two_sided(true, 0.0));
-  CHECK(report_strand(true, 0.0) == '+');
+  CHECK(report_strand(true, 0.0) == '-');
 
   CHECK_FALSE(two_sided(false, nan));
   CHECK_FALSE(two_sided(true, nan));
@@ -125,13 +125,13 @@ TEST_CASE("two-sided test and STRAND from d_diff encoding") {
 
   CHECK_FALSE(two_sided(false, ninf));
   CHECK_FALSE(two_sided(true, ninf));
-  CHECK(report_strand(false, ninf) == '+');
+  CHECK(report_strand(false, ninf) == '-');
   CHECK(report_strand(true, ninf) == '.');
 
   CHECK_FALSE(two_sided(false, pinf));
   CHECK_FALSE(two_sided(true, pinf));
   CHECK(report_strand(false, pinf) == '.');
-  CHECK(report_strand(true, pinf) == '+');
+  CHECK(report_strand(true, pinf) == '-');
 }
 
 TEST_CASE("null overlap uses half-open bin boundaries") {
