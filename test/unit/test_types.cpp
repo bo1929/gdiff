@@ -65,21 +65,82 @@ TEST_CASE("intact detection is record-local") {
 }
 
 TEST_CASE("reference strand gets two-sided significance percentile") {
-  const auto pct_ref = [](double prob, bool is_ref) {
-    return is_ref ? (2.0 * std::min(prob, 1.0 - prob)) : prob;
+  const auto pct_ref = [](double prob, bool on_ref) {
+    return on_ref ? (2.0 * std::min(prob, 1.0 - prob)) : prob;
   };
   CHECK(pct_ref(0.01, true) == doctest::Approx(0.02));
   CHECK(pct_ref(0.99, true) == doctest::Approx(0.02));
   CHECK(pct_ref(0.25, false) == doctest::Approx(0.25));
 }
 
+TEST_CASE("contig MLE selects the reference strand for null sampling") {
+  const auto nan = std::numeric_limits<double>::quiet_NaN();
+  // Query-level winner used for null pool / add_to_acc: smaller finite contig MLE; fw on tie/NaN.
+  const auto winner_rc = [](double fw, double rc) { return !std::isnan(rc) && (std::isnan(fw) || rc < fw); };
+  CHECK_FALSE(winner_rc(0.2, 0.3)); // fw lower
+  CHECK_FALSE(winner_rc(0.3, 0.3)); // tie -> fw
+  CHECK(winner_rc(0.3, 0.2));       // rc lower
+  CHECK_FALSE(winner_rc(0.2, nan)); // only fw finite -> fw
+  CHECK(winner_rc(nan, 0.2));       // only rc finite -> rc
+  CHECK_FALSE(winner_rc(nan, nan)); // both NaN -> fw
+}
+
+TEST_CASE("strand_diff encodes four contig MLE cases") {
+  const auto nan = std::numeric_limits<double>::quiet_NaN();
+  const auto pinf = std::numeric_limits<double>::infinity();
+  const auto ninf = -std::numeric_limits<double>::infinity();
+
+  CHECK(std::isnan(strand_diff(nan, nan)));
+  CHECK(strand_diff(0.2, nan) == ninf);  // only fw finite
+  CHECK(strand_diff(nan, 0.2) == pinf);   // only rc finite
+  CHECK(strand_diff(0.2, 0.3) == doctest::Approx(-0.1));
+}
+
+TEST_CASE("two-sided test and STRAND from d_diff encoding") {
+  const auto nan = std::numeric_limits<double>::quiet_NaN();
+  const auto pinf = std::numeric_limits<double>::infinity();
+  const auto ninf = -std::numeric_limits<double>::infinity();
+  const auto two_sided = [](bool rec_is_rc, double d_diff) {
+    return std::isfinite(d_diff) && (rec_is_rc == (d_diff > 0.0));
+  };
+
+  CHECK(two_sided(false, -0.1));
+  CHECK(report_strand(false, -0.1) == '-');
+  CHECK_FALSE(two_sided(true, -0.1));
+  CHECK(report_strand(true, -0.1) == '+');
+  CHECK(two_sided(true, 0.1));
+  CHECK(report_strand(true, 0.1) == '-');
+  CHECK_FALSE(two_sided(false, 0.1));
+  CHECK(report_strand(false, 0.1) == '+');
+
+  CHECK(two_sided(false, 0.0));
+  CHECK(report_strand(false, 0.0) == '-');
+  CHECK_FALSE(two_sided(true, 0.0));
+  CHECK(report_strand(true, 0.0) == '+');
+
+  CHECK_FALSE(two_sided(false, nan));
+  CHECK_FALSE(two_sided(true, nan));
+  CHECK(report_strand(false, nan) == '.');
+  CHECK(report_strand(true, nan) == '.');
+
+  CHECK_FALSE(two_sided(false, ninf));
+  CHECK_FALSE(two_sided(true, ninf));
+  CHECK(report_strand(false, ninf) == '+');
+  CHECK(report_strand(true, ninf) == '.');
+
+  CHECK_FALSE(two_sided(false, pinf));
+  CHECK_FALSE(two_sided(true, pinf));
+  CHECK(report_strand(false, pinf) == '.');
+  CHECK(report_strand(true, pinf) == '+');
+}
+
 TEST_CASE("null overlap uses half-open bin boundaries") {
   const auto overlaps_half_open = [](const interval_t& lhs, const interval_t& rhs) {
     return lhs.a < rhs.b && rhs.a < lhs.b;
   };
-  CHECK(overlaps_half_open({0, 5}, {4, 6}));
-  CHECK_FALSE(overlaps_half_open({0, 5}, {5, 8}));
-  CHECK_FALSE(overlaps_half_open({5, 8}, {0, 5}));
+  CHECK(overlaps_half_open({1, 6}, {5, 7}));
+  CHECK_FALSE(overlaps_half_open({1, 6}, {6, 9}));
+  CHECK_FALSE(overlaps_half_open({6, 9}, {1, 6}));
 }
 
 TEST_CASE("coordinate helpers preserve output conventions") {

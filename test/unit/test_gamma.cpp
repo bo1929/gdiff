@@ -233,3 +233,64 @@ TEST_CASE("recovers Gamma(1.5, 0.08) from raw draws") {
 }
 
 } // TEST_SUITE
+
+TEST_SUITE("GammaModel::validate_params") {
+
+TEST_CASE("accepts positive finite shape and scale") {
+  CHECK(GammaModel::validate_params({2.0, 0.05}));
+}
+
+TEST_CASE("rejects non-positive or non-finite parameters") {
+  CHECK_FALSE(GammaModel::validate_params({0.0, 0.05}));
+  CHECK_FALSE(GammaModel::validate_params({2.0, 0.0}));
+  CHECK_FALSE(GammaModel::validate_params({std::numeric_limits<double>::quiet_NaN(), 0.05}));
+  CHECK_FALSE(GammaModel::validate_params({2.0, std::numeric_limits<double>::infinity()}));
+}
+
+} // TEST_SUITE
+
+TEST_SUITE("GammaModel::score_from_samples") {
+
+TEST_CASE("rejects too few samples and invalid observations") {
+  const auto nan = std::numeric_limits<double>::quiet_NaN();
+  vec<double> few(4, 0.05);
+  const auto r1 = GammaModel::score_from_samples(0.1, few, 1e-5, 0.99);
+  CHECK(std::isnan(r1.first));
+  CHECK(std::isnan(r1.second));
+
+  vec<double> many(20, 0.05);
+  const auto r2 = GammaModel::score_from_samples(nan, many, 1e-5, 0.99);
+  CHECK(std::isnan(r2.first));
+  CHECK(std::isnan(r2.second));
+}
+
+TEST_CASE("CDF increases with observed distance") {
+  std::mt19937_64 rng(11);
+  std::gamma_distribution<double> dist(2.0, 0.05);
+  vec<double> nulls(256);
+  for (auto& d : nulls) d = dist(rng);
+
+  const auto [prob_low, median] = GammaModel::score_from_samples(0.01, nulls, 1e-5, 0.99);
+  const auto [prob_mid, _] = GammaModel::score_from_samples(median, nulls, 1e-5, 0.99);
+  CHECK(std::isfinite(prob_low));
+  CHECK(std::isfinite(median));
+  CHECK(prob_low < prob_mid);
+  CHECK(median > 0.03);
+  CHECK(median < 0.2);
+}
+
+TEST_CASE("null draw near median gets moderate probability") {
+  std::mt19937_64 rng(22);
+  std::gamma_distribution<double> dist(3.0, 0.04);
+  vec<double> nulls(64);
+  for (auto& d : nulls) d = dist(rng);
+
+  const double target = dist(rng);
+  const auto [prob, median] = GammaModel::score_from_samples(target, nulls, 1e-5, 0.99);
+  CHECK(std::isfinite(prob));
+  CHECK(std::isfinite(median));
+  CHECK(prob > 0.01);
+  CHECK(prob < 0.99);
+}
+
+} // TEST_SUITE

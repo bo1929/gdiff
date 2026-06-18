@@ -17,9 +17,11 @@ Run `./gdiff --help` to verify. You may then copy the binary to a directory on y
 
 ## Documentation
 
-- **[TODO.md](TODO.md)** — active task list.
-- **[docs/engineering-review.md](docs/engineering-review.md)** — algorithm, statistics, known gaps, and suggested next steps (kept in sync with the code; supersedes stray one-off review files).
-- **[docs/proof-extract-intervals-sx-mx.md](docs/proof-extract-intervals-sx-mx.md)** — correctness notes for interval extraction.
+- **[TODO.md](TODO.md)** -- active task list.
+- **[docs/project-overview.md](docs/project-overview.md)** -- architecture and pipeline guide for agents.
+- **[docs/engineering-review.md](docs/engineering-review.md)** -- algorithm, statistics, known gaps, and suggested next steps.
+- **[docs/proof-extract-intervals-sx-mx.md](docs/proof-extract-intervals-sx-mx.md)** -- correctness notes for interval extraction.
+- **[docs/plot-notes.md](docs/plot-notes.md)** -- gdiff TSV schema and plot.py integration notes.
 
 ## Quickstart
 
@@ -43,19 +45,31 @@ The sketch is saved as a binary file. Multiple sketches can later be merged (see
 ### 2. Mapping query sequences
 
 ```
-gdiff map -i reference.sketch -q query.fasta -d 0.05 -l 500 --num-threads 8 | tee intervals.tsv
+gdiff map -i reference.sketch -q query.fasta -d 0.05 -l 500 --sample-size 200 --num-threads 8 | tee intervals.tsv
 ```
 
 `-d` sets the distance threshold and `-l` sets the minimum interval length (in base pairs).
-The output is tab-separated:
+`--sample-size 0` skips significance testing (enum lite when combined with `--enum-only`).
+
+The output is a 15-column tab-separated file:
 
 ```
-QUERY_ID  SEQ_LEN  INTERVAL_START  INTERVAL_END  STRAND  REF_ID  DIST_TH
-read1     5200     120             3041          +       ref_A   0.05
-read2     4800     1               2199          -       ref_A   0.05
+QUERY_ID  SEQ_LEN  INTERVAL_START  INTERVAL_END  STRAND  REF_ID  DIST  MASK  D_INTERVAL  DIST_CONTIG  STRAND_DIFF  DIST_GENOME  PERCENTILE  FOLD  QVALUE
+read1     5200     120             3041          -       ref_A   0.04  1     (0, 0.05)   0.06         -0.02        0.05         0.003       0.8   0.012
 ```
 
-Each row is a query interval whose k-mer profile is significantly closer to the reference than the background, as determined by a chi-squared test on the log-likelihood difference.
+| Column | Description |
+|--------|-------------|
+| `INTERVAL_START`, `INTERVAL_END` | 1-based sequence coordinates (see below) |
+| `STRAND` | `'.'` when this strand has no contig MLE context; `'-'` on the lower-distance (reference) strand when both are known; `'+'` on the opposite strand or on the sole informative strand when only one contig MLE exists |
+| `DIST` | MLE distance for the segment; NaN in enum lite |
+| `MASK` | Bitmask of threshold index (`0` = background gap between segments) |
+| `D_INTERVAL` | Parenthesized distance bin, e.g. `(0, 0.05)` |
+| `DIST_CONTIG` | Contig-level MLE on this strand |
+| `STRAND_DIFF` | `d_fw - d_rc` when both contig MLEs are finite; `-inf` when only fw is finite; `+inf` when only rc is finite; `NaN` when neither is finite |
+| `DIST_GENOME` | Genome-wide MLE on the reference strand |
+| `PERCENTILE`, `FOLD`, `QVALUE` | Significance vs null model; NaN when not tested (enum lite, full-contig rows, or too few null samples) |
+
 Coordinates are 1-based. In `--enum-only` mode, `INTERVAL_START` and `INTERVAL_END` are inclusive sequence coordinates covering the selected k-mer bins. In continuous mode, rows partition the query by 1-based k-mer-start boundaries; adjacent rows can share a boundary coordinate, and the final row extends to `SEQ_LEN`.
 
 By default, output goes to stdout. Use `-o intervals.tsv` to write to a file instead.
@@ -103,29 +117,32 @@ Prints the name, build date, k-mer length, window length, LSH parameters, subsam
 | `--hdist-th` | `4` | Maximum Hamming distance for a k-mer hit; supported range is 0–7. |
 | `--chisq` | `33.00051` | Chi-squared threshold (default ≈ p=1e-10 with 8 d.f.). |
 | `-b, --bin-shift` | `0` | Group consecutive k-mers into bins of size 2^b. |
+| `--sample-size` | `200` | Null samples for significance test (`0` skips the test). |
 | `--num-threads` | `1` | Number of threads for parallel sketch processing. |
-| `--enum-only` | off | Emit interval endpoints only (no MLE distances or significance columns). |
+| `--enum-only` | off | Simple per-threshold intervals instead of continuous breakpoint merging. With `--sample-size 0`, emits coordinates only (no MLE or significance). |
 
 When exactly 8 distance thresholds are provided via `-d`, gdiff evaluates all eight in one SIMD-wide pass (`cm512_t` path).
 
-Without `--enum-only`, segment rows include distances and significance (`PERCENTILE`, `FOLD`); see `gdiff map --help` and [docs/engineering-review.md](docs/engineering-review.md) for semantics.
+Continuous mode (default) runs segment MLE, genome-wide MLE, and significance testing when `--sample-size > 0`. See [docs/engineering-review.md](docs/engineering-review.md) for statistical details.
 
 ## Interactive visualization
 
-The `plot.py` script builds an interactive Dash/Plotly app for intervals (and optional tree / annotations). Example:
+The `plot.py` script builds an interactive Dash/Plotly app for intervals (and optional tree / annotations). It auto-detects the TSV format (legacy 7-column enum, 15-column enum lite, or continuous).
 
 ```bash
-python plot.py --input <TSV_DATA> --tree <NEWICK_TREE> --query <QUERY_NAME>
+python plot.py --input intervals.tsv --tree tree.nwk --query query_name
+```
+
+Legacy enum-only files (with `DIST_TH` instead of `DIST`):
+
+```bash
+python plot.py --input enum.tsv --tree tree.nwk --enum-only
 ```
 
 With optional annotations:
 
 ```bash
-python plot.py \
-  --input <TSV_DATA> \
-  --tree <NEWICK_TREE> \
-  --annotation <ANNOTATION_TSV> \
-  --query <QUERY_NAME>
+python plot.py --input intervals.tsv --tree tree.nwk --annotation annot.tsv --query query_name
 ```
 
 See `python plot.py --help` for options (port, host, debug, etc.).
