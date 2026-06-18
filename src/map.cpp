@@ -74,9 +74,10 @@ QIE<T>::QIE(const params_t<T>& params,
   const uint64_t u64m = std::numeric_limits<uint64_t>::max();
   mask_lr = ((u64m >> (64 - k)) << 32) + ((u64m << 32) >> (64 - k));
   mask_bp = u64m >> ((32 - k) * 2);
+  enum_only = params.enum_only;
   skip_test = (params.sample_size == 0);
-  keep_hist = (!params.enum_only || !skip_test);
-  coordinates_only = (!params.enum_only || !skip_test);
+  keep_hist = (!enum_only || !skip_test);
+  coordinates_only = enum_only && skip_test;
   if (keep_hist) {
     // For SIMD alignment, bound is set to 8
     v_acc.assign(hdist_bound + 1, 0);
@@ -116,37 +117,38 @@ void QIE<T>::map_sequences(std::ostream& sout, const str& rid)
     const uint64_t tau_eff = std::min(params.tau_bin, nbins) - 1;
     const size_t srprev = records_v.size(); // record index before this query
 
-    // Extract intervals for all thresholds
+    // Extract intervals for all thresholds.
     for (auto* dim : {&dim_fw, &dim_rc}) {
       dim->inclusive_scan();
       dim->extrema_scan();
+      if (!coordinates_only) {
+        dim->compute_prefhistsum();
+      }
     }
 
-    if (params.enum_only) {
+    if (enum_only) {
       extract_simple_intervals(dim_fw, false, tau_eff);
       extract_simple_intervals(dim_rc, true, tau_eff);
-      continue;
+      if (coordinates_only) continue; // skip MLE or significance
     }
 
-    // Extract per-query histograms and compute per-query MLE
-    for (auto* dim : {&dim_fw, &dim_rc}) {
-      dim->compute_prefhistsum();
-    }
-
+    // Compute the per-query MLE on each strand.
     vec<uint64_t> v_q_fw, v_q_rc;
     uint64_t u_q_fw = 0, u_q_rc = 0, t_q;
     dim_fw.extract_histogram(0, nbins, v_q_fw, u_q_fw, t_q);
     dim_rc.extract_histogram(0, nbins, v_q_rc, u_q_rc, t_q);
     const double d_q_fw = llhf->mle(v_q_fw.data(), u_q_fw);
     const double d_q_rc = llhf->mle(v_q_rc.data(), u_q_rc);
-    const double d_diff =
-      (std::isnan(d_q_fw) || std::isnan(d_q_rc)) ? std::numeric_limits<double>::quiet_NaN() : d_q_fw - d_q_rc;
+    const double d_diff = strand_diff(d_q_fw, d_q_rc);
 
-    const bool is_ref = std::isnan(d_diff) ? false : (d_diff < 0);
-    if (!skip_test) save_mesh(is_ref ? dim_fw : dim_rc);
+    // The lower-distance strand is the reference: rc when the difference > 0, else fw.
+    const bool is_rc = !std::isnan(d_q_rc) && (std::isnan(d_q_fw) || d_q_rc < d_q_fw);
+    if (!skip_test) sample_null_pool(is_rc ? dim_rc : dim_fw, tau_eff);
 
-    extract_ordered_intervals(dim_fw, false, tau_eff);
-    extract_ordered_intervals(dim_rc, true, tau_eff);
+    if (!enum_only) {
+      extract_ordered_intervals(dim_fw, false, tau_eff);
+      extract_ordered_intervals(dim_rc, true, tau_eff);
+    }
 
     for (size_t ri = srprev; ri < records_v.size(); ++ri) {
       record_t& r = records_v[ri];
@@ -154,11 +156,11 @@ void QIE<T>::map_sequences(std::ostream& sout, const str& rid)
       r.d_diff = d_diff;
     }
 
-    add_to_acc(v_acc, u_acc, is_ref ? v_q_fw : v_q_rc, is_ref ? u_q_fw : u_q_rc);
+    add_to_acc(v_acc, u_acc, is_rc ? v_q_rc : v_q_fw, is_rc ? u_q_rc : u_q_fw);
   }
 
   if (keep_hist) d_acc = llhf->mle(v_acc.data(), u_acc);
-  if (!skip_test) test_significance(params.sample_size, 250);
+  if (!skip_test) test_significance(params.sample_size);
   report_contiguous(sout, rid);
 }
 
@@ -176,7 +178,7 @@ DIM<T>::DIM(const params_t<T>& params, const llh_sptr_t<T>& llhf, uint64_t nbins
     // Note that aggregate_mer() accumulates into rows 1 to nbins
     // At the end, compute_prefhistsum() converts in-place
     hdisthist_v.assign((nbins + 1) * (params.hdist_th + 1), 0);
-    // First params.hdist_th values are zeros, same layout as fdps_v/sdps_v
+    // First delta (HD threshold) + 1 values are zeros, same layout as fdps_v/sdps_v
   }
 }
 
@@ -527,6 +529,8 @@ void DIM<T>::extract_histogram(uint64_t a, uint64_t b, vec<uint64_t>& v, uint64_
   t = simde_mm_extract_epi64(s2, 0) + simde_mm_extract_epi64(s2, 1);
   const uint64_t mers_b = std::min(b << params.bin_shift, nmers);
   const uint64_t mers_a = std::min(a << params.bin_shift, nmers);
+  // TODO: The miss count (u) is based on all positions in [a,b), but search_mers() skips Ns.
+  // TODO: A better solution is needed for Ns in this case, skipping does not work.
   u = (mers_b - mers_a) - t;
 }
 
@@ -590,15 +594,15 @@ void QIE<T>::extract_ordered_intervals(DIM<T>& dim, bool is_rc, uint64_t tau_eff
 
   if (bp_v.empty()) {
     // No intervals extracted; report the full query.
-    emit_record(dim, 1, nbins + 1, size_t(-1), is_rc);
+    // emit_record(dim, 1, nbins + 1, size_t(-1), is_rc);
   } else {
-    uint64_t prev = 1;
+    // uint64_t prev = 1;
     for (const auto& s : bp_v) {
-      if (s.a_bin > prev) emit_record(dim, prev, s.a_bin, size_t(-1), is_rc);
+      // if (s.a_bin > prev) emit_record(dim, prev, s.a_bin, size_t(-1), is_rc);
       emit_record(dim, s.a_bin, s.b_bin, s.ix, is_rc);
-      prev = s.b_bin;
+      // prev = s.b_bin;
     }
-    if (prev <= nbins) emit_record(dim, prev, nbins + 1, size_t(-1), is_rc);
+    // if (prev <= nbins) emit_record(dim, prev, nbins + 1, size_t(-1), is_rc);
   }
 }
 
@@ -608,18 +612,15 @@ void QIE<T>::emit_record(DIM<T>& dim, uint64_t a_bin, uint64_t b_bin, size_t th_
   const uint64_t L = enmers + k - 1;
   const bool is_last = (b_bin == dim.get_nbins() + 1);
 
-  double d = std::numeric_limits<double>::quiet_NaN();
-  double I = std::numeric_limits<double>::quiet_NaN();
-  if (coordinates_only) {
+  double d = nanx();
+  double I = nanx();
+  if (!coordinates_only) {
     uint64_t u, t;
     dim.extract_histogram(a_bin - 1, b_bin - 1, v_scratch, u, t);
     d = llhf->mle(v_scratch.data(), u);
     I = llhf->compute_fisher_info(d);
     // MLE at the upper boundary is unreliable - mark NA.
-    if (d >= d_ub - eps || std::isnan(d)) {
-      d = std::numeric_limits<double>::quiet_NaN();
-      I = std::numeric_limits<double>::quiet_NaN();
-    }
+    d = validate_distance(d);
   }
 
   const interval_t bin_iv{a_bin, b_bin};
@@ -630,102 +631,43 @@ void QIE<T>::emit_record(DIM<T>& dim, uint64_t a_bin, uint64_t b_bin, size_t th_
 }
 
 template<typename T>
-void QIE<T>::save_mesh(const DIM<T>& dim)
+void QIE<T>::sample_null_pool(DIM<T>& dim, uint64_t tau_eff)
 {
-  static constexpr size_t npoints_min = 8;
-  static constexpr size_t npoints_max = 128;
-
-  const uint32_t W = params.hdist_th + 1;
   const uint64_t nbins_q = dim.get_nbins();
-  const auto& hist = dim.get_hdisthist();
-  const size_t s = static_cast<size_t>(std::sqrt(static_cast<double>(nbins_q)));
-  const size_t npoints = std::clamp(s, npoints_min, npoints_max);
+  const uint64_t win_len = tau_eff + 1; // fixed window length in bins
+  if (nbins_q < win_len) return;
 
-  mesh_t m(bix, nbins_q, dim.get_nmers());
+  const uint64_t max_nwindows = nbins_q / win_len;
+  const uint64_t nsamples = std::min<uint64_t>(params.sample_size, max_nwindows);
 
-  if (nbins_q <= npoints + 1) {
-    // Short source query: keep every boundary 0, 1, ..., nbins_q
-    m.points_v.resize(nbins_q + 1);
-    std::iota(m.points_v.begin(), m.points_v.end(), uint64_t(0));
-  } else {
-    // Long source query: sample interior boundaries from {1, ..., nbins_q-1}.
-    m.points_v.reserve(npoints + 2);
-    m.points_v.push_back(0);
-    for (uint64_t j = nbins_q - npoints; j < nbins_q; ++j) {
-      const uint64_t r = std::uniform_int_distribution<uint64_t>(1, j)(gen);
-      const auto start = m.points_v.begin() + 1;
-      const auto it = std::lower_bound(start, m.points_v.end(), r);
-      if (it == m.points_v.end() || *it != r)
-        m.points_v.insert(it, r);
-      else
-        m.points_v.push_back(j);
-    }
-    // Interior entries are sorted distinct values in {1, ..., nbins_q-1}
-    m.points_v.push_back(nbins_q);
-  }
-
-  // Copy histograms with the corresponding mesh entries.
-  const size_t P = m.points_v.size();
-  m.hists_v.resize(P * W);
-  for (size_t i = 0; i < P; ++i) {
-    const uint64_t p = m.points_v[i];
-    std::copy(hist.begin() + p * W, hist.begin() + (p + 1) * W, m.hists_v.begin() + i * W);
-  }
-
-  meshes_v.push_back(std::move(m));
-}
-
-template<typename T>
-bool QIE<T>::sample_mesh_distance(const uint64_t mix, const uint64_t bix, const interval_t& ab)
-{
-  const auto& m = meshes_v[mix];
-  const uint32_t W = params.hdist_th + 1;
+  std::uniform_int_distribution<uint64_t> rvstart(0, nbins_q - win_len);
   vec<uint64_t> v(hdist_bound + 1);
 
-  // Uniform pair of distinct point indices
-  std::uniform_int_distribution<uint64_t> rvpt(0, m.points_v.size() - 1);
-  uint64_t i = rvpt(gen), j = rvpt(gen);
-  if (i == j) {
-    return false;
-  }
-  if (i > j) {
-    std::swap(i, j);
-  }
+  for (uint64_t s = 0; s < nsamples; ++s) {
+    const uint64_t x = rvstart(gen);
+    const uint64_t a_bin = x + 1;
+    const uint64_t b_bin = x + win_len + 1;
 
-  // Reject any window that overlaps with the current interval
-  // Samples from other contigs are independent by construction
-  if (m.bix == bix && m.points_v[i] < ab.b && ab.a < m.points_v[j]) {
-    return false;
-  }
-
-  // std::fill(v.begin(), v.end(), 0);
-  uint64_t t = 0;
-  for (uint32_t x = 0; x < W; ++x) {
-    v[x] = m.hists_v[j * W + x] - m.hists_v[i * W + x];
-    t += v[x];
-  }
-  const uint64_t mers_a = std::min(m.points_v[i] << params.bin_shift, m.nmers);
-  const uint64_t mers_b = std::min(m.points_v[j] << params.bin_shift, m.nmers);
-  const uint64_t u = (mers_b - mers_a) - t;
-
-  const double d = llhf->mle(v.data(), u);
-  const double I = llhf->compute_fisher_info(d);
-  if ((std::isfinite(I) && std::isfinite(d)) && (d > 0.0 && I > 0.0)) {
-    samples_v.push_back({d, I});
-    return true;
-  } else {
-    return false;
+    uint64_t u, t;
+    dim.extract_histogram(a_bin - 1, b_bin - 1, v, u, t);
+    double d = llhf->mle(v.data(), u);
+    double I = llhf->compute_fisher_info(d);
+    d = validate_distance(d);
+    if (std::isfinite(d) && std::isfinite(I)) null_v.push_back({d, I, bix, {a_bin, b_bin}});
   }
 }
 
 template<typename T>
-bool QIE<T>::sample_metropolis_hastings(const xy_t& init, uint64_t S, uint64_t B)
+bool QIE<T>::sample_metropolis_hastings(const xy_t& init)
 {
+  // Metropolis-Hastings posterior draws kept (S) and burn-in iterations (B) per null window.
   bool is_valid = true;
+  // Calculates the negative log-likelihood of the current distance
   auto f = [&](const double& D) { return (*llhf)(D); };
   double d = init.first;
-  const double step = init.second; // Optimal MH step is sigma
-  double llh = f(d);
+  // The target posterior is proportional to exp(-nll(D)).
+  const double step = init.second; // Proposal scale; sqrt(1/I) approximates the posterior sigma
+  double nll = f(d);
 
   std::uniform_real_distribution<double> ruv(0, 1);
 
@@ -739,11 +681,12 @@ bool QIE<T>::sample_metropolis_hastings(const xy_t& init, uint64_t S, uint64_t B
     if (d_i >= d_ub) d_i = 2.0 * d_ub - d_i;
     d_i = std::clamp(d_i, eps, d_ub - eps);
 
-    const double llh_i = f(d_i);
-    const double log_alpha = llh_i - llh;
+    const double nll_i = f(d_i);
+    // log acceptance ratio = logL(prop) - logL(cur) = f(cur) - f(prop)
+    const double log_alpha = nll - nll_i;
     if (std::log(ruv(gen)) < log_alpha) {
       d = d_i;
-      llh = llh_i;
+      nll = nll_i;
     }
     if (iter >= B) {
       const double I = llhf->compute_fisher_info(d);
@@ -758,110 +701,110 @@ bool QIE<T>::sample_metropolis_hastings(const xy_t& init, uint64_t S, uint64_t B
 }
 
 template<typename T>
-void QIE<T>::test_significance(const uint64_t sample_size, const uint64_t ntries)
+void QIE<T>::filter_sample(const record_t& r, vec<xy_t>& rsample_v, uint64_t sample_size) const
 {
-  // Weight each query by its bin count to sample proportionally.
-  // Null summaries with fewer than 2 points cannot yield any interval.
-  vec<uint64_t> weights(meshes_v.size());
-  uint64_t total_weight = 0;
-  for (size_t qi = 0; qi < meshes_v.size(); ++qi) {
-    if (meshes_v[qi].points_v.size() < 2) continue;
-    weights[qi] = meshes_v[qi].nbins;
-    total_weight += weights[qi];
+  // Drop same-query null windows that overlap the candidate interval; other overlaps are kept.
+  rsample_v.clear();
+  rsample_v.reserve(null_v.size());
+  for (const auto& s : null_v) {
+    if (s.bix == r.bix && overlaps_half_open(s.bin_iv, r.bin_iv)) continue;
+    // TODO: Do we really need Fisher information, I, at this point (in general)?
+    if (!std::isfinite(s.I)) continue;
+    const double d = validate_distance(s.d);
+    if (!std::isfinite(d)) continue;
+    rsample_v.push_back({d, s.I});
   }
-  if (total_weight == 0) {
-    warn_msg("No valid meshes found; skipping significance test");
-    return;
-  }
-  std::discrete_distribution<size_t> rvix(weights.begin(), weights.end());
-  samples_v.reserve(sample_size);
 
+  if (rsample_v.size() <= sample_size) return;
+
+  // Reservoir sample down to sample_size (algorithm R).
+  size_t w = 0;
+  for (size_t i = 0; i < rsample_v.size(); ++i) {
+    if (w < sample_size) {
+      rsample_v[w++] = rsample_v[i];
+    } else {
+      const size_t j = std::uniform_int_distribution<size_t>(0, i)(gen);
+      if (j < sample_size) rsample_v[j] = rsample_v[i];
+    }
+  }
+  rsample_v.resize(static_cast<size_t>(sample_size));
+}
+
+template<typename T>
+void QIE<T>::test_significance(const uint64_t sample_size)
+{
+  vec<xy_t> rsample_v;
   for (auto& r : records_v) {
-    samples_v.clear();
-    uint64_t t = 0;
-    uint64_t n = 0;
-    const interval_t ab = r.get_interval();
     if (r.is_intact()) {
       warn_pmsg(qid_batch[r.bix], "has a full length interval; skipping significance test");
       continue;
     }
-    while ((n < sample_size) && (t < ntries)) {
-      ++t;
-      const uint64_t mix = rvix(gen);
-      if (sample_mesh_distance(mix, r.bix, ab)) {
-#ifdef MCMC
-        const auto [d, I] = samples_v.back();
-        const size_t nsprev = samples_v.size() - 1;
-        if (sample_metropolis_hastings({d, std::sqrt(1.0 / I)})) {
-          ++n;
-        } else {
-          samples_v.resize(nsprev);
-          warn_pmsg(qid_batch[r.bix], "metropolis-hastings returned an invalid sample; skipping significance test");
-        }
-#else
-        ++n;
-#endif
-      } else {
-        warn_pmsg(qid_batch[r.bix], "mesh sampling returned an invalid sample; skipping significance test");
-      }
-    }
 
-    if (samples_v.size() < (sample_size / 2)) {
-      warn_pmsg(qid_batch[r.bix], "not enough non-overlapping meshes; skipping significance test");
+    filter_sample(r, rsample_v, sample_size);
+
+    if (rsample_v.size() < (sample_size / 2)) {
+      warn_pmsg(qid_batch[r.bix], "not enough null samples; skipping significance test");
       continue;
     }
-    const auto [prob, median] = score_gamma(r, samples_v);
-    if (std::isnan(prob)) {
+    const auto [prob, median] = score_gamma(r, rsample_v);
+    if (!std::isfinite(prob) || !std::isfinite(median)) {
       warn_pmsg(qid_batch[r.bix], "gamma fit failed; skipping significance test");
       continue;
     }
-    // The null-sampled strand gets a two-sided test; the opposite strand keeps the low-distance tail.
-    const bool is_ref = std::isnan(r.d_diff) ? false : (r.is_rc ? r.d_diff > 0 : r.d_diff < 0);
-    r.percentile = is_ref ? (2.0 * std::min(prob, 1.0 - prob)) : prob;
-    r.fold = (median > eps) ? (r.d / median) : std::numeric_limits<double>::quiet_NaN();
+    const bool two_sided = std::isfinite(r.d_diff) && (r.is_rc == (r.d_diff > 0.0));
+    r.percentile = two_sided ? (2.0 * std::min(prob, 1.0 - prob)) : prob;
+    if (std::isfinite(r.d) && median > eps) r.fold = r.d / median;
   }
+
+  // TODO: Check if NaN p-values are handled properly
+  benjamini_hochberg_correction();
 }
 
 template<typename T>
 xy_t QIE<T>::score_gamma(const record_t& r, const vec<xy_t>& samples_v) const
-{
-  // Fit Gamma directly to MCMC posterior draws from reference likelihoods.
-  // The draws already represent the latent distribution. No noise deconvolution needed.
-  // Test record's noise sigma_r is accounted for in the marginal_cdf evaluation below.
+{ // TODO: NaNs and out of bound distances are not handled well
+  // Fit Gamma directly to MCMC posterior or MLE draws from reference likelihoods.
+  const double d_obs = validate_distance(r.d);
   vec<double> d_v;
+  // TODO: We are not using the noise model here, just keep the distance.
+  // TODO: Simplify the gamma model and perhaps just remove the marginal noise model.
+  d_v.reserve(samples_v.size());
   for (const auto& s : samples_v) {
-    d_v.push_back(s.first);
+    if (const double d = validate_distance(s.first); std::isfinite(d)) d_v.push_back(d);
   }
-  const GammaModel::params_t gp = GammaModel::fit_from_samples(d_v);
-  if (!(gp.shape > 0.0) || !(gp.scale > 0.0)) {
-    return {std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::quiet_NaN()};
-  }
-  const double sigma_r = (r.I > 0.0 && std::isfinite(r.I)) ? (1.0 / std::sqrt(r.I)) : 0.0;
-  const double prob = GammaModel::gamma_cdf(r.d, gp.shape, gp.scale);
-
-  // Median of the latent Gamma distribution by binary search on [eps, 1-eps].
+  // Median of the latent Gamma distribution by binary search between distance lower and upper bounds.
   // Uses plain gamma_cdf since the fit was on latent draws (no convolution with sigma_r).
-  auto F = [&](double x) { return GammaModel::gamma_cdf(x, gp.shape, gp.scale); };
+  xy_t result = GammaModel::score_from_samples(d_obs, d_v, d_eps, d_ub - d_eps);
+  if (std::isfinite(result.second)) result.second = validate_distance(result.second);
+  return result;
+}
 
-  double d_low = GammaModel::eps, d_high = 1.0 - GammaModel::eps;
-  for (int it = 0; it < 40; ++it) {
-    const double d_m = 0.5 * (d_low + d_high);
-    if (F(d_m) < 0.5) {
-      d_low = d_m;
-    } else {
-      d_high = d_m;
+// Benjamini-Hochberg correction per strand (fw and rc separately).
+template<typename T>
+void QIE<T>::benjamini_hochberg_correction()
+{
+  for (bool is_rc : {false, true}) {
+    vec<size_t> idx;
+    for (size_t i = 0; i < records_v.size(); ++i)
+      if (records_v[i].is_rc == is_rc && std::isfinite(records_v[i].percentile)) idx.push_back(i);
+    if (idx.empty()) continue;
+
+    std::sort(idx.begin(), idx.end(), [&](size_t a, size_t b) { return records_v[a].percentile < records_v[b].percentile; });
+
+    const double m = static_cast<double>(idx.size());
+    double q_min = 1.0;
+    for (size_t rank = idx.size(); rank >= 1; --rank) {
+      record_t& r = records_v[idx[rank - 1]];
+      q_min = std::min(q_min, std::min(1.0, r.percentile * m / static_cast<double>(rank)));
+      r.qvalue = q_min;
     }
   }
-  const double median = 0.5 * (d_low + d_high);
-  return {prob, median};
 }
 
 template<typename T>
 void QIE<T>::report_contiguous(std::ostream& sout, const str& rid) const
 { // Revisit this
   for (const auto& r : records_v) {
-    const char strand = std::isnan(r.d_diff) ? '.' : (r.d_diff < 0 ? '-' : '+');
-
     const uint8_t mask = (r.th_ix != size_t(-1)) ? static_cast<uint8_t>(1u << r.th_ix) : 0;
     xy_t d_range{d_eps, d_ub};
     if (r.th_ix != size_t(-1)) {
@@ -876,12 +819,13 @@ void QIE<T>::report_contiguous(std::ostream& sout, const str& rid) const
     d_bin.flags(sout.flags());
     d_bin.precision(sout.precision());
     d_bin << '(' << d_range.first << ", " << d_range.second << ')';
+
     write_tsv(sout,
               qid_batch[r.bix],
               r.L,
               r.seq_iv.a,
               r.seq_iv.b,
-              strand,
+              report_strand(r.is_rc, r.d_diff),
               rid,
               r.d,
               static_cast<uint32_t>(mask),
@@ -890,7 +834,8 @@ void QIE<T>::report_contiguous(std::ostream& sout, const str& rid) const
               r.d_diff,
               d_acc,
               r.percentile,
-              r.fold)
+              r.fold,
+              r.qvalue)
       << '\n';
   }
 }

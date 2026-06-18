@@ -8,8 +8,8 @@
 #include <boost/math/tools/minima.hpp>
 #include "types.hpp"
 
-static constexpr double d_eps = 0;
-static constexpr double d_ub = 0.33;
+static constexpr double UB = 0.99;
+static constexpr double LB = 0.0;
 
 template<typename T>
 class LLH
@@ -192,8 +192,8 @@ public:
   {
     set_counts(v_r, u_r);
     auto f = [&](const double& D) { return (*this)(D); };
-    xy_t result = boost::math::tools::brent_find_minima(f, d_eps, d_ub, 24);
-    if (std::isnan(result.first)) result.first = d_ub;
+    xy_t result = boost::math::tools::brent_find_minima(f, LB, UB, 24);
+    // if (std::isnan(result.first)) result.first = UB;
     return result.first;
   }
 

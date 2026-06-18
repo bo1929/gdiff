@@ -12,28 +12,58 @@
 
 // When defined, Metropolis-Hastings MCMC adds posterior draws.
 // Otherwise, only the MLE from mesh sampling is used.
-#define MCMC
+// #define MCMC
 
+static constexpr double d_eps = 0.00001;
+static constexpr double d_ub = 1.0;
+static constexpr double d_lb = 0.0;
 static constexpr double eps = 1e-7;        // Tolerance for floating-point comparisons
 static constexpr uint32_t hdist_bound = 7; // Hamming distance bound for the SIMD alignment
+
+inline double nanx() noexcept { return std::numeric_limits<double>::quiet_NaN(); }
+
+// d_diff encoding: finite = d_q_fw - d_q_rc; NaN = neither finite; -inf = fw only; +inf = rc only.
+inline double strand_diff(const double d_q_fw, const double d_q_rc) noexcept
+{
+  const bool fw_ok = std::isfinite(d_q_fw);
+  const bool rc_ok = std::isfinite(d_q_rc);
+  if (!fw_ok && !rc_ok) return nanx();
+  if (fw_ok && !rc_ok) return -std::numeric_limits<double>::infinity();
+  if (!fw_ok && rc_ok) return std::numeric_limits<double>::infinity();
+  return d_q_fw - d_q_rc;
+}
+
+inline char report_strand(const bool is_rc, const double d_diff) noexcept
+{
+  if (std::isnan(d_diff)) return '.';
+  if (std::isinf(d_diff)) {
+    if (d_diff < 0.0) return is_rc ? '.' : '+';
+    return is_rc ? '+' : '.';
+  }
+  return (is_rc == (d_diff > 0.0)) ? '-' : '+';
+}
+
+inline double validate_distance(const double d)
+{
+  if (d >= d_ub - eps || std::isnan(d) || (d < d_lb)) {
+    return nanx();
+  }
+  return d;
+}
+
+// 1-based half-open interval convention: inclusive start, exclusive end.
+inline bool overlaps_half_open(const interval_t& lhs, const interval_t& rhs) { return lhs.a < rhs.b && rhs.a < lhs.b; }
 
 template<typename T>
 class QIE;
 
-struct mesh_t
+// One null-pool entry: a fixed-length window sampled from a query sequences.
+struct null_t
 {
-  size_t bix;
-  uint64_t nbins;
-  uint64_t nmers;
-  vec<uint64_t> points_v; // sorted bin positions; points_v[0]=0, points_v.back()=nbins
-  vec<uint64_t> hists_v;  // flat, size = points_v.size() * (hdist_th + 1);
-
-  mesh_t(size_t bix, uint64_t nbins, uint64_t nmers)
-    : bix(bix)
-    , nbins(nbins)
-    , nmers(nmers)
-  {
-  }
+  double d;          // MLE distance
+  double I;          // Fisher information
+  uint64_t bix;      // query batch index (for overlap filtering)
+  interval_t bin_iv; // 1-based half-open bin coordinates
 };
 
 struct record_t
@@ -46,12 +76,13 @@ struct record_t
   bool is_rc;        // Is the source query on the reverse-complement strand?
   double d;          // MLE distance for this interval in [d_eps, d_ub]
   double I;          // Observed Fisher information I(d)
-  size_t th_ix;      // Threshold index; size_t(-1) = background
+  size_t th_ix;      // Threshold index, negative values for the background
   // Per-query fields, filled once both strands' distances are known
-  double d_q = std::numeric_limits<double>::quiet_NaN();    // MLE distance for the source query (e.g., contig)
-  double d_diff = std::numeric_limits<double>::quiet_NaN(); // d_q_fw - d_q_rc (neg = fw is ref)
-  double percentile = std::numeric_limits<double>::quiet_NaN();
-  double fold = std::numeric_limits<double>::quiet_NaN();
+  double d_q = nanx();    // MLE distance for the source strand (e.g., contig)
+  double d_diff = nanx(); // strand_diff() encoding; see strand_diff()
+  double percentile = nanx();
+  double qvalue = nanx(); // Benjamini-Hochberg adjusted percentile
+  double fold = nanx();
 
   bool is_intact() const { return seq_iv.a == 1 && seq_iv.b == L; }
   // 0-based half-open bin-boundary interval for histogram extraction and null-window overlap.
@@ -130,11 +161,11 @@ public:
   get_interval(uint64_t i, size_t ix = 0) const; // i-th merged interval in 1-based inclusive bin coordinates
 
 private:
-  const bool keep_hist;
   const params_t<T>& params;
   const llh_sptr_t<T> llhf;  // log-likelihood function for all calculations
   const uint64_t nbins;      // number of bins
   const uint64_t nmers;      // number of k-mers in query (for per-k-mer HD tracking)
+  const bool keep_hist;      // whether to keep track of the histogram(s) for the query sequence
   uint64_t t_q = 0;          // total number of k-mers hits below hdist_th per query sequence
   uint64_t u_q = 0;          // total number misses per query sequence
   vec<uint64_t> hdisthist_v; // D[i][j] is the number of hits with HD=j, [(nbins+1) x (hdist_th+1)] row-major; D[0][j]=0
@@ -162,15 +193,19 @@ public:
 
 private:
   void search_mers(const char* cseq, uint64_t len, DIM<T>& dim_fw, DIM<T>& dim_rc);
-  void save_mesh(const DIM<T>& dim);
+  void sample_null_pool(DIM<T>& dim, uint64_t tau_eff);
   void extract_ordered_intervals(DIM<T>& dim, bool is_rc, uint64_t tau_eff);
   void extract_simple_intervals(DIM<T>& dim, bool is_rc, uint64_t tau_eff);
   void emit_record(DIM<T>& dim, uint64_t a_bin, uint64_t b_bin, size_t th_ix, bool is_rc);
-  void test_significance(const uint64_t sample_size = 100, const uint64_t ntries = 250);
-  bool sample_mesh_distance(const uint64_t mix, const uint64_t bix, const interval_t& bin_iv);
-  bool sample_metropolis_hastings(const xy_t& init, uint64_t S = 50, uint64_t B = 100);
+  void filter_sample(const record_t& r, vec<xy_t>& rsample_v, uint64_t sample_size) const;
+  void test_significance(uint64_t sample_size = 100);
+  void benjamini_hochberg_correction();
+  bool sample_metropolis_hastings(const xy_t& init);
   xy_t score_gamma(const record_t& r, const vec<xy_t>& samples_v) const;
   void report_contiguous(std::ostream& sout, const str& rid) const;
+
+  static constexpr uint64_t S = 20;
+  static constexpr uint64_t B = 100;
 
   const params_t<T>& params;
   const sketch_sptr_t sketch;
@@ -184,6 +219,7 @@ private:
   llh_sptr_t<T> llhf;
   bool skip_test;
   bool keep_hist;
+  bool enum_only;
   bool coordinates_only;
   uint64_t mask_bp;
   uint64_t mask_lr;
@@ -195,13 +231,13 @@ private:
   vec<size_t> ltix_v;  // positive-sign thresholds
   vec<size_t> gtix_v;  // negative-sign thresholds
   vec<bp_t> bp_v;      // breakpoint scratch reused across intervals
-  vec<mesh_t> meshes_v;
+  vec<null_t> null_v;
   vec<record_t> records_v;
   vec<xy_t> samples_v;
   vec<uint64_t> v_scratch;
   vec<uint64_t> v_acc;
   uint64_t u_acc = 0;
-  double d_acc = std::numeric_limits<double>::quiet_NaN();
+  double d_acc = nanx();
 };
 
 template<typename... Args>

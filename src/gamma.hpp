@@ -26,6 +26,11 @@ struct GammaModel
     double scale; // > 0
   };
 
+  [[nodiscard]] static bool validate_params(const params_t& gp) noexcept
+  {
+    return gp.shape > 0.0 && gp.scale > 0.0 && std::isfinite(gp.shape) && std::isfinite(gp.scale);
+  }
+
   enum class Method
   {
     QM,  // noise-aware quantile matching at cfg.quantile_probs (default);
@@ -55,6 +60,7 @@ struct GammaModel
   static constexpr double eps = 1e-10;
   static constexpr double sqrt2 = 1.4142135623730951;
   static constexpr double sqrt_pi = 1.7724538509055159;
+  static constexpr size_t min_nsamples = 8;
 
   // 15-point Gauss-Hermite nodes and weights for int e^{-x^2} f(x) dx.
   // More points extend tail accuracy, which matters when marginal_cdf is
@@ -191,6 +197,39 @@ struct GammaModel
         return L;
       },
       cfg);
+  }
+
+  // Score an observed distance against null samples (plain Gamma, no noise convolution).
+  // Returns {gamma_cdf(d_obs), latent median} or NaN components on failure.
+  [[nodiscard]] static xy_t
+  score_from_samples(const double d_obs, const vec<double>& d_v, const double d_lo, const double d_hi)
+  {
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    if (!std::isfinite(d_obs)) return {nan, nan};
+    if (d_v.size() < min_nsamples) return {nan, nan};
+
+    const params_t gp = fit_from_samples(d_v);
+    if (!validate_params(gp)) return {nan, nan};
+
+    const double prob = gamma_cdf(d_obs, gp.shape, gp.scale);
+    if (!std::isfinite(prob)) return {nan, nan};
+
+    auto F = [&](double x) { return gamma_cdf(x, gp.shape, gp.scale); };
+    if (!(d_hi > d_lo) || F(d_hi) < 0.5) return {prob, nan};
+
+    // Median of the latent Gamma distribution by binary search between distance lower and upper bounds.
+    double lo = d_lo;
+    double hi = d_hi;
+    for (int it = 0; it < 40; ++it) {
+      const double mid = 0.5 * (lo + hi);
+      if (F(mid) < 0.5)
+        lo = mid;
+      else
+        hi = mid;
+    }
+    const double median = 0.5 * (lo + hi);
+    if (!(median > eps) || !std::isfinite(median)) return {prob, nan};
+    return {prob, median};
   }
 
 private:
