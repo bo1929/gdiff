@@ -153,13 +153,9 @@ def normalize_gdiff_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     if "DIST" in df.columns:
         df["DIST"] = pd.to_numeric(df["DIST"], errors="coerce").map(clamp_distance)
     if "DIST_CONTIG" in df.columns:
-        df["DIST_CONTIG"] = pd.to_numeric(df["DIST_CONTIG"], errors="coerce").map(
-            clamp_distance
-        )
+        df["DIST_CONTIG"] = pd.to_numeric(df["DIST_CONTIG"], errors="coerce").map(clamp_distance)
     if "DIST_GENOME" in df.columns:
-        df["DIST_GENOME"] = pd.to_numeric(df["DIST_GENOME"], errors="coerce").map(
-            clamp_distance
-        )
+        df["DIST_GENOME"] = pd.to_numeric(df["DIST_GENOME"], errors="coerce").map(clamp_distance)
     if "DIST_TH" in df.columns:
         df[PLOT_DIST_COL] = pd.to_numeric(df["DIST_TH"], errors="coerce")
     else:
@@ -177,10 +173,7 @@ def normalize_gdiff_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def detect_plot_mode(
-    df: pd.DataFrame,
-    enum_only: Optional[bool] = None,
-) -> str:
+def detect_plot_mode(df: pd.DataFrame, enum_only: Optional[bool] = None) -> str:
     """Return 'legacy_enum', 'enum', or 'continuous'.
 
     legacy_enum: 7-column DIST_TH ground truth.
@@ -411,31 +404,18 @@ def make_cached_filter(df: pd.DataFrame, enum_only=True):
 
         @lru_cache(maxsize=CACHE_SIZE)
         def cached(seq_id, tip_order_tuple, dist_hi, dist_lo, direction):
-            return filter_intervals(
-                df, seq_id, list(tip_order_tuple), dist_hi, dist_lo, direction
-            )
+            return filter_intervals(df, seq_id, list(tip_order_tuple), dist_hi, dist_lo, direction)
 
         return cached
     else:
 
         @lru_cache(maxsize=CACHE_SIZE)
         def cached_cont(
-            seq_id,
-            tip_order_tuple,
-            strand,
-            sig_log=None,
-            sig_col="PERCENTILE",
-            fold=None,
+            seq_id, tip_order_tuple, strand, sig_log=None, sig_col="PERCENTILE", fold=None
         ):
             sig_th = 10.0**sig_log if sig_log is not None and sig_log < 0 else None
             return filter_intervals_continuous(
-                df,
-                seq_id,
-                list(tip_order_tuple),
-                strand,
-                sig_th,
-                sig_col,
-                fold,
+                df, seq_id, list(tip_order_tuple), strand, sig_th, sig_col, fold
             )
 
         return cached_cont
@@ -448,9 +428,7 @@ def make_cached_filter(df: pd.DataFrame, enum_only=True):
 
 def compute_path_distances(tree: Tree, query_name: str) -> dict:
     """Compute tree distance from query leaf to all nodes."""
-    query_leaf = next(
-        (leaf for leaf in tree.iter_leaves() if leaf.name == query_name), None
-    )
+    query_leaf = next((leaf for leaf in tree.iter_leaves() if leaf.name == query_name), None)
     if query_leaf is None:
         return {}
     return {node: query_leaf.get_distance(node) for node in tree.traverse()}
@@ -531,9 +509,7 @@ def _node_hover(node, distances, count_offset=0) -> str:
 
 
 def enforce_min_span(
-    v_range: Optional[Union[list, tuple]],
-    min_span: float,
-    bounds: Optional[tuple] = None,
+    v_range: Optional[Union[list, tuple]], min_span: float, bounds: Optional[tuple] = None
 ) -> Optional[list]:
     """Clamp zoom range to enforce minimum span and respect bounds.
 
@@ -626,8 +602,7 @@ def assign_color_indices(distances, bin_edges, n_colors):
     return np.clip(indices, 0, n_colors - 1)
 
 
-def _build_interval_traces(starts, ends, ys, hovers, bin_idx, bin_colors,
-                           descending=False):
+def _build_interval_traces(starts, ends, ys, hovers, bin_idx, bin_colors, descending=False):
     """Build trace dicts keyed by color from pre-computed arrays.
 
     Each interval is rendered as 4 points (start, mid, end, None) so the
@@ -645,19 +620,13 @@ def _build_interval_traces(starts, ends, ys, hovers, bin_idx, bin_colors,
         sel = bin_idx == ci
         n = sel.sum()
         x = np.empty(n * 4, dtype=object)
-        x[0::4], x[1::4], x[2::4], x[3::4] = (
-            starts[sel], mids[sel], ends[sel], None,
-        )
+        x[0::4], x[1::4], x[2::4], x[3::4] = (starts[sel], mids[sel], ends[sel], None)
         y = np.empty(n * 4, dtype=object)
-        y[0::4], y[1::4], y[2::4], y[3::4] = (
-            ys[sel], ys[sel], ys[sel], None,
-        )
+        y[0::4], y[1::4], y[2::4], y[3::4] = (ys[sel], ys[sel], ys[sel], None)
         sh = hovers_arr[sel]
         text = np.empty(n * 4, dtype=object)
         text[0::4], text[1::4], text[2::4], text[3::4] = sh, sh, sh, None
-        traces[bin_colors[ci]] = {
-            "x": x.tolist(), "y": y.tolist(), "text": text.tolist(),
-        }
+        traces[bin_colors[ci]] = {"x": x.tolist(), "y": y.tolist(), "text": text.tolist()}
     return traces
 
 
@@ -683,9 +652,7 @@ def batch_by_color(df, bin_edges, colors, leaf_distances=None, flip=False):
     masks = df["MASK"].values[mask] if "MASK" in df.columns else None
     strands = df["STRAND"].values[mask] if "STRAND" in df.columns else None
     is_rcs = df["IS_RC"].values[mask] if "IS_RC" in df.columns else None
-    d_intervals = (
-        df["D_INTERVAL"].values[mask] if "D_INTERVAL" in df.columns else None
-    )
+    d_intervals = df["D_INTERVAL"].values[mask] if "D_INTERVAL" in df.columns else None
     for i, (rid, s, e, d) in enumerate(zip(refs, starts, ends, dists)):
         strand_str = ""
         if strands is not None:
@@ -703,8 +670,7 @@ def batch_by_color(df, bin_edges, colors, leaf_distances=None, flip=False):
             h += f"<br>Tree dist: {leaf_distances[rid]:.4f}"
         hovers.append(h)
 
-    return _build_interval_traces(starts, ends, ys, hovers, cidx, colors,
-                                   descending=True)
+    return _build_interval_traces(starts, ends, ys, hovers, cidx, colors, descending=True)
 
 
 # Descending edges so lower-index bins = less significant (higher p-values).
@@ -753,22 +719,12 @@ def compute_color_values(df, color_by, dist_range):
     dists = df["DIST"].values[mask]
     pvals = df["PERCENTILE"].values[mask]
     refs = df["REF_ID"].values[mask]
-    dist_contigs = (
-        df["DIST_CONTIG"].values[mask] if "DIST_CONTIG" in df.columns else dists
-    )
-    dist_genomes = (
-        df["DIST_GENOME"].values[mask] if "DIST_GENOME" in df.columns else dists
-    )
-    d_intervals = (
-        df["D_INTERVAL"].values[mask] if "D_INTERVAL" in df.columns else None
-    )
+    dist_contigs = df["DIST_CONTIG"].values[mask] if "DIST_CONTIG" in df.columns else dists
+    dist_genomes = df["DIST_GENOME"].values[mask] if "DIST_GENOME" in df.columns else dists
+    d_intervals = df["D_INTERVAL"].values[mask] if "D_INTERVAL" in df.columns else None
     folds = df["FOLD"].values[mask] if "FOLD" in df.columns else None
-    qvalues = (
-        df["QVALUE"].values[mask] if "QVALUE" in df.columns else None
-    )
-    strand_diffs = (
-        df["STRAND_DIFF"].values[mask] if "STRAND_DIFF" in df.columns else None
-    )
+    qvalues = df["QVALUE"].values[mask] if "QVALUE" in df.columns else None
+    strand_diffs = df["STRAND_DIFF"].values[mask] if "STRAND_DIFF" in df.columns else None
     strands = df["STRAND"].values[mask] if "STRAND" in df.columns else None
     is_rcs = df["IS_RC"].values[mask] if "IS_RC" in df.columns else None
 
@@ -807,9 +763,7 @@ def compute_color_values(df, color_by, dist_range):
     }
 
 
-def batch_by_continuous_color(
-    df, color_by, dist_range, scheme, leaf_distances=None, flip=False
-):
+def batch_by_continuous_color(df, color_by, dist_range, scheme, leaf_distances=None, flip=False):
     """Create traces with continuous or binned coloring for non-enum mode.
 
     For 'pval' / 'qval' color_by: uses fixed significance bins with whitish first bin.
@@ -885,15 +839,11 @@ def batch_by_continuous_color(
             h += f"<br>Tree dist: {leaf_distances[rid]:.4f}"
         hovers.append(h)
 
-    traces = _build_interval_traces(
-        cv["starts"], cv["ends"], cv["ys"], hovers, bin_idx, bin_colors,
-    )
+    traces = _build_interval_traces(cv["starts"], cv["ends"], cv["ys"], hovers, bin_idx, bin_colors)
     return traces, cv["cmin"], cv["cmax"]
 
 
-def make_continuous_colorbar(
-    cmin, cmax, color_by, scheme, y_center=0.5, length=None, flip=False
-):
+def make_continuous_colorbar(cmin, cmax, color_by, scheme, y_center=0.5, length=None, flip=False):
     """Create a colorbar trace for non-enum mode."""
     if color_by in ("pval", "qval"):
         # Binned significance colorbar matching PVAL_BINS
@@ -1007,9 +957,7 @@ def make_colorbar(bin_edges, colors, y_center=0.5, length=None, flip=False):
 
 
 def compute_y_ticks(
-    tip_order: list[str],
-    y_range: Optional[tuple] = None,
-    max_ticks: int = AXIS_Y_MAX_TICKS,
+    tip_order: list[str], y_range: Optional[tuple] = None, max_ticks: int = AXIS_Y_MAX_TICKS
 ) -> tuple:
     """Compute y-axis tick positions and labels."""
     n = len(tip_order)
@@ -1112,9 +1060,7 @@ def _load_gff(path: str) -> Optional[pd.DataFrame]:
                     "start": min(start_i, end_i),
                     "stop": max(start_i, end_i),
                     "strand": strand if strand in ("+", "-") else "+",
-                    "ann_name": attrs.get("ann")
-                    or attrs.get("ann_name")
-                    or attrs.get("Name"),
+                    "ann_name": attrs.get("ann") or attrs.get("ann_name") or attrs.get("Name"),
                     "product": attrs.get("product") or attrs.get("description"),
                     "ec_number": attrs.get("ec_number"),
                     "source": source,
@@ -1170,9 +1116,7 @@ def _load_gff_with_gffutils(path: str) -> Optional[pd.DataFrame]:
                 {
                     "contig_id": feature.chrom,
                     "locus_tag": locus_tag,
-                    "ftype": (
-                        feature.featuretype if feature.featuretype != "." else "misc"
-                    ),
+                    "ftype": (feature.featuretype if feature.featuretype != "." else "misc"),
                     "start": int(feature.start),
                     "stop": int(feature.end),
                     "strand": feature.strand if feature.strand in ("+", "-") else "+",
@@ -1180,9 +1124,7 @@ def _load_gff_with_gffutils(path: str) -> Optional[pd.DataFrame]:
                     or _first("ann")
                     or _first("ann_name")
                     or _first("Name"),
-                    "product": _first("product")
-                    or _first("description")
-                    or _first("note"),
+                    "product": _first("product") or _first("description") or _first("note"),
                     "ec_number": _first("ec_number"),
                     "source": feature.source,
                     "score": feature.score if feature.score != "." else None,
@@ -1212,14 +1154,7 @@ def _load_custom_tsv(path: str) -> Optional[pd.DataFrame]:
 
         # Drop unnamed numeric index column sometimes prepended by shell tools
         first_col = df.columns[0]
-        if str(first_col) not in {
-            "contig_id",
-            "locus_tag",
-            "ftype",
-            "start",
-            "stop",
-            "strand",
-        }:
+        if str(first_col) not in {"contig_id", "locus_tag", "ftype", "start", "stop", "strand"}:
             try:
                 pd.to_numeric(df[first_col])
                 df = df.drop(columns=[first_col])
@@ -1245,9 +1180,7 @@ def _load_custom_tsv(path: str) -> Optional[pd.DataFrame]:
             existing = [c for c in gene_candidates if c in df.columns]
             if existing:
                 df["ann_name"] = df[existing].apply(
-                    lambda row: next(
-                        (v for v in row if pd.notna(v) and str(v).strip()), None
-                    ),
+                    lambda row: next((v for v in row if pd.notna(v) and str(v).strip()), None),
                     axis=1,
                 )
             else:
@@ -1259,9 +1192,7 @@ def _load_custom_tsv(path: str) -> Optional[pd.DataFrame]:
             existing = [c for c in ec_candidates if c in df.columns]
             if existing:
                 df["ec_number"] = df[existing].apply(
-                    lambda row: next(
-                        (v for v in row if pd.notna(v) and str(v).strip()), None
-                    ),
+                    lambda row: next((v for v in row if pd.notna(v) and str(v).strip()), None),
                     axis=1,
                 )
             else:
@@ -1273,9 +1204,7 @@ def _load_custom_tsv(path: str) -> Optional[pd.DataFrame]:
             existing = [c for c in prod_candidates if c in df.columns]
             if existing:
                 df["product"] = df[existing].apply(
-                    lambda row: next(
-                        (v for v in row if pd.notna(v) and str(v).strip()), None
-                    ),
+                    lambda row: next((v for v in row if pd.notna(v) and str(v).strip()), None),
                     axis=1,
                 )
             else:
@@ -1332,9 +1261,7 @@ def filter_annotations(
 
     if x_range is not None:
         x_min, x_max = sorted(x_range)
-        df_filt = df_filt[
-            (df_filt["stop"] >= x_min) & (df_filt["start"] <= x_max)
-        ].copy()
+        df_filt = df_filt[(df_filt["stop"] >= x_min) & (df_filt["start"] <= x_max)].copy()
 
     return df_filt if not df_filt.empty else None
 
@@ -1487,9 +1414,7 @@ def create_annotation_traces(df, x_range=None):
             if x_min is not None and (ann["stop"] < x_min or ann["start"] > x_max):
                 continue
 
-            arrow = create_ann_arrow(
-                int(ann["start"]), int(ann["stop"]), ann["strand"], y_center
-            )
+            arrow = create_ann_arrow(int(ann["start"]), int(ann["stop"]), ann["strand"], y_center)
             hover_text = _ann_hover(ann)
 
             # Arrow body (filled polygon, hover disabled — avoids trace-name clutter)
@@ -1596,9 +1521,7 @@ def build_figure(
     # Colorbar in interval panel
     if enum_only:
         fig.add_trace(
-            make_colorbar(
-                bin_edges, colors, y_center=cb_y, length=cb_len, flip=flip_colorscale
-            ),
+            make_colorbar(bin_edges, colors, y_center=cb_y, length=cb_len, flip=flip_colorscale),
             row=1,
             col=2,
         )
@@ -1611,13 +1534,7 @@ def build_figure(
                 cmin, cmax = cv["cmin"], cv["cmax"]
         fig.add_trace(
             make_continuous_colorbar(
-                cmin,
-                cmax,
-                color_by,
-                scheme,
-                y_center=cb_y,
-                length=cb_len,
-                flip=flip_colorscale,
+                cmin, cmax, color_by, scheme, y_center=cb_y, length=cb_len, flip=flip_colorscale
             ),
             row=1,
             col=2,
@@ -1658,12 +1575,7 @@ def build_figure(
             )
         else:
             interval_traces, _, _ = batch_by_continuous_color(
-                df_intervals,
-                color_by,
-                dist_range,
-                scheme,
-                leaf_distances,
-                flip=flip_colorscale,
+                df_intervals, color_by, dist_range, scheme, leaf_distances, flip=flip_colorscale
             )
         for color, data in interval_traces.items():
             fig.add_trace(
@@ -1685,17 +1597,12 @@ def build_figure(
     if has_annot:
         ann_df = filter_annotations(df_annotations, query_id, x_range)
         if ann_df is not None and not ann_df.empty:
-            ann_traces, ann_y_vals, ann_y_text, ann_n = create_annotation_traces(
-                ann_df, x_range
-            )
+            ann_traces, ann_y_vals, ann_y_text, ann_n = create_annotation_traces(ann_df, x_range)
             for trace in ann_traces:
                 fig.add_trace(trace, row=2, col=2)
 
     # ---- Axes ----
-    tree_x_range = [
-        -(tree_max_xy[0] * (TREE_X_MARGIN - 1)),
-        tree_max_xy[0] * TREE_X_MARGIN,
-    ]
+    tree_x_range = [-(tree_max_xy[0] * (TREE_X_MARGIN - 1)), tree_max_xy[0] * TREE_X_MARGIN]
     x_range = x_range if x_range is not None else x_limits
 
     # Tree X-axis (fixed)
@@ -1935,9 +1842,7 @@ def toggle_style(is_active, position="middle"):
         "cursor": "pointer",
         "border": f"{UI_TOGGLE_BORDER}px solid {COLORS['button_border']}",
         "borderRadius": radius,
-        "backgroundColor": (
-            COLORS["button_bg"] if is_active else COLORS["button_bg_inactive"]
-        ),
+        "backgroundColor": (COLORS["button_bg"] if is_active else COLORS["button_bg_inactive"]),
         "fontWeight": "600" if is_active else "normal",
         "color": UI_TOGGLE_COLOR_ACTIVE if is_active else UI_TOGGLE_COLOR_INACTIVE,
         "transition": "background-color 0.12s ease, color 0.12s ease",
@@ -2005,10 +1910,19 @@ def build_layout(
             dcc.Store(id="fold-store", data="both"),
             dcc.Store(id="colorscale-flip-store", data=False),
             dcc.Store(id="interval-count-store", data=0),
-            html.Div(id="keyboard-listener", tabIndex="0",
-                      style={"position": "fixed", "top": 0, "left": 0,
-                             "width": "100%", "height": "100%",
-                             "zIndex": -1, "opacity": 0}),
+            html.Div(
+                id="keyboard-listener",
+                tabIndex="0",
+                style={
+                    "position": "fixed",
+                    "top": 0,
+                    "left": 0,
+                    "width": "100%",
+                    "height": "100%",
+                    "zIndex": -1,
+                    "opacity": 0,
+                },
+            ),
             dcc.Store(id="keyboard-nav-store", data=0),
             dcc.Download(id="download-data"),
             dcc.Download(id="download-plot"),
@@ -2020,10 +1934,7 @@ def build_layout(
                         [
                             control_label("Query:"),
                             html.Button(
-                                "◀",
-                                id="prev-query-btn",
-                                n_clicks=0,
-                                style=nav_button_style("left"),
+                                "◀", id="prev-query-btn", n_clicks=0, style=nav_button_style("left")
                             ),
                             dcc.Dropdown(
                                 id="query-dropdown",
@@ -2056,19 +1967,13 @@ def build_layout(
                                             step=None,
                                             marks=make_slider_marks(dist_ths),
                                             value=dist_ths[0] if dist_ths else dmin,
-                                            tooltip={
-                                                "placement": "bottom",
-                                                "always_visible": True,
-                                            },
+                                            tooltip={"placement": "bottom", "always_visible": True},
                                             updatemode="mouseup",
                                             included=False,
                                             className="focus-slider",
                                         ),
                                         id="slider-focus-wrap",
-                                        style={
-                                            "minWidth": UI_SLIDER_MIN_WIDTH,
-                                            "flexShrink": 1,
-                                        },
+                                        style={"minWidth": UI_SLIDER_MIN_WIDTH, "flexShrink": 1},
                                     ),
                                     html.Div(
                                         dcc.RangeSlider(
@@ -2110,17 +2015,10 @@ def build_layout(
                                         style={"display": "flex", "marginLeft": 8},
                                     ),
                                 ],
-                                style={
-                                    "display": "flex",
-                                    "alignItems": "center",
-                                    "gap": 4,
-                                },
+                                style={"display": "flex", "alignItems": "center", "gap": 4},
                             ),
                         ],
-                        style={
-                            "display": "flex" if enum_only else "none",
-                            "alignItems": "center",
-                        },
+                        style={"display": "flex" if enum_only else "none", "alignItems": "center"},
                     ),
                     # Color-by toggle: dist / p-value / q-value (non-enum only)
                     html.Div(
@@ -2223,16 +2121,10 @@ def build_layout(
                                     marks={
                                         0: "1",
                                         -10: "10⁻¹⁰",
-                                        **{
-                                            v: "\u200b"
-                                            for v in [-1, -1.301, -2, -3, -4, -5, -7]
-                                        },
+                                        **{v: "\u200b" for v in [-1, -1.301, -2, -3, -4, -5, -7]},
                                     },
                                     value=0,
-                                    tooltip={
-                                        "placement": "bottom",
-                                        "always_visible": False,
-                                    },
+                                    tooltip={"placement": "bottom", "always_visible": False},
                                     updatemode="mouseup",
                                     included=True,
                                 ),
@@ -2281,9 +2173,7 @@ def build_layout(
                                             "full",
                                             id="full-btn",
                                             n_clicks=0,
-                                            style=toggle_style(
-                                                not initial_prune, "right"
-                                            ),
+                                            style=toggle_style(not initial_prune, "right"),
                                         ),
                                     ],
                                     style={"display": "flex", "marginLeft": 8},
@@ -2330,7 +2220,7 @@ def build_layout(
                             divider(),
                             control_label("Strand:"),
                             html.Button(
-                                "+ (closer)",
+                                "+",
                                 id="strand-plus-btn",
                                 n_clicks=0,
                                 style=toggle_style(False, "left"),
@@ -2342,7 +2232,7 @@ def build_layout(
                                 style=toggle_style(True, "middle"),
                             ),
                             html.Button(
-                                "- (farther)",
+                                "-",
                                 id="strand-minus-btn",
                                 n_clicks=0,
                                 style=toggle_style(False, "right"),
@@ -2382,10 +2272,7 @@ def build_layout(
                             divider(),
                             control_label("Export:"),
                             html.Button(
-                                "Data",
-                                id="export-btn",
-                                n_clicks=0,
-                                style=export_button_style(),
+                                "Data", id="export-btn", n_clicks=0, style=export_button_style()
                             ),
                             html.Span(
                                 "W",
@@ -2503,9 +2390,7 @@ def _make_toggle_callbacks(
         )
 
     @app.callback(
-        *outputs,
-        *[Input(bid, "n_clicks") for bid in button_ids],
-        prevent_initial_call=True,
+        *outputs, *[Input(bid, "n_clicks") for bid in button_ids], prevent_initial_call=True
     )
     def _toggle_callback(*clicks):
         triggered = ctx.triggered_id
@@ -2519,28 +2404,15 @@ def _make_toggle_callbacks(
             return default_value, None, None
         return default_value
 
-    @app.callback(
-        *[Output(bid, "style") for bid in button_ids], Input(store_id, "data")
-    )
+    @app.callback(*[Output(bid, "style") for bid in button_ids], Input(store_id, "data"))
     def _style_callback(current_value):
         n = len(button_ids)
-        positions = (
-            ["left"] + ["middle"] * (n - 2) + ["right"] if n > 2 else ["left", "right"]
-        )
-        return [
-            toggle_style(current_value == val, pos)
-            for val, pos in zip(values, positions)
-        ]
+        positions = ["left"] + ["middle"] * (n - 2) + ["right"] if n > 2 else ["left", "right"]
+        return [toggle_style(current_value == val, pos) for val, pos in zip(values, positions)]
 
 
 def _make_two_button_toggle(
-    app: Dash,
-    store_id: str,
-    btn_a: str,
-    btn_b: str,
-    val_a: str,
-    val_b: str,
-    default_a: bool = True,
+    app: Dash, store_id: str, btn_a: str, btn_b: str, val_a: str, val_b: str, default_a: bool = True
 ) -> None:
     """Register callbacks for a simple two-button toggle.
 
@@ -2554,21 +2426,13 @@ def _make_two_button_toggle(
         default_a: Whether first button is default active.
     """
 
-    @app.callback(
-        Output(store_id, "data"), Input(btn_a, "n_clicks"), Input(btn_b, "n_clicks")
-    )
+    @app.callback(Output(store_id, "data"), Input(btn_a, "n_clicks"), Input(btn_b, "n_clicks"))
     def _set_value(a_clicks, b_clicks):
         return val_b if ctx.triggered_id == btn_b else val_a
 
-    @app.callback(
-        Output(btn_a, "style"),
-        Output(btn_b, "style"),
-        Input(store_id, "data"),
-    )
+    @app.callback(Output(btn_a, "style"), Output(btn_b, "style"), Input(store_id, "data"))
     def _style(value):
-        return toggle_style(value == val_a, "left"), toggle_style(
-            value == val_b, "right"
-        )
+        return toggle_style(value == val_a, "left"), toggle_style(value == val_b, "right")
 
 
 # =============================================================================
@@ -2590,14 +2454,7 @@ def create_app(
     df_annot = load_annotations(annotation_path)
 
     if plot_mode == "legacy_enum":
-        required = {
-            "QUERY_ID",
-            "REF_ID",
-            "INTERVAL_START",
-            "INTERVAL_END",
-            "SEQ_LEN",
-            "DIST_TH",
-        }
+        required = {"QUERY_ID", "REF_ID", "INTERVAL_START", "INTERVAL_END", "SEQ_LEN", "DIST_TH"}
     elif plot_mode == "enum":
         required = {
             "QUERY_ID",
@@ -2668,9 +2525,7 @@ def create_app(
 
     full_df = add_tip_order(df, full_data["tip_order"])
     pruned_df = add_tip_order(df, pruned_data["tip_order"]) if has_pruned else full_df
-    query_df = (
-        add_tip_order(df, query_data["tip_order"]) if has_query_pruned else full_df
-    )
+    query_df = add_tip_order(df, query_data["tip_order"]) if has_query_pruned else full_df
 
     if enum_ui:
         dist_ths = tuple(get_distance_thresholds(df))
@@ -2684,18 +2539,11 @@ def create_app(
     seq_ids = get_sequence_identifiers(df)
     has_strand = has_informative_strand(df)
     has_is_rc = has_is_rc_column(df)
-    has_qvalue = (
-        "QVALUE" in df.columns
-        and (df["QVALUE"].notna() & np.isfinite(df["QVALUE"])).any()
-    )
+    has_qvalue = "QVALUE" in df.columns and (df["QVALUE"].notna() & np.isfinite(df["QVALUE"])).any()
 
     filter_full = make_cached_filter(full_df, enum_ui)
-    filter_pruned = (
-        make_cached_filter(pruned_df, enum_ui) if has_pruned else filter_full
-    )
-    filter_query = (
-        make_cached_filter(query_df, enum_ui) if has_query_pruned else filter_full
-    )
+    filter_pruned = make_cached_filter(pruned_df, enum_ui) if has_pruned else filter_full
+    filter_query = make_cached_filter(query_df, enum_ui) if has_query_pruned else filter_full
 
     app = Dash(__name__)
 
@@ -2806,12 +2654,7 @@ def create_app(
 
     # ---- Tree view toggle ----
     _make_two_button_toggle(
-        app,
-        "tree-view-store",
-        "phylogeny-btn",
-        "cladogram-btn",
-        "phylogeny",
-        "cladogram",
+        app, "tree-view-store", "phylogeny-btn", "cladogram-btn", "phylogeny", "cladogram"
     )
 
     # ---- Prune toggle ----
@@ -2881,10 +2724,7 @@ def create_app(
         reset_ranges=False,
     )
 
-    @app.callback(
-        Output("sig-filter-label", "children"),
-        Input("sig-metric-store", "data"),
-    )
+    @app.callback(Output("sig-filter-label", "children"), Input("sig-metric-store", "data"))
     def update_sig_label(metric):
         return "q \u2264" if metric == "q" else "p \u2264"
 
@@ -2909,10 +2749,7 @@ def create_app(
             return not current
         return current
 
-    @app.callback(
-        Output("flip-colorscale-btn", "style"),
-        Input("colorscale-flip-store", "data"),
-    )
+    @app.callback(Output("flip-colorscale-btn", "style"), Input("colorscale-flip-store", "data"))
     def style_flip(flip):
         return {
             **toggle_style(flip, "right"),
@@ -2964,9 +2801,7 @@ def create_app(
         """Return filtered dataframe for current filter state."""
         if enum_ui:
             if mode == "focus":
-                d = nearest_value(
-                    focus_val if focus_val is not None else dist_ths[0], dist_ths
-                )
+                d = nearest_value(focus_val if focus_val is not None else dist_ths[0], dist_ths)
                 d_lo = d_hi = d
             else:
                 if isinstance(overlap_val, (list, tuple)) and len(overlap_val) == 2:
@@ -2975,9 +2810,7 @@ def create_app(
                 else:
                     d_lo, d_hi = dist_ths[0], dist_ths[-1]
             direction = (
-                direction_val
-                if has_is_rc and direction_val and direction_val != "both"
-                else None
+                direction_val if has_is_rc and direction_val and direction_val != "both" else None
             )
             df_f = do_filter(seq_id, tuple(tip_order), d_hi, d_lo, direction)
             return df_f
@@ -3042,15 +2875,19 @@ def create_app(
         direction_val = direction if (enum_ui and has_is_rc) else None
 
         df_filt = _resolve_filter(
-            do_filter, seq_id, tip_order,
+            do_filter,
+            seq_id,
+            tip_order,
             strand_val=strand_val,
             direction_val=direction_val,
-            mode=mode, focus_val=focus_val, overlap_val=overlap_val,
-            sig_log=sig_log, sig_metric=sig_metric, fold_val=fold_val,
+            mode=mode,
+            focus_val=focus_val,
+            overlap_val=overlap_val,
+            sig_log=sig_log,
+            sig_metric=sig_metric,
+            fold_val=fold_val,
         )
-        bin_edges, colors = (
-            get_binned_colors(dist_ths, scheme) if enum_ui else (None, None)
-        )
+        bin_edges, colors = get_binned_colors(dist_ths, scheme) if enum_ui else (None, None)
 
         # Sequence length
         seq_len = get_seq_len(df_filt)
@@ -3060,9 +2897,7 @@ def create_app(
                     do_filter(seq_id, tuple(tip_order), dist_ths[-1], dist_ths[0], None)
                 )
             else:
-                seq_len = get_seq_len(
-                    do_filter(seq_id, tuple(tip_order), None)
-                )
+                seq_len = get_seq_len(do_filter(seq_id, tuple(tip_order), None))
         if not seq_len or seq_len <= 0:
             return go.Figure(), 0
 
@@ -3072,22 +2907,18 @@ def create_app(
         if y_range is not None:
             y_range = enforce_min_span(y_range, ZOOM_MIN_Y_SPAN, bounds=(0, n_tips - 1))
         if x_range is not None:
-            x_range = enforce_min_span(
-                x_range, min(ZOOM_MIN_X_SPAN, seq_len), bounds=(0, seq_len)
-            )
+            x_range = enforce_min_span(x_range, min(ZOOM_MIN_X_SPAN, seq_len), bounds=(0, seq_len))
 
         x_limits = [-AXIS_X_PAD, seq_len + AXIS_X_PAD]
         y_limits = [-AXIS_Y_PAD, n_tips - 1 + AXIS_Y_PAD]
 
-        layout = (
-            cur_data["clado_layout"]
-            if tree_mode == "cladogram"
-            else cur_data["phylo_layout"]
-        )
+        layout = cur_data["clado_layout"] if tree_mode == "cladogram" else cur_data["phylo_layout"]
 
-        n_intervals = int(
-            (df_filt["INTERVAL_START"] != df_filt["INTERVAL_END"]).sum()
-        ) if not df_filt.empty else 0
+        n_intervals = (
+            int((df_filt["INTERVAL_START"] != df_filt["INTERVAL_END"]).sum())
+            if not df_filt.empty
+            else 0
+        )
 
         fig = build_figure(
             layout[0],
@@ -3181,13 +3012,7 @@ def create_app(
         if x_rng is None:
             if enum_ui:
                 seq_len = get_seq_len(df_exp) or get_seq_len(
-                    do_filter(
-                        seq_id,
-                        tuple(cur_data["tip_order"]),
-                        dist_ths[-1],
-                        dist_ths[0],
-                        None,
-                    )
+                    do_filter(seq_id, tuple(cur_data["tip_order"]), dist_ths[-1], dist_ths[0], None)
                 )
             else:
                 seq_len = get_seq_len(df_exp) or get_seq_len(
@@ -3204,9 +3029,7 @@ def create_app(
 
         ref_to_y = {n: i for i, n in enumerate(cur_data["tip_order"])}
         df_exp["y_order"] = df_exp["REF_ID"].map(ref_to_y)
-        df_exp = df_exp.sort_values(["y_order", "INTERVAL_START"]).drop(
-            columns=["y_order", "y"]
-        )
+        df_exp = df_exp.sort_values(["y_order", "INTERVAL_START"]).drop(columns=["y_order", "y"])
 
         tag = ""
         if enum_ui and has_is_rc and direction and direction != "both":
@@ -3242,9 +3065,7 @@ def create_app(
         img_bytes = pio.to_image(export_fig, format="pdf", width=w, height=h, scale=2)
         name = seq_id or "plot"
         return dict(
-            content=base64.b64encode(img_bytes).decode(),
-            filename=f"{name}.pdf",
-            base64=True,
+            content=base64.b64encode(img_bytes).decode(), filename=f"{name}.pdf", base64=True
         )
 
     return app
@@ -3274,16 +3095,10 @@ def parse_args():
     )
     p.add_argument("--tree", "-t", required=True, help="Path to Newick tree file")
     p.add_argument(
-        "--query",
-        "-q",
-        default=None,
-        help="Default query leaf name (first sequence if omitted)",
+        "--query", "-q", default=None, help="Default query leaf name (first sequence if omitted)"
     )
     p.add_argument(
-        "--annotation",
-        "-a",
-        default=None,
-        help="Annotation file: GFF3, GTF, or custom TSV",
+        "--annotation", "-a", default=None, help="Annotation file: GFF3, GTF, or custom TSV"
     )
     p.add_argument(
         "--enum-only",
@@ -3294,16 +3109,10 @@ def parse_args():
     )
     p.add_argument("--port", "-p", type=int, default=8080, help="Port to serve on")
     p.add_argument(
-        "--host",
-        default="127.0.0.1",
-        help="Host to bind to (use 0.0.0.0 to expose on LAN)",
+        "--host", default="127.0.0.1", help="Host to bind to (use 0.0.0.0 to expose on LAN)"
     )
-    p.add_argument(
-        "--open", action="store_true", help="Open browser automatically after startup"
-    )
-    p.add_argument(
-        "--debug", action="store_true", help="Enable Dash debug/hot-reload mode"
-    )
+    p.add_argument("--open", action="store_true", help="Open browser automatically after startup")
+    p.add_argument("--debug", action="store_true", help="Enable Dash debug/hot-reload mode")
     p.add_argument("--version", action="version", version=f"%(prog)s {version}")
     return p.parse_args()
 

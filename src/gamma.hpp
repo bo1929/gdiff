@@ -7,6 +7,7 @@
 #include <limits>
 #include <utility>
 #include <vector>
+// #include <iostream> // Use for debugging
 #include <boost/math/distributions/gamma.hpp>
 
 // Gamma distribution model.
@@ -27,7 +28,7 @@ public:
 
   struct Config
   {
-    std::array<double, 3> quantile_probs = {0.25, 0.50, 0.75};
+    std::array<double, 3> quantile_probs = {0.2, 0.4, 0.6};
 
     // Nelder-Mead
     int max_niter = 200;    // iteration cap
@@ -100,6 +101,7 @@ public:
 
     const double prob = gamma_cdf(x, gp.shape, gp.scale);
     if (!std::isfinite(prob)) return {NaN, NaN};
+    // std::cout << x << " " << gp.shape << " " << gp.scale << " " << prob << std::endl;
 
     auto F = [&](double t) { return gamma_cdf(t, gp.shape, gp.scale); };
     if (!(upper > lower) || F(upper) < 0.5) return {prob, NaN};
@@ -149,14 +151,14 @@ private:
 
   // Compute interpolated empirical quantiles.
   [[nodiscard]] static std::array<double, 3>
-  compute_quantiles(const std::vector<double>& x_v, const std::array<double, 3>& probs)
+  compute_quantiles(const std::vector<double>& x_v, const std::array<double, 3>& quantiles_v)
   {
     std::vector<double> sorted = x_v;
     std::sort(sorted.begin(), sorted.end());
     const double last = static_cast<double>(sorted.size() - 1);
     std::array<double, 3> q{};
-    for (size_t k = 0; k < probs.size(); ++k) {
-      const double ix = probs[k] * last;
+    for (size_t k = 0; k < quantiles_v.size(); ++k) {
+      const double ix = quantiles_v[k] * last;
       const size_t lo = static_cast<size_t>(ix);
       const size_t hi = std::min(lo + 1, sorted.size() - 1);
       const double frac = ix - static_cast<double>(lo);

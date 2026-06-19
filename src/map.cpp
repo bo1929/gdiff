@@ -632,9 +632,11 @@ template<typename T>
 void QIE<T>::sample_null_pool(DIM<T>& dim, uint64_t tau_eff)
 {
   const uint64_t nbins_q = dim.get_nbins();
-  const uint64_t win_len = tau_eff + 1; // fixed window length in bins
+  const uint64_t win_len = tau_eff + 1; // minimum window length in bins
   if (nbins_q < win_len) return;
 
+  const uint64_t max_nconcat = 10;
+  const uint64_t max_len = std::min<uint64_t>(max_nconcat * win_len, nbins_q);
   const uint64_t max_nwindows = nbins_q / win_len;
   const uint64_t nsamples = std::min<uint64_t>(params.sample_size, max_nwindows);
 
@@ -643,11 +645,34 @@ void QIE<T>::sample_null_pool(DIM<T>& dim, uint64_t tau_eff)
 
   for (uint64_t s = 0; s < nsamples; ++s) {
     const uint64_t x = rvstart(gen);
-    const uint64_t a_bin = x + 1;
-    const uint64_t b_bin = x + win_len + 1;
+    uint64_t a_bin = x + 1;
+    uint64_t b_bin = x + win_len + 1;
 
     uint64_t u, t;
     dim.extract_histogram(a_bin - 1, b_bin - 1, v, u, t);
+
+    bool right = true;
+    while (t == 0 && (b_bin - a_bin) < max_len) {
+      const uint64_t exlen = std::min(win_len, max_len - (b_bin - a_bin));
+      if (exlen == 0) break;
+      bool concat = false;
+      if (right && b_bin + exlen <= nbins_q + 1) {
+        b_bin += exlen; // extend right
+        concat = true;
+      } else if (a_bin > exlen) {
+        a_bin -= exlen; // else extend left
+        concat = true;
+      } else if (b_bin + exlen <= nbins_q + 1) {
+        b_bin += exlen; // if blocked, try right regardless
+        concat = true;
+      }
+      if (!concat) break; // hit a boundary
+
+      dim.extract_histogram(a_bin - 1, b_bin - 1, v, u, t);
+      right = !right; // alternate sides so growth remains symmetric
+    }
+    if (t == 0) continue;
+
     double d = llhf->mle(v.data(), u);
     double I = llhf->compute_fisher_info(d);
     d = validate_distance(d);
@@ -766,11 +791,13 @@ xy_t QIE<T>::score_gamma(const record_t& r, const vec<xy_t>& samples_v) const
   d_v.reserve(samples_v.size());
   for (const auto& s : samples_v) {
     if (const double d = validate_distance(s.first); std::isfinite(d)) {
+      // std::cout << r.bix << " " << r.seq_iv.a << " " << r.seq_iv.b << " " << d << std::endl;
       d_v.push_back(d);
     }
   }
   auto result = GammaModel::score_from_samples(d_obs, d_v, d_eps, d_ub - d_eps);
   if (std::isfinite(result.second)) result.second = validate_distance(result.second);
+  // std::cout << r.bix << " " << r.seq_iv.a << " " << r.seq_iv.b << " " << result.first << ","<< result.second << std::endl;
   return result;
 }
 
