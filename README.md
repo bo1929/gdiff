@@ -69,7 +69,7 @@ QUERY_ID  SEQ_LEN  INTERVAL_START  INTERVAL_END  STRAND  IS_RC  REF_ID  DIST  MA
 An example row:
 
 ```
-read1  5200  120  3041  +  ref_A  0.04  1  (0, 0.05)  0.06  -0.02  0.05  0.003  0.8  0.012
+contig1  5200  120  3041  +  ref_A  0.04  1  (0, 0.05)  0.06  -0.02  0.05  0.003  0.8  0.012
 ```
 
 | Column | Meaning |
