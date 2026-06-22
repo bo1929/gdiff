@@ -59,8 +59,7 @@ QIE<T>::QIE(const params_t<T>& params,
     std::sort(sthix_v.begin(), sthix_v.end(), [&](size_t a, size_t b) {
       const double va = std::abs(at(llhf->get_extrema(), a));
       const double vb = std::abs(at(llhf->get_extrema(), b));
-      if (va != vb) return va < vb;
-      return at(llhf->get_sign(), a) > at(llhf->get_sign(), b); // positive first
+      return va < vb;
     });
   }
   for (size_t ix : sthix_v) {
@@ -69,6 +68,8 @@ QIE<T>::QIE(const params_t<T>& params,
     else
       gtix_v.push_back(ix);
   }
+  // Start from the larger absolute value.
+  std::reverse(gtix_v.begin(), gtix_v.end());
   const uint64_t u64m = std::numeric_limits<uint64_t>::max();
   mask_lr = ((u64m >> (64 - k)) << 32) + ((u64m << 32) >> (64 - k));
   mask_bp = u64m >> ((32 - k) * 2);
@@ -758,10 +759,10 @@ void QIE<T>::test_significance(const uint64_t sample_size)
 {
   vec<xy_t> rsample_v;
   for (auto& r : records_v) {
-    if (r.is_intact()) {
-      warn_pmsg(qid_batch[r.bix], "has a full length interval; skipping significance test");
-      continue;
-    }
+    // if (r.is_intact()) {
+    //   warn_pmsg(qid_batch[r.bix], "has a full length interval; skipping significance test");
+    //   continue;
+    // }
 
     filter_sample(r, rsample_v, sample_size);
 
