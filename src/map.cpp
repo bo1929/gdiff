@@ -1,7 +1,14 @@
 #include "map.hpp"
+#include <array>
 #include <boost/math/tools/minima.hpp>
 
 namespace {
+  struct pv_t
+  {
+    uint64_t pos;
+    double val;
+  };
+
   template<typename T>
   inline double at(T v, const size_t ix)
   {
@@ -50,26 +57,6 @@ QIE<T>::QIE(const params_t<T>& params,
   , m(lshf->get_m())
 {
   llhf = std::make_shared<LLH<T>>(k, h, sketch->get_rho(), params.hdist_th, params.dist_th);
-  // Precompute sorted threshold order based on the absolute value, positive before negative if tied.
-  if constexpr (std::is_same_v<T, double>) {
-    sthix_v = {0};
-  } else {
-    for (size_t ti = 0; ti < WIDTH; ++ti)
-      sthix_v.push_back(ti);
-    std::sort(sthix_v.begin(), sthix_v.end(), [&](size_t a, size_t b) {
-      const double va = std::abs(at(llhf->get_extrema(), a));
-      const double vb = std::abs(at(llhf->get_extrema(), b));
-      return va < vb;
-    });
-  }
-  for (size_t ix : sthix_v) {
-    if (at(llhf->get_sign(), ix) > 0)
-      ltix_v.push_back(ix);
-    else
-      gtix_v.push_back(ix);
-  }
-  // Start from the larger absolute value.
-  std::reverse(gtix_v.begin(), gtix_v.end());
   const uint64_t u64m = std::numeric_limits<uint64_t>::max();
   mask_lr = ((u64m >> (64 - k)) << 32) + ((u64m << 32) >> (64 - k));
   mask_bp = u64m >> ((32 - k) * 2);
@@ -116,13 +103,30 @@ void QIE<T>::map_sequences(std::ostream& sout, const str& rid)
     const uint64_t tau_eff = std::min(params.tau_bin, nbins) - 1;
     const size_t srprev = records_v.size(); // record index before this query
 
-    // Extract intervals for all thresholds.
+    // Build prefix sums/histograms; d_q chooses per-threshold signs before extrema_scan.
     for (auto* dim : {&dim_fw, &dim_rc}) {
       dim->inclusive_scan();
+      if (!coordinates_only) dim->compute_prefhistsum();
+    }
+
+    // Strand-wide MLE distances.
+    double d_q_fw = nanx(), d_q_rc = nanx(), d_diff = nanx();
+    vec<uint64_t> v_q_fw, v_q_rc;
+    uint64_t u_q_fw = 0, u_q_rc = 0, t_q = 0;
+    dim_fw.complete_histogram(v_q_fw, u_q_fw, t_q);
+    dim_rc.complete_histogram(v_q_rc, u_q_rc, t_q);
+    d_q_fw = llhf->mle(v_q_fw.data(), u_q_fw);
+    d_q_rc = llhf->mle(v_q_rc.data(), u_q_rc);
+    d_diff = strand_diff(d_q_fw, d_q_rc);
+    d_q_fw = validate_distance(d_q_fw);
+    d_q_rc = validate_distance(d_q_rc);
+
+    // Determine direction per threshold, then signed extrema for extraction.
+    dim_fw.set_query_distance(d_q_fw);
+    dim_rc.set_query_distance(d_q_rc);
+
+    for (auto* dim : {&dim_fw, &dim_rc}) {
       dim->extrema_scan();
-      if (!coordinates_only) {
-        dim->compute_prefhistsum();
-      }
     }
 
     if (enum_only) {
@@ -131,17 +135,8 @@ void QIE<T>::map_sequences(std::ostream& sout, const str& rid)
       if (coordinates_only) continue; // skip MLE or significance
     }
 
-    // Compute the per-query MLE on each strand.
-    vec<uint64_t> v_q_fw, v_q_rc;
-    uint64_t u_q_fw = 0, u_q_rc = 0, t_q;
-    dim_fw.extract_histogram(0, nbins, v_q_fw, u_q_fw, t_q);
-    dim_rc.extract_histogram(0, nbins, v_q_rc, u_q_rc, t_q);
-    const double d_q_fw = llhf->mle(v_q_fw.data(), u_q_fw);
-    const double d_q_rc = llhf->mle(v_q_rc.data(), u_q_rc);
-    const double d_diff = strand_diff(d_q_fw, d_q_rc);
-
     // The lower-distance strand is the reference: rc when the difference > 0, else fw.
-    const bool is_rc = !std::isnan(d_q_rc) && (std::isnan(d_q_fw) || d_q_rc < d_q_fw);
+    const bool is_rc = (!std::isnan(d_diff)) && d_diff > 0.0;
     if (!skip_test) sample_null_pool(is_rc ? dim_rc : dim_fw, tau_eff);
 
     if (!enum_only) {
@@ -173,13 +168,83 @@ DIM<T>::DIM(const params_t<T>& params, const llh_sptr_t<T>& llhf, uint64_t nbins
 {
   fdc_v.resize(nbins); // Alternative?: fdc_v.reserve(nbins);
   sdc_v.resize(nbins); // Alternative?: sdc_v.reserve(nbins);
+  thneg_v.fill(false);
+  thrank_v.resize(WIDTH);
+  for (size_t i = 0; i < WIDTH; ++i)
+    thrank_v[i] = i;
   if (keep_hist) {
-    // Note that aggregate_mer() accumulates into rows 1 to nbins
-    // At the end, compute_prefhistsum() converts in-place
+    // Note that aggregate_mer() accumulates into rows 1 to nbins.
+    // At the end, compute_prefhistsum() converts in-place.
     hdisthist_v.assign((nbins + 1) * (params.hdist_th + 1), 0);
-    // First delta (HD threshold) + 1 values are zeros, same layout as fdps_v/sdps_v
+    // First delta (HD threshold) + 1 values are zeros, same layout as fdps_v and sdps_v.
+  } else {
+    // Otherwise, just keep a global histogram for the query.
+    hdisthist_v.assign(hdist_bound + 1, 0);
   }
 }
+
+template<typename T>
+void DIM<T>::set_query_distance(const double d_q)
+{ // {{{ OK
+  const bool is_valid = std::isfinite(d_q);
+
+  if constexpr (std::is_same_v<T, double>) {
+    const double t = params.dist_th;
+    thneg_v.front() = is_valid && t > d_q;
+    thrank_v = {0};
+  } else {
+    arr<vi_t, WIDTH> tp;
+    for (size_t i = 0; i < WIDTH; ++i) {
+      const double t = at(params.dist_th, i);
+      thneg_v[i] = is_valid && t > d_q;
+      tp[i] = {t, i};
+    }
+
+    if (!is_valid) {
+      std::sort(tp.begin(), tp.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+    } else {
+      std::sort(tp.begin(), tp.end(), [&](const auto& a, const auto& b) {
+        const double sa = a.first <= d_q ? a.first : (2.0 * d_ub - a.first);
+        const double sb = b.first <= d_q ? b.first : (2.0 * d_ub - b.first);
+        return sa < sb;
+      });
+    }
+
+    thrank_v.resize(WIDTH);
+    for (size_t i = 0; i < WIDTH; ++i)
+      thrank_v[i] = tp[i].second;
+  }
+
+  apply_threshold_signs();
+} // }}}
+
+template<typename T>
+void DIM<T>::apply_threshold_signs()
+{ // {{{ OK
+  // Flip the sign of fdps_v lanes whose threshold is on the opposite side of d_q.
+  if constexpr (std::is_same_v<T, double>) {
+    if (!thneg_v.front()) return;
+    for (uint64_t i = 1; i < fdps_v.size(); ++i) {
+      fdps_v[i] = -fdps_v[i];
+    }
+  } else {
+    alignas(64) double xor_mask[WIDTH];
+    bool flip_sign = false;
+    for (size_t i = 0; i < WIDTH; ++i) {
+      xor_mask[i] = thneg_v[i] ? -0.0 : 0.0;
+      if (thneg_v[i]) {
+        flip_sign = true;
+      }
+    }
+    if (!flip_sign) return;
+    const simde__m512d s = simde_mm512_loadu_pd(xor_mask);
+    for (uint64_t i = 1; i < fdps_v.size(); ++i) {
+      simde__m512d v = simde_mm512_loadu_pd(fdps_v[i].data());
+      v = simde_mm512_xor_pd(v, s);
+      simde_mm512_storeu_pd(fdps_v[i].data(), v);
+    }
+  }
+} // }}}
 
 template<typename T>
 void DIM<T>::aggregate_mer(uint32_t hdist_min, uint64_t i)
@@ -187,7 +252,11 @@ void DIM<T>::aggregate_mer(uint32_t hdist_min, uint64_t i)
   // The bin index is i, multiple k-mers in the same bin accumulate here
   if (hdist_min <= params.hdist_th) {
     t_q++;
-    if (keep_hist) hdisthist_v[((i + 1) * (params.hdist_th + 1)) + hdist_min]++;
+    if (keep_hist) {
+      hdisthist_v[((i + 1) * (params.hdist_th + 1)) + hdist_min]++;
+    } else {
+      hdisthist_v[hdist_min]++;
+    }
     add_to(sdc_v[i], llhf->get_sdc(hdist_min));
     add_to(fdc_v[i], llhf->get_fdc(hdist_min));
   } else {
@@ -199,22 +268,22 @@ void DIM<T>::aggregate_mer(uint32_t hdist_min, uint64_t i)
 
 template<typename T>
 void DIM<T>::release_accumulators() noexcept
-{
+{ // {{{ OK: (probably not quite needed)
   fdc_v.clear();
   fdc_v.shrink_to_fit();
   sdc_v.clear();
   sdc_v.shrink_to_fit();
-}
+} // }}}
 
 template<typename T>
 interval_t DIM<T>::get_interval(uint64_t i, size_t ix) const
-{
+{ // {{{ OK: (probably not needed)
   if ((ix < intervals_v.size()) && (i < intervals_v[ix].size())) {
     return intervals_v[ix][i];
   } else {
     return {nbins, nbins};
   }
-}
+} // }}}
 
 template<typename T>
 void QIE<T>::search_mers(const char* cseq, uint64_t len, DIM<T>& dim_fw, DIM<T>& dim_rc)
@@ -263,7 +332,7 @@ void QIE<T>::search_mers(const char* cseq, uint64_t len, DIM<T>& dim_fw, DIM<T>&
       sketch->prefetch_offset_enc(off_rc);                                  // Phase 3
       uint32_t hdist_rc;
       if (sketch->scan_bucket(off_rc, enc_lr_rc, hdist_rc)) {
-        dim_rc.aggregate_mer(hdist_rc, bin_j);
+        dim_fw.aggregate_mer(hdist_rc, bin_j);
       }
     }
 #else
@@ -291,7 +360,7 @@ void QIE<T>::search_mers(const char* cseq, uint64_t len, DIM<T>& dim_fw, DIM<T>&
 
 template<typename T>
 void DIM<T>::inclusive_scan()
-{
+{ // {{{ OK
   assert(nbins > 0);
   const uint64_t s = nbins + 1;
 
@@ -319,27 +388,27 @@ void DIM<T>::inclusive_scan()
       simde_mm512_storeu_pd(sdps_v[i].data(), sdps_acc);
     }
   }
-}
+} // }}}
 
 template<typename T>
 void DIM<T>::extrema_scan()
-{
+{ // {{{ OK
   const uint64_t s = nbins + 1;
   fdpmax_v.resize(s + 1);
   fdsmin_v.resize(s + 1);
 
   if constexpr (std::is_same_v<T, double>) {
-    fdpmax_v[0] = -std::numeric_limits<double>::max();
-    fdsmin_v[0] = std::numeric_limits<double>::max();
+    fdpmax_v[0] = ninf();
+    fdsmin_v[0] = pinf();
     std::inclusive_scan(
       fdps_v.begin() + 1, fdps_v.end(), fdpmax_v.begin() + 1, [](double a, double b) { return std::max(a, b); });
     std::inclusive_scan(
       fdps_v.rbegin(), fdps_v.rend() - 1, fdsmin_v.rbegin() + 1, [](double a, double b) { return std::min(a, b); });
-    fdpmax_v[s] = std::numeric_limits<double>::max();
-    fdsmin_v[s] = -std::numeric_limits<double>::max();
+    fdpmax_v[s] = pinf();
+    fdsmin_v[s] = ninf();
   } else {
-    fdpmax_v[0].fill(-std::numeric_limits<double>::max());
-    fdsmin_v[0].fill(std::numeric_limits<double>::max());
+    fdpmax_v[0].fill(ninf());
+    fdsmin_v[0].fill(pinf());
     simde__m512d fdpmax_acc = simde_mm512_loadu_pd(fdpmax_v[0].data());
     simde__m512d fdsmin_acc = simde_mm512_loadu_pd(fdsmin_v[0].data());
     for (uint64_t i = 1; i < s; ++i) {
@@ -350,12 +419,12 @@ void DIM<T>::extrema_scan()
       simde_mm512_storeu_pd(fdpmax_v[i].data(), fdpmax_acc);
       simde_mm512_storeu_pd(fdsmin_v[s - i].data(), fdsmin_acc);
     }
-    fdpmax_v[s].fill(std::numeric_limits<double>::max());
-    fdsmin_v[s].fill(-std::numeric_limits<double>::max());
+    fdpmax_v[s].fill(pinf());
+    fdsmin_v[s].fill(ninf());
   }
-}
+} // }}}
 
-// Find maximal intervals [a, b] within [lix, rix] where the prefix sum drops below a prior maximum
+// Find maximal intervals [a, b] within [lix, rix] where the prefix sum drops below a prior maximum.
 //
 // Conditions for a valid interval (a, b):
 //   1. a is a strict prefix maximum:  fdps[a] > fdpmax[a-1]
@@ -400,7 +469,7 @@ void DIM<T>::extract_intervals_mx(const uint64_t tau, const uint64_t lix, const 
 
 template<typename T>
 void DIM<T>::extract_intervals_sx(const uint64_t tau, const uint64_t lix, const uint64_t rix, const size_t ix)
-{
+{ // {{{ ~OK: more or less identical to mx
   // Every valid right endpoint b* is a suffix minimum of fdps_v
   // Suffix minimum values are strictly increasing left-to-right,
   // Hence, the pointer into the list is monotone across record highs which is O(k) total
@@ -410,27 +479,22 @@ void DIM<T>::extract_intervals_sx(const uint64_t tau, const uint64_t lix, const 
     return;
   }
 
-  struct xy_t
+  vec<pv_t> pv_v;
   {
-    uint64_t pos;
-    double val;
-  };
-  vec<xy_t> xy_v;
-  {
-    double y_min = std::numeric_limits<double>::max();
+    double y_min = pinf();
     for (uint64_t j = rix; j >= lix; --j) {
       const double v = at(fdps_v[j], ix);
       if (v < y_min) {
         y_min = v;
-        xy_v.push_back({j, v});
+        pv_v.push_back({j, v});
       }
     }
-    std::reverse(xy_v.begin(), xy_v.end());
+    std::reverse(pv_v.begin(), pv_v.end());
   }
-  if (xy_v.empty()) return;
+  if (pv_v.empty()) return;
 
   size_t yix_min = 0;
-  double running_max = -std::numeric_limits<double>::max();
+  double running_max = ninf();
   uint64_t b_prev = std::numeric_limits<uint64_t>::max();
 
   for (uint64_t a = lix; a <= rix; ++a) {
@@ -441,14 +505,14 @@ void DIM<T>::extract_intervals_sx(const uint64_t tau, const uint64_t lix, const 
     if (fdpmax_a >= fdps_a) continue; // Skip if a is not a record high
 
     // Advance yix_min to the last suffix minimum with val < fdps_a
-    while (yix_min + 1 < xy_v.size() && xy_v[yix_min + 1].val < fdps_a) {
+    while (yix_min + 1 < pv_v.size() && pv_v[yix_min + 1].val < fdps_a) {
       ++yix_min;
     }
     // Skip if no valid right endpoint with val < fdps_a
-    if (xy_v[yix_min].val >= fdps_a) continue;
+    if (pv_v[yix_min].val >= fdps_a) continue;
 
-    const uint64_t b_star = xy_v[yix_min].pos;
-    const double fdps_bstar = xy_v[yix_min].val;
+    const uint64_t b_star = pv_v[yix_min].pos;
+    const double fdps_bstar = pv_v[yix_min].val;
 
     if (b_star < a + tau) continue; // Skip if no valid right endpoint in [a+tau, nbins]
     if (b_star == b_prev) continue; // Skip if b* was already claimed
@@ -458,11 +522,11 @@ void DIM<T>::extract_intervals_sx(const uint64_t tau, const uint64_t lix, const 
       b_prev = b_star;
     }
   }
-}
+} // }}}
 
 template<typename T>
 void DIM<T>::expand_intervals(const double chisq_th, const size_t ix)
-{
+{ // {{{ OK
   auto& iv_ix = intervals_v[ix];
   if (iv_ix.empty()) return;
 
@@ -493,11 +557,11 @@ void DIM<T>::expand_intervals(const double chisq_th, const size_t ix)
 
   iv_ix[w++] = {ap, bp}; // 1-based inclusive coordinates
   iv_ix.resize(w);
-}
+} // }}}
 
 template<typename T>
 void DIM<T>::compute_prefhistsum()
-{
+{ // {{{ OK
   if (!keep_hist) return;
   const uint32_t W = params.hdist_th + 1;
   // Add each row to the previous in-place to get prefix sums
@@ -506,11 +570,23 @@ void DIM<T>::compute_prefhistsum()
       hdisthist_v[((i + 1) * W) + d] += hdisthist_v[(i * W) + d];
     }
   }
+} // }}}
+
+template<typename T>
+void DIM<T>::complete_histogram(vec<uint64_t>& v, uint64_t& u, uint64_t& t) const
+{
+  if (keep_hist) {
+    extract_histogram(0, nbins, v, u, t);
+  } else {
+    v = hdisthist_v;
+    u = u_q; // explicit HD misses only; omits unscanned positions (e.g. Ns)
+    t = t_q;
+  }
 }
 
 template<typename T>
 void DIM<T>::extract_histogram(uint64_t a, uint64_t b, vec<uint64_t>& v, uint64_t& u, uint64_t& t) const
-{
+{ // {{{ ~OK (TODO: counting misses or Ns)
   const uint32_t W = params.hdist_th + 1;
   v.resize(hdist_bound + 1);
   // v.assign(hdist_bound + 1, 0);
@@ -528,14 +604,14 @@ void DIM<T>::extract_histogram(uint64_t a, uint64_t b, vec<uint64_t>& v, uint64_
   t = simde_mm_extract_epi64(s2, 0) + simde_mm_extract_epi64(s2, 1);
   const uint64_t mers_b = std::min(b << params.bin_shift, nmers);
   const uint64_t mers_a = std::min(a << params.bin_shift, nmers);
-  // TODO: The miss count (u) is based on all positions in [a,b), but search_mers() skips Ns.
+  // The miss count (u) is based on all positions in [a,b), but search_mers() skips Ns.
   u = (mers_b - mers_a) - t;
-  // TODO: A better solution is needed for Ns in this case, skipping does not work.
-}
+  // A better solution is needed for Ns in this case, skipping does not work.
+} // }}}
 
 template<typename T>
 void QIE<T>::extract_simple_intervals(DIM<T>& dim, bool is_rc, uint64_t tau_eff)
-{
+{ // {{{ ~OK
   if constexpr (std::is_same_v<T, double>) {
     dim.extract_intervals_mx(tau_eff, 1, nbins);
     dim.expand_intervals(params.chisq);
@@ -549,65 +625,67 @@ void QIE<T>::extract_simple_intervals(DIM<T>& dim, bool is_rc, uint64_t tau_eff)
         emit_record(dim, iv.a, iv.b + 1, ix, is_rc);
     }
   }
-}
+} // }}}
 
 template<typename T>
 void QIE<T>::extract_ordered_intervals(DIM<T>& dim, bool is_rc, uint64_t tau_eff)
-{
+{ // {{{ ~OK
   const uint64_t nbins = dim.get_nbins();
   bp_v.clear();
 
-  for (const auto* ix_v : {&ltix_v, &gtix_v}) {
-    if (ix_v->empty()) continue;
+  const auto& thrank = dim.get_thrank();
+  if (thrank.empty()) return;
 
-    const size_t sbprev = bp_v.size();
+  size_t sbprev = 0;
+  auto merge_from = [&](size_t start) {
+    if (bp_v.size() <= start) return;
+    auto nit = std::next(bp_v.begin(), start);
+    auto cmp = [](const bp_t& a, const bp_t& b) { return a.a_bin < b.a_bin; };
+    std::sort(nit, bp_v.end(), cmp);
+    std::inplace_merge(bp_v.begin(), nit, bp_v.end(), cmp);
+  };
 
-    auto merge_bp = [&]() { // Merge newly appended entries in a sorted manner.
-      if (bp_v.size() <= sbprev) return;
-      auto nit = std::next(bp_v.begin(), sbprev);
-      auto cmp = [](const bp_t& a, const bp_t& b) { return a.a_bin < b.a_bin; };
-      std::sort(nit, bp_v.end(), cmp);
-      std::inplace_merge(bp_v.begin(), nit, bp_v.end(), cmp);
-    };
+  for (size_t ix : thrank) {
+    merge_from(sbprev);
 
-    for (size_t ix : *ix_v) {
-      merge_bp();
+    uint64_t prev = 1;
+    // Find gaps between existing intervals and extract new ones.
+    for (const auto& s : bp_v) {
+      if (s.a_bin >= prev + tau_eff + 1) dim.extract_intervals_mx(tau_eff, prev, s.a_bin - 1, ix);
+      prev = std::max(prev, s.b_bin);
+    }
+    if (nbins >= prev + tau_eff) {
+      dim.extract_intervals_mx(tau_eff, prev, nbins, ix);
+    }
+    dim.expand_intervals(params.chisq, ix);
 
-      uint64_t prev = 1;
-      // Find gaps between existing intervals and extract new ones.
-      for (const auto& s : bp_v) {
-        if (s.a_bin >= prev + tau_eff + 1) dim.extract_intervals_mx(tau_eff, prev, s.a_bin - 1, ix);
-        prev = std::max(prev, s.b_bin);
-      }
-      if (nbins >= prev + tau_eff) {
-        dim.extract_intervals_mx(tau_eff, prev, nbins, ix);
-      }
-      dim.expand_intervals(params.chisq, ix);
-
-      for (const auto& iv : dim.get_intervals(ix))
-        bp_v.push_back({iv.a, iv.b + 1, ix});
+    const auto& iv_v = dim.get_intervals(ix);
+    for (const auto& iv : iv_v) {
+      bp_v.push_back({iv.a, iv.b + 1, ix});
     }
 
-    merge_bp();
+    sbprev = bp_v.size();
   }
+  merge_from(sbprev);
 
   if (bp_v.empty()) {
     // No intervals extracted; report the full query.
-    // emit_record(dim, 1, nbins + 1, size_t(-1), is_rc);
+    emit_record(dim, 1, nbins + 1, size_t(-1), is_rc);
   } else {
     // uint64_t prev = 1;
     for (const auto& s : bp_v) {
+      // TODO: Is full segmentation desired? Even when they are too short?
       // if (s.a_bin > prev) emit_record(dim, prev, s.a_bin, size_t(-1), is_rc);
       emit_record(dim, s.a_bin, s.b_bin, s.ix, is_rc);
       // prev = s.b_bin;
     }
-    // if (prev <= nbins) emit_record(dim, prev, nbins + 1, size_t(-1), is_rc);
+    //if (prev <= nbins) emit_record(dim, prev, nbins + 1, size_t(-1), is_rc);
   }
-}
+} // }}}
 
 template<typename T>
 void QIE<T>::emit_record(DIM<T>& dim, uint64_t a_bin, uint64_t b_bin, size_t th_ix, bool is_rc)
-{
+{ // {{{ OK
   const uint64_t L = enmers + k - 1;
   const bool is_last = (b_bin == dim.get_nbins() + 1);
 
@@ -624,14 +702,14 @@ void QIE<T>::emit_record(DIM<T>& dim, uint64_t a_bin, uint64_t b_bin, size_t th_
 
   const interval_t bin_iv{a_bin, b_bin};
   const interval_t seq_iv = get_coordinates(bin_iv, params.bin_shift, enmers, k, is_last);
-  assert(seq_iv.a < seq_iv.b);
+  // assert(seq_iv.a < seq_iv.b);
 
   records_v.emplace_back(bix, L, seq_iv, bin_iv, is_rc, d, I, th_ix);
-}
+} // }}}
 
 template<typename T>
 void QIE<T>::sample_null_pool(DIM<T>& dim, uint64_t tau_eff)
-{
+{ // {{{ ???
   const uint64_t nbins_q = dim.get_nbins();
   const uint64_t win_len = tau_eff + 1; // minimum window length in bins
   if (nbins_q < win_len) return;
@@ -677,13 +755,13 @@ void QIE<T>::sample_null_pool(DIM<T>& dim, uint64_t tau_eff)
     double d = llhf->mle(v.data(), u);
     double I = llhf->compute_fisher_info(d);
     d = validate_distance(d);
-    if (std::isfinite(d) && std::isfinite(I)) null_v.push_back({d, I, bix, {a_bin, b_bin}});
+    if (std::isfinite(d) && std::isfinite(I)) samples_v.push_back({d, I, bix, {a_bin, b_bin}});
   }
-}
+} // }}}
 
 template<typename T>
-bool QIE<T>::sample_metropolis_hastings(const xy_t& init)
-{
+bool QIE<T>::sample_metropolis_hastings(const xy_t& init, vec<xy_t>& di_v)
+{ // {{{ ???
   // Metropolis-Hastings posterior draws kept (S) and burn-in iterations (B) per null window.
   bool is_valid = true;
   // Calculates the negative log-likelihood of the current distance
@@ -695,7 +773,7 @@ bool QIE<T>::sample_metropolis_hastings(const xy_t& init)
 
   std::uniform_real_distribution<double> ruv(0, 1);
 
-  samples_v.reserve(samples_v.size() + S);
+  di_v.reserve(di_v.size() + S);
 
   for (uint64_t iter = 0; iter < B + S; ++iter) {
     // Reflect proposal off boundaries to stay within [d_eps, d_ub].
@@ -715,22 +793,22 @@ bool QIE<T>::sample_metropolis_hastings(const xy_t& init)
     if (iter >= B) {
       const double I = llhf->compute_fisher_info(d);
       if ((std::isfinite(I) && std::isfinite(d)) && (d > 0.0 && I > 0.0)) {
-        samples_v.push_back({d, I});
+        di_v.push_back({d, I});
       } else {
         is_valid = false;
       }
     }
   }
   return is_valid;
-}
+} // }}}
 
 template<typename T>
 void QIE<T>::filter_sample(const record_t& r, vec<xy_t>& rsample_v, uint64_t sample_size) const
-{
+{ // {{{ ???
   // Drop same-query null windows that overlap the candidate interval; other overlaps are kept.
   rsample_v.clear();
-  rsample_v.reserve(null_v.size());
-  for (const auto& s : null_v) {
+  rsample_v.reserve(samples_v.size());
+  for (const auto& s : samples_v) {
     if (s.bix == r.bix && overlaps_half_open(s.bin_iv, r.bin_iv)) continue;
     //TODO: Do we really need Fisher information, I, at this point (in general)?
     if (!std::isfinite(s.I)) continue;
@@ -752,11 +830,11 @@ void QIE<T>::filter_sample(const record_t& r, vec<xy_t>& rsample_v, uint64_t sam
     }
   }
   rsample_v.resize(static_cast<size_t>(sample_size));
-}
+} // }}}
 
 template<typename T>
 void QIE<T>::test_significance(const uint64_t sample_size)
-{
+{ // {{{ ???
   vec<xy_t> rsample_v;
   for (auto& r : records_v) {
     // if (r.is_intact()) {
@@ -782,15 +860,16 @@ void QIE<T>::test_significance(const uint64_t sample_size)
 
   // TODO: Check if NaN p-values are handled properly
   benjamini_hochberg_correction();
-}
+} // }}}
 
 template<typename T>
-xy_t QIE<T>::score_gamma(const record_t& r, const vec<xy_t>& samples_v) const
-{ // TODO: NaNs and out of bound distances are not handled well
+xy_t QIE<T>::score_gamma(const record_t& r, const vec<xy_t>& di_v) const
+{ // {{{ ???
+  // TODO: NaNs and out of bound distances are not handled well
   const double d_obs = validate_distance(r.d);
   vec<double> d_v;
-  d_v.reserve(samples_v.size());
-  for (const auto& s : samples_v) {
+  d_v.reserve(di_v.size());
+  for (const auto& s : di_v) {
     if (const double d = validate_distance(s.first); std::isfinite(d)) {
       // std::cout << r.bix << " " << r.seq_iv.a << " " << r.seq_iv.b << " " << d << std::endl;
       d_v.push_back(d);
@@ -800,12 +879,12 @@ xy_t QIE<T>::score_gamma(const record_t& r, const vec<xy_t>& samples_v) const
   if (std::isfinite(result.second)) result.second = validate_distance(result.second);
   // std::cout << r.bix << " " << r.seq_iv.a << " " << r.seq_iv.b << " " << result.first << ","<< result.second << std::endl;
   return result;
-}
+} // }}}
 
 // Benjamini-Hochberg correction per strand (fw and rc separately).
 template<typename T>
 void QIE<T>::benjamini_hochberg_correction()
-{
+{ // {{{ ???
   for (bool is_rc : {false, true}) {
     vec<size_t> idx;
     for (size_t i = 0; i < records_v.size(); ++i)
@@ -822,22 +901,47 @@ void QIE<T>::benjamini_hochberg_correction()
       r.qvalue = q_min;
     }
   }
-}
+} // }}}
+
+template<typename T>
+xy_t QIE<T>::get_distance_bin(const record_t& r, const arr<double, WIDTH>& th_v) const
+{ // {{{ OK
+  xy_t d_range{d_eps, d_ub};
+  if (r.th_ix != size_t(-1)) {
+    const double t_i = at(llhf->get_extrema(), r.th_ix);
+    const bool is_low = std::isnan(r.d_q) || t_i <= r.d_q;
+    const size_t pos = static_cast<size_t>(std::lower_bound(th_v.begin(), th_v.end(), t_i) - th_v.begin());
+    if (is_low) {
+      // Matched low threshold: distance is in [th(i-1), th(i)).
+      d_range.first = (pos > 0) ? th_v[pos - 1] : d_eps;
+      d_range.second = t_i;
+    } else {
+      // Matched high threshold: distance is in (th(i), th(i+1)].
+      d_range.first = t_i;
+      d_range.second = (pos + 1 < WIDTH) ? th_v[pos + 1] : d_ub;
+    }
+  } else if (std::isfinite(r.d) || std::isfinite(r.d_q)) {
+    // No threshold triggered: bracket the interval's own distance
+    const double d_anchor = std::isfinite(r.d) ? r.d : r.d_q;
+    const auto it = std::lower_bound(th_v.begin(), th_v.end(), d_anchor);
+    if (it != th_v.begin()) d_range.first = *(it - 1);
+    if (it != th_v.end()) d_range.second = *it;
+  }
+  return d_range;
+} // }}}
 
 template<typename T>
 void QIE<T>::report_contiguous(std::ostream& sout, const str& rid) const
-{ // Revisit this
+{ // {{{ ???
+  // TODO: Revisit this and design a better format!
+  arr<double, WIDTH> th_v{};
+  for (size_t i = 0; i < WIDTH; ++i)
+    th_v[i] = at(llhf->get_extrema(), i);
+  std::sort(th_v.begin(), th_v.end());
+
   for (const auto& r : records_v) {
     const uint8_t mask = (r.th_ix != size_t(-1)) ? static_cast<uint8_t>(1u << r.th_ix) : 0;
-    xy_t d_range{d_eps, d_ub};
-    if (r.th_ix != size_t(-1)) {
-      const double ext = at(llhf->get_extrema(), r.th_ix);
-      if (ext > 0.0)
-        d_range.second = std::min(d_range.second, ext);
-      else
-        d_range.first = std::max(d_range.first, -ext);
-    }
-
+    const auto d_range = get_distance_bin(r, th_v);
     std::ostringstream d_bin;
     d_bin.flags(sout.flags());
     d_bin.precision(sout.precision());
@@ -862,7 +966,7 @@ void QIE<T>::report_contiguous(std::ostream& sout, const str& rid) const
               r.qvalue)
       << '\n';
   }
-}
+} // }}}
 
 template class QIE<double>;
 template class QIE<cm512_t>;

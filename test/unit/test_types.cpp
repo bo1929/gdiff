@@ -73,10 +73,10 @@ TEST_CASE("reference strand gets two-sided significance percentile") {
   CHECK(pct_ref(0.25, false) == doctest::Approx(0.25));
 }
 
-TEST_CASE("contig MLE selects the reference strand for null sampling") {
+TEST_CASE("query-wide MLE selects the reference strand for null sampling") {
   const auto nan = std::numeric_limits<double>::quiet_NaN();
-  // Query-level winner used for null pool / add_to_acc: smaller finite contig MLE; fw on tie/NaN.
-  const auto winner_rc = [](double fw, double rc) { return !std::isnan(rc) && (std::isnan(fw) || rc < fw); };
+  // Query-level winner used for null pool / add_to_acc: smaller finite strand MLE; fw on tie/NaN.
+  const auto winner_rc = [](double fw, double rc) { return strand_diff(fw, rc) > 0.0; };
   CHECK_FALSE(winner_rc(0.2, 0.3)); // fw lower
   CHECK_FALSE(winner_rc(0.3, 0.3)); // tie -> fw
   CHECK(winner_rc(0.3, 0.2));       // rc lower
@@ -85,7 +85,20 @@ TEST_CASE("contig MLE selects the reference strand for null sampling") {
   CHECK_FALSE(winner_rc(nan, nan)); // both NaN -> fw
 }
 
-TEST_CASE("strand_diff encodes four contig MLE cases") {
+TEST_CASE("map_sequences is_rc matches strand_diff encoding") {
+  const auto nan = std::numeric_limits<double>::quiet_NaN();
+  const auto pinf = std::numeric_limits<double>::infinity();
+  const auto ninf = -std::numeric_limits<double>::infinity();
+  const auto is_rc = [](double d_diff) { return (!std::isnan(d_diff)) && d_diff > 0.0; };
+  CHECK_FALSE(is_rc(nan));
+  CHECK_FALSE(is_rc(ninf));
+  CHECK(is_rc(pinf));
+  CHECK_FALSE(is_rc(-0.1));
+  CHECK_FALSE(is_rc(0.0));
+  CHECK(is_rc(0.1));
+}
+
+TEST_CASE("strand_diff encodes four strand MLE cases") {
   const auto nan = std::numeric_limits<double>::quiet_NaN();
   const auto pinf = std::numeric_limits<double>::infinity();
   const auto ninf = -std::numeric_limits<double>::infinity();

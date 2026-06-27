@@ -44,6 +44,7 @@ struct interval_t
   }
 };
 using xy_t = std::pair<double, double>;
+using vi_t = std::pair<double, size_t>;
 using rseq_sptr_t = std::shared_ptr<RSeq>;
 using qseq_sptr_t = std::shared_ptr<QSeq>;
 using lshf_sptr_t = std::shared_ptr<LSHF>;

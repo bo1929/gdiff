@@ -16,6 +16,9 @@ static const std::string SKETCHES_DIR = TEST_DIR + "sketches/";
 // Unified TSV: 16 columns (15 tabs)
 static constexpr int k_out_cols = 16;
 static constexpr int k_out_tabs = 15;
+static constexpr int k_col_seq_len = 1;
+static constexpr int k_col_interval_start = 2;
+static constexpr int k_col_interval_end = 3;
 static constexpr int k_col_strand = 4;
 static constexpr int k_col_is_rc = 5;
 static constexpr int k_col_dist = 7;
@@ -210,7 +213,11 @@ TEST_CASE("known pair: three operating modes" * doctest::skip(!test_data_availab
       if (line.empty()) continue;
       const auto fields = split_tsv(line);
       if (static_cast<int>(fields.size()) != k_out_cols) continue;
-      if (fields[k_col_mask] == "0") return true;
+      if (fields[k_col_mask] == "0") {
+        // A full-query intact record (no intervals found) is allowed; only gaps between intervals count.
+        const bool is_full_query = (fields[k_col_interval_start] == "1") && (fields[k_col_interval_end] == fields[k_col_seq_len]);
+        if (!is_full_query) return true;
+      }
     }
     return false;
   };

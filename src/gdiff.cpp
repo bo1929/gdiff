@@ -24,9 +24,17 @@ bool MapSC::validate_configuration()
     cerr_msg("--dist-th requires exactly 1 or 8 thresholds; got ", dist_th.size());
   }
   for (size_t i = 0; i < dist_th.size(); ++i) {
-    if (std::abs(dist_th[i]) < 1e-6) {
+    if (dist_th[i] <= 0.0) {
       is_invalid = true;
-      cerr_msg("--dist-th[", i, "] is too close to zero: ", dist_th[i]);
+      cerr_msg("--dist-th[", i, "] must be positive: ", dist_th[i]);
+    }
+  }
+  {
+    auto sdist_th = dist_th;
+    std::sort(sdist_th.begin(), sdist_th.end());
+    if (const auto it = std::adjacent_find(sdist_th.begin(), sdist_th.end()); it != sdist_th.end()) {
+      is_invalid = true;
+      cerr_msg("--dist-th values must be unique; duplicate: ", *it);
     }
   }
   if (hdist_th > hdist_bound) {

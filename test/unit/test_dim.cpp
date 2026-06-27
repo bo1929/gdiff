@@ -40,9 +40,40 @@ xy_t slice_mle_fisher(DIM<T>& dim, const llh_sptr_t<T>& llhf, uint64_t a1, uint6
   return {d, I};
 }
 
+// Mirrors QIE::get_distance_bin (distance-aware threshold brackets).
+template<typename T>
+static xy_t distance_bin_bounds(const llh_sptr_t<T>& llhf, size_t th_ix, double d, double d_q)
+{
+  static constexpr size_t W = std::is_same_v<T, double> ? 1 : RWIDTH;
+  std::array<double, W> th_v{};
+  for (size_t i = 0; i < W; ++i)
+    th_v[i] = at_th(llhf->get_extrema(), i);
+  std::sort(th_v.begin(), th_v.end());
+
+  xy_t d_range{d_eps, d_ub};
+  if (th_ix != size_t(-1)) {
+    const double t_i = at_th(llhf->get_extrema(), th_ix);
+    const bool is_low = std::isnan(d_q) || t_i <= d_q;
+    const size_t pos = static_cast<size_t>(std::lower_bound(th_v.begin(), th_v.end(), t_i) - th_v.begin());
+    if (is_low) {
+      d_range.first = (pos > 0) ? th_v[pos - 1] : d_eps;
+      d_range.second = t_i;
+    } else {
+      d_range.first = t_i;
+      d_range.second = (pos + 1 < W) ? th_v[pos + 1] : d_ub;
+    }
+  } else if (std::isfinite(d) || std::isfinite(d_q)) {
+    const double d_anchor = std::isfinite(d) ? d : d_q;
+    const auto it = std::lower_bound(th_v.begin(), th_v.end(), d_anchor);
+    if (it != th_v.begin()) d_range.first = *(it - 1);
+    if (it != th_v.end()) d_range.second = *it;
+  }
+  return d_range;
+}
+
 // Mirrors QIE::extract_ordered_intervals and emit_record (1-based bin coords).
 template<typename T>
-vec<contig_slice_t> contiguous_slices_from_dim(DIM<T>& dim, const llh_sptr_t<T>& llhf, uint8_t th_bv)
+vec<contig_slice_t> contiguous_slices_from_dim(DIM<T>& dim, const llh_sptr_t<T>& llhf, uint8_t th_bv, double d_q)
 {
   static constexpr size_t W = std::is_same_v<T, double> ? 1 : RWIDTH;
   vec<contig_slice_t> out;
@@ -67,10 +98,11 @@ vec<contig_slice_t> contiguous_slices_from_dim(DIM<T>& dim, const llh_sptr_t<T>&
   for (size_t pi = 0; pi + 1 < pts.size(); ++pi) {
     const uint64_t a = pts[pi];
     const uint64_t b = pts[pi + 1];
+    const auto [d, I] = slice_mle_fisher(dim, llhf, a, b);
 
     uint8_t mask = 0;
-    double bin_lo = 0.0;
-    double bin_hi = 1.0;
+    double bin_lo = d_eps;
+    double bin_hi = d_ub;
     for (size_t ti = 0; ti < W; ++ti) {
       if (!(th_bv & (1u << ti))) continue;
       const auto& ev = dim.get_intervals(ti);
@@ -78,14 +110,11 @@ vec<contig_slice_t> contiguous_slices_from_dim(DIM<T>& dim, const llh_sptr_t<T>&
         ++ti_ix[ti];
       if (ti_ix[ti] >= ev.size() || ev[ti_ix[ti]].a > a) continue;
       mask |= static_cast<uint8_t>(1u << ti);
-      const double ext = at_th(llhf->get_extrema(), ti);
-      if (ext > 0.0)
-        bin_hi = std::min(bin_hi, ext);
-      else
-        bin_lo = std::max(bin_lo, -ext);
+      const auto bounds = distance_bin_bounds(llhf, ti, d, d_q);
+      bin_lo = std::max(bin_lo, bounds.first);
+      bin_hi = std::min(bin_hi, bounds.second);
     }
 
-    const auto [d, I] = slice_mle_fisher(dim, llhf, a, b);
     out.push_back({a, b, d, I, mask, bin_lo, bin_hi});
   }
   return out;
@@ -478,6 +507,45 @@ TEST_CASE("extract_histogram supports the maximum fixed SIMD hdist threshold") {
   CHECK(t == 2);
 }
 
+TEST_CASE("complete_histogram matches extract_histogram on full range when keep_hist") {
+  auto params = params_t<double>(1, 0.1, 4, 2, 33.0, 0, 1000, true);
+  auto llhf = std::make_shared<LLH<double>>(27, 11, 0.5, 4, 0.1);
+  DIM<double> dim(params, llhf, 5, 50);
+
+  dim.aggregate_mer(0, 0);
+  dim.aggregate_mer(1, 1);
+  dim.aggregate_mer(5, 2);
+  dim.compute_prefhistsum();
+
+  vec<uint64_t> v_complete, v_extract;
+  uint64_t u_complete, t_complete, u_extract, t_extract;
+  dim.complete_histogram(v_complete, u_complete, t_complete);
+  dim.extract_histogram(0, dim.get_nbins(), v_extract, u_extract, t_extract);
+
+  CHECK(v_complete == v_extract);
+  CHECK(u_complete == u_extract);
+  CHECK(t_complete == t_extract);
+}
+
+TEST_CASE("complete_histogram exposes global hit counts and explicit misses") {
+  auto params = params_t<double>(1, 0.1, 4, 2, 33.0, 0, 0, true); // enum_only: no per-bin hist
+  auto llhf = std::make_shared<LLH<double>>(27, 11, 0.5, 4, 0.1);
+  DIM<double> dim(params, llhf, 5, 50);
+
+  dim.aggregate_mer(0, 0);
+  dim.aggregate_mer(1, 1);
+  dim.aggregate_mer(5, 2); // explicit miss (hdist > hdist_th)
+
+  vec<uint64_t> v;
+  uint64_t u, t;
+  dim.complete_histogram(v, u, t);
+
+  CHECK(v[0] == 1);
+  CHECK(v[1] == 1);
+  CHECK(u == 1);
+  CHECK(t == 2);
+}
+
 } // TEST_SUITE
 
 TEST_SUITE("DIM<cm512_t>") {
@@ -522,6 +590,12 @@ template<typename T>
 static vec<contig_slice_t> run_pipeline(DIM<T>& dim, const llh_sptr_t<T>& llhf, uint8_t th_bv, uint64_t tau = 1)
 {
   dim.inclusive_scan();
+  dim.compute_prefhistsum();
+  vec<uint64_t> v;
+  uint64_t u, t;
+  dim.complete_histogram(v, u, t);
+  const double d_q = llhf->mle(v.data(), u);
+  dim.set_query_distance(d_q);
   dim.extrema_scan();
   const uint64_t nbins = dim.get_nbins();
   if constexpr (std::is_same_v<T, double>) {
@@ -534,21 +608,20 @@ static vec<contig_slice_t> run_pipeline(DIM<T>& dim, const llh_sptr_t<T>& llhf, 
       dim.expand_intervals(33.0, ix);
     }
   }
-  dim.compute_prefhistsum();
-  return contiguous_slices_from_dim(dim, llhf, th_bv);
+  return contiguous_slices_from_dim(dim, llhf, th_bv, d_q);
 }
 
 TEST_CASE("th_bv=0 returns no segments") {
   auto params = params_t<double>(1, 0.1, 4, 2, 33.0, 0, 1000, false);
   auto llhf = std::make_shared<LLH<double>>(27, 11, 0.5, 4, 0.1);
   DIM<double> dim(params, llhf, 10, 100);
-  auto segs = contiguous_slices_from_dim(dim, llhf, 0);
+  auto segs = contiguous_slices_from_dim(dim, llhf, 0, nanx());
   CHECK(segs.empty());
 }
 
-TEST_CASE("single positive threshold: bin_hi set, bin_lo=0") {
-  auto params = params_t<double>(1, 0.1, 4, 2, 33.0, 0, 1000, false);
-  auto llhf = std::make_shared<LLH<double>>(27, 11, 0.5, 4, 0.1);
+TEST_CASE("low threshold below d_q: matched interval brackets (prev, t]") {
+  auto params = params_t<double>(1, 0.01, 4, 2, 33.0, 0, 1000, false);
+  auto llhf = std::make_shared<LLH<double>>(27, 11, 0.5, 4, 0.01);
   const uint64_t nbins = 10;
   DIM<double> dim(params, llhf, nbins, nbins);
 
@@ -567,46 +640,49 @@ TEST_CASE("single positive threshold: bin_hi set, bin_lo=0") {
   auto segs = run_pipeline(dim, llhf, 1);
   CHECK(!segs.empty());
 
+  vec<uint64_t> v;
+  uint64_t u, t;
+  dim.complete_histogram(v, u, t);
+  const double d_q = llhf->mle(v.data(), u);
+  REQUIRE(d_q > 0.01);
+
   for (const auto& s : segs) {
-    CHECK(s.bin_lo == 0.0);
     if (s.mask) {
-      CHECK(s.bin_hi == doctest::Approx(0.1));
-      CHECK(s.bin_lo < s.bin_hi);
-    } else {
-      CHECK(s.bin_hi == 1.0);
+      const auto b = distance_bin_bounds(llhf, 0, s.d, d_q);
+      CHECK(s.bin_lo == doctest::Approx(b.first));
+      CHECK(s.bin_hi == doctest::Approx(b.second));
+      CHECK(b.first == doctest::Approx(d_eps));
+      CHECK(b.second == doctest::Approx(0.01));
     }
   }
 }
 
-TEST_CASE("single negative threshold: bin_lo set, bin_hi default") {
-  auto params = params_t<double>(1, -0.1, 4, 2, 33.0, 0, 1000, false);
-  auto llhf = std::make_shared<LLH<double>>(27, 11, 0.5, 4, -0.1);
-  const uint64_t nbins = 12;
+TEST_CASE("high threshold above d_q: matched interval brackets (t, next]") {
+  auto params = params_t<double>(1, 0.5, 4, 2, 33.0, 0, 1000, false);
+  auto llhf = std::make_shared<LLH<double>>(27, 11, 0.5, 4, 0.5);
+  const uint64_t nbins = 10;
   DIM<double> dim(params, llhf, nbins, nbins);
 
-  // For negative extrema, fdc signs are flipped.
-  // hdist=4 (fdc negative), hdist=0 (fdc positive).
-  // Pattern: drop early, rise middle, drop late.
-  for (uint64_t i : {0u, 1u}) {
-    dim.aggregate_mer(4, i);
-  }
-  for (uint64_t i : {3u, 4u}) {
-    dim.aggregate_mer(0, i); dim.aggregate_mer(0, i);
-  }
-  for (uint64_t i : {7u, 8u}) {
-    dim.aggregate_mer(4, i);
-  }
+  // Uniform low Hamming distance -> low query MLE, above-threshold extraction.
+  for (uint64_t i = 0; i < nbins; ++i)
+    dim.aggregate_mer(0, i);
 
   auto segs = run_pipeline(dim, llhf, 1);
   CHECK(!segs.empty());
 
+  vec<uint64_t> v;
+  uint64_t u, t;
+  dim.complete_histogram(v, u, t);
+  const double d_q = llhf->mle(v.data(), u);
+  REQUIRE(d_q < 0.5);
+
   for (const auto& s : segs) {
-    CHECK(s.bin_hi == 1.0);
     if (s.mask) {
-      CHECK(s.bin_lo == doctest::Approx(0.1));
-      CHECK(s.bin_lo < s.bin_hi);
-    } else {
-      CHECK(s.bin_lo == 0.0);
+      const auto b = distance_bin_bounds(llhf, 0, s.d, d_q);
+      CHECK(s.bin_lo == doctest::Approx(b.first));
+      CHECK(s.bin_hi == doctest::Approx(b.second));
+      CHECK(b.first == doctest::Approx(0.5));
+      CHECK(b.second == doctest::Approx(d_ub));
     }
   }
 }
@@ -637,15 +713,14 @@ TEST_CASE("segments cover [1, nbins+1) when interval spans full range") {
   }
 }
 
-TEST_CASE("cm512_t with mixed signs: bin bounds respect threshold values") {
+TEST_CASE("cm512_t thresholds ranked relative to d_q") {
   cm512_t dths{};
-  dths[0] = 0.05;   // positive -> '<' -> upper bound
-  dths[1] = -0.03;  // negative -> '>' -> lower bound
-  dths[2] = 0.20;   // positive -> '<' -> upper bound
-  dths[3] = -0.08;  // negative -> '>' -> lower bound
-  // dths[4..7] stay 0 (treated as positive, but no bit in th_bv)
+  dths[0] = 0.05;
+  dths[1] = 0.10;
+  dths[2] = 0.20;
+  dths[3] = 0.30;
 
-  auto params = params_t<cm512_t>(8, dths, 4, 2, 33.0, 0, 1000, false);
+  auto params = params_t<cm512_t>(4, dths, 4, 2, 33.0, 0, 1000, false);
   auto llhf = std::make_shared<LLH<cm512_t>>(27, 11, 0.5, 4, dths);
   const uint64_t nbins = 10;
   DIM<cm512_t> dim(params, llhf, nbins, nbins);
@@ -660,22 +735,27 @@ TEST_CASE("cm512_t with mixed signs: bin bounds respect threshold values") {
     dim.aggregate_mer(4, i); dim.aggregate_mer(4, i);
   }
 
-  uint8_t th_bv = (1u << 0) | (1u << 1) | (1u << 2) | (1u << 3);
+  uint8_t th_bv = (1u << 0) | (1u << 2);
   auto segs = run_pipeline(dim, llhf, th_bv);
+  REQUIRE(!segs.empty());
+
+  vec<uint64_t> v;
+  uint64_t u, t;
+  dim.complete_histogram(v, u, t);
+  const double d_q = llhf->mle(v.data(), u);
 
   for (const auto& s : segs) {
-    CHECK(s.bin_lo >= 0.0);
-    CHECK(s.bin_lo <= 0.5);
-    CHECK(s.bin_hi >= 0.0);
-    CHECK(s.bin_hi <= 1.0);
-
-    // Positive-threshold bits -> bin_hi <= that threshold
-    if (s.mask & (1u << 0)) CHECK(s.bin_hi <= doctest::Approx(0.05));
-    if (s.mask & (1u << 2)) CHECK(s.bin_hi <= doctest::Approx(0.20));
-
-    // Negative-threshold bits -> bin_lo >= |that threshold|
-    if (s.mask & (1u << 1)) CHECK(s.bin_lo >= doctest::Approx(0.03));
-    if (s.mask & (1u << 3)) CHECK(s.bin_lo >= doctest::Approx(0.08));
+    if (!s.mask) continue;
+    double expect_lo = d_eps;
+    double expect_hi = d_ub;
+    for (size_t ti = 0; ti < 4; ++ti) {
+      if (!(s.mask & (1u << ti))) continue;
+      const auto b = distance_bin_bounds(llhf, ti, s.d, d_q);
+      expect_lo = std::max(expect_lo, b.first);
+      expect_hi = std::min(expect_hi, b.second);
+    }
+    CHECK(s.bin_lo == doctest::Approx(expect_lo));
+    CHECK(s.bin_hi == doctest::Approx(expect_hi));
   }
 }
 
@@ -708,7 +788,7 @@ TEST_CASE("full-span merged interval [1, nbins] still yields one segment") {
   CHECK(segs.size() == 1);
   CHECK(segs[0].bin_a == 1);
   CHECK(segs[0].bin_b == nbins + 1);
-  CHECK(segs[0].mask == 1);
+  CHECK(segs[0].mask == 0); // uniform hits: flat prefix sum, no threshold interval
 }
 
 TEST_CASE("map_contiguous segments partition histogram hit counts") {
@@ -789,26 +869,66 @@ TEST_CASE("segment MLE matches Brent+Fisher reference on same bin range") {
 
 TEST_SUITE("Misc") {
 
-TEST_CASE("sthix_v is sorted by ascending |extrema|") {
+TEST_CASE("thrank_v orders thresholds relative to d_q") {
   cm512_t dths{};
-  dths[0] = -0.10;
+  dths[0] = 0.10;
   dths[1] = 0.05;
-  dths[2] = -0.03;
-  dths[3] = 0.20;
+  dths[2] = 0.20;
+  dths[3] = 0.03;
+  dths[4] = 0.40;
+  dths[5] = 0.35;
+  dths[6] = 0.50;
+  dths[7] = 0.45;
 
-  // |extrema|: 0.10, 0.05, 0.03, 0.20 -> sorted: 0.03(idx 2), 0.05(idx 1), 0.10(idx 0), 0.20(idx 3)
-  vec<size_t> expected;
-  for (size_t i = 0; i < 4; ++i) expected.push_back(i);
-  std::sort(expected.begin(), expected.end(), [&](size_t a, size_t b) {
-    double va = std::abs(dths[a]);
-    double vb = std::abs(dths[b]);
-    if (va != vb) return va < vb;
-    return (dths[a] > 0) > (dths[b] > 0);
-  });
-  CHECK(expected[0] == 2);
-  CHECK(expected[1] == 1);
-  CHECK(expected[2] == 0);
-  CHECK(expected[3] == 3);
+  auto params = params_t<cm512_t>(8, dths, 4, 2, 33.0, 0, 1000, false);
+  auto llhf = std::make_shared<LLH<cm512_t>>(27, 11, 0.5, 4, dths);
+  DIM<cm512_t> dim(params, llhf, 8, 80);
+
+  for (uint64_t i = 0; i < 8; ++i)
+    dim.aggregate_mer(0, i);
+
+  const double d_q = 0.25;
+  dim.set_query_distance(d_q);
+
+  const auto& thrank = dim.get_thrank();
+  REQUIRE(thrank.size() == RWIDTH);
+  // Below d_q first (ascending): 0.03, 0.05, 0.10, 0.20; then above d_q (descending): 0.50, 0.45, 0.40, 0.35
+  CHECK(thrank[0] == 3); // 0.03
+  CHECK(thrank[1] == 1); // 0.05
+  CHECK(thrank[2] == 0); // 0.10
+  CHECK(thrank[3] == 2); // 0.20
+  CHECK(thrank[4] == 6); // 0.50
+  CHECK(thrank[5] == 7); // 0.45
+  CHECK(thrank[6] == 4); // 0.40
+  CHECK(thrank[7] == 5); // 0.35
+}
+
+TEST_CASE("thrank_v: non-flipped lanes before flipped at d_q=0.088094") {
+  cm512_t dths{};
+  dths[0] = 0.05;
+  dths[1] = 0.075;
+  dths[2] = 0.1;
+  dths[3] = 0.125;
+  dths[4] = 0.15;
+  dths[5] = 0.225;
+  dths[6] = 0.2;
+  dths[7] = 0.25;
+
+  auto params = params_t<cm512_t>(RWIDTH, dths, 4, 2, 33.0, 0, 1000, false);
+  auto llhf = std::make_shared<LLH<cm512_t>>(27, 11, 0.5, 4, dths);
+  DIM<cm512_t> dim(params, llhf, 4, 40);
+
+  dim.set_query_distance(0.088094);
+  const auto& thrank = dim.get_thrank();
+  REQUIRE(thrank.size() == RWIDTH);
+  CHECK(thrank[0] == 0); // 0.05
+  CHECK(thrank[1] == 1); // 0.075
+  CHECK(thrank[2] == 7); // 0.25
+  CHECK(thrank[3] == 5); // 0.225
+  CHECK(thrank[4] == 6); // 0.2
+  CHECK(thrank[5] == 4); // 0.15
+  CHECK(thrank[6] == 3); // 0.125
+  CHECK(thrank[7] == 2); // 0.1
 }
 
 TEST_CASE("MH step equals sigma in sample_metropolis_hastings") {
