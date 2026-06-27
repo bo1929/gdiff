@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <functional>
 #include <memory>
 #include <random>
 
@@ -131,6 +132,76 @@ make_test_params(double dist_th = 0.1, uint32_t hdist_th = 4, uint64_t tau = 2, 
   return {llhf, params};
 }
 
+template<typename T>
+static double dim_query_mle(DIM<T>& dim, const llh_sptr_t<T>& llhf)
+{
+  dim.compute_prefhistsum();
+  vec<uint64_t> v;
+  uint64_t u, t;
+  dim.complete_histogram(v, u, t);
+  return llhf->mle(v.data(), u);
+}
+
+template<typename T>
+static void finish_dim_scan(DIM<T>& dim, const llh_sptr_t<T>& llhf, double d_q)
+{
+  dim.inclusive_scan();
+  dim.set_query_distance(d_q);
+  dim.extrema_scan();
+}
+
+template<typename T>
+static double finish_dim_scan_auto(DIM<T>& dim, const llh_sptr_t<T>& llhf)
+{
+  dim.inclusive_scan();
+  const double d_q = dim_query_mle(dim, llhf);
+  dim.set_query_distance(d_q);
+  dim.extrema_scan();
+  return d_q;
+}
+
+template<typename T>
+static void inject_up_down_up(DIM<T>& dim)
+{
+  for (uint64_t i : {0u, 1u}) {
+    dim.aggregate_mer(4, i);
+    dim.aggregate_mer(4, i);
+  }
+  for (uint64_t i : {3u, 4u}) {
+    dim.aggregate_mer(0, i);
+    dim.aggregate_mer(0, i);
+  }
+  for (uint64_t i : {6u, 7u}) {
+    dim.aggregate_mer(4, i);
+    dim.aggregate_mer(4, i);
+  }
+}
+
+static vec<interval_t> collect_intervals_double(
+  const params_t<double>& params,
+  const std::shared_ptr<LLH<double>>& llhf,
+  uint64_t nbins,
+  double d_q,
+  const std::function<void(DIM<double>&)>& inject,
+  uint64_t tau = 1)
+{
+  DIM<double> dim(params, llhf, nbins, nbins);
+  inject(dim);
+  finish_dim_scan(dim, llhf, d_q);
+  dim.extract_intervals_mx(tau, 1, nbins);
+  dim.expand_intervals(33.0);
+  return dim.get_intervals(0);
+}
+
+static bool intervals_equal(const vec<interval_t>& a, const vec<interval_t>& b)
+{
+  if (a.size() != b.size()) return false;
+  for (size_t i = 0; i < a.size(); ++i) {
+    if (a[i].a != b[i].a || a[i].b != b[i].b) return false;
+  }
+  return true;
+}
+
 TEST_SUITE("DIM<double>::inclusive_scan") {
 
 TEST_CASE("inclusive_scan with no hits yields no merged intervals") {
@@ -139,8 +210,7 @@ TEST_CASE("inclusive_scan with no hits yields no merged intervals") {
   DIM<double> dim(params, llhf, nbins, nbins);
 
   // No hits: fdc/sdc stay zero -> no merged intervals after expand.
-  dim.inclusive_scan();
-  dim.extrema_scan();
+  finish_dim_scan(dim, llhf, nanx());
   dim.extract_intervals_mx(0, 1, nbins);
   dim.expand_intervals(33.0);
   auto iv = dim.get_interval(0);
@@ -204,8 +274,8 @@ TEST_CASE("randomized patterns: double, various tau") {
       }
     }
 
-    dim_mx.inclusive_scan();  dim_sx.inclusive_scan();
-    dim_mx.extrema_scan();    dim_sx.extrema_scan();
+    finish_dim_scan_auto(dim_mx, llhf);
+    finish_dim_scan_auto(dim_sx, llhf);
 
     for (uint64_t tau : {0u, 1u, 2u, 3u, 5u}) {
       if (tau >= nbins) continue;
@@ -243,8 +313,8 @@ TEST_CASE("randomized patterns: cm512_t, all lanes independent") {
       }
     }
 
-    dim_mx.inclusive_scan();  dim_sx.inclusive_scan();
-    dim_mx.extrema_scan();    dim_sx.extrema_scan();
+    finish_dim_scan_auto(dim_mx, llhf);
+    finish_dim_scan_auto(dim_sx, llhf);
 
     for (size_t ix = 0; ix < RWIDTH; ++ix) {
       for (uint64_t tau : {0u, 1u, 2u, 3u, 5u}) {
@@ -268,8 +338,8 @@ TEST_CASE("edge cases: early-return when fdps[nbins] < fdps[1]") {
     dim_sx.aggregate_mer(0, i);
   }
 
-  dim_mx.inclusive_scan();  dim_sx.inclusive_scan();
-  dim_mx.extrema_scan();    dim_sx.extrema_scan();
+  finish_dim_scan_auto(dim_mx, llhf);
+  finish_dim_scan_auto(dim_sx, llhf);
 
   for (uint64_t tau : {0u, 1u, 2u}) {
     compare_mx_sx(dim_mx, dim_sx, tau);
@@ -285,10 +355,8 @@ TEST_CASE("edge cases: full-range dip does not shortcut when nbins < 1 + tau") {
     dim_mx.aggregate_mer(0, i);
     dim_sx.aggregate_mer(0, i);
   }
-  dim_mx.inclusive_scan();
-  dim_sx.inclusive_scan();
-  dim_mx.extrema_scan();
-  dim_sx.extrema_scan();
+  finish_dim_scan_auto(dim_mx, llhf);
+  finish_dim_scan_auto(dim_sx, llhf);
   const uint64_t tau = 6; // 1 + tau > nbins: early shortcut must not emit (1, nbins)
   compare_mx_sx(dim_mx, dim_sx, tau);
   CHECK(dim_mx.get_interval(0, 0).a >= nbins);
@@ -302,8 +370,8 @@ TEST_CASE("edge cases: no k-mers at all") {
 
   // No aggregate_mer calls: all fdc values are zero, fdps is flat.
 
-  dim_mx.inclusive_scan();  dim_sx.inclusive_scan();
-  dim_mx.extrema_scan();    dim_sx.extrema_scan();
+  finish_dim_scan(dim_mx, llhf, nanx());
+  finish_dim_scan(dim_sx, llhf, nanx());
 
   for (uint64_t tau : {0u, 1u, 2u, 5u}) {
     compare_mx_sx(dim_mx, dim_sx, tau);
@@ -321,8 +389,8 @@ TEST_CASE("edge cases: single-bin features") {
   for (int k = 0; k < 5; ++k) { dim_mx.aggregate_mer(4, 3); dim_sx.aggregate_mer(4, 3); }
   for (int k = 0; k < 5; ++k) { dim_mx.aggregate_mer(0, 8); dim_sx.aggregate_mer(0, 8); }
 
-  dim_mx.inclusive_scan();  dim_sx.inclusive_scan();
-  dim_mx.extrema_scan();    dim_sx.extrema_scan();
+  finish_dim_scan_auto(dim_mx, llhf);
+  finish_dim_scan_auto(dim_sx, llhf);
 
   for (uint64_t tau : {0u, 1u, 2u, 3u}) {
     compare_mx_sx(dim_mx, dim_sx, tau);
@@ -342,8 +410,8 @@ TEST_CASE("edge cases: alternating pattern") {
     dim_sx.aggregate_mer(hd, i);
   }
 
-  dim_mx.inclusive_scan();  dim_sx.inclusive_scan();
-  dim_mx.extrema_scan();    dim_sx.extrema_scan();
+  finish_dim_scan_auto(dim_mx, llhf);
+  finish_dim_scan_auto(dim_sx, llhf);
 
   for (uint64_t tau : {0u, 1u, 2u, 3u, 5u}) {
     compare_mx_sx(dim_mx, dim_sx, tau);
@@ -370,8 +438,7 @@ TEST_CASE("merge when chi-square below threshold") {
       d.aggregate_mer(0, i);
       d.aggregate_mer(0, i);
     }
-    d.inclusive_scan();
-    d.extrema_scan();
+    finish_dim_scan_auto(d, llhf);
     d.extract_intervals_mx(0, 1, nbins);
     d.expand_intervals(chisq_th);
     uint64_t n = 0;
@@ -566,8 +633,7 @@ TEST_CASE("SIMD DIM produces valid intervals") {
     }
   }
 
-  dim.inclusive_scan();
-  dim.extrema_scan();
+  finish_dim_scan_auto(dim, llhf);
 
   // Extract intervals for each threshold
   for (size_t ix = 0; ix < 8; ++ix) {
@@ -867,9 +933,20 @@ TEST_CASE("segment MLE matches Brent+Fisher reference on same bin range") {
 
 } // TEST_SUITE
 
-TEST_SUITE("Misc") {
+TEST_SUITE("DIM::set_query_distance") {
 
-TEST_CASE("thrank_v orders thresholds relative to d_q") {
+TEST_CASE("double: thrank_v is always the single threshold index") {
+  auto [llhf, params] = make_test_params(0.1, 4, 2, 0);
+  DIM<double> dim(params, llhf, 8, 80);
+  for (const double d_q : {0.05, 0.25, 0.99, nanx()}) {
+    dim.set_query_distance(d_q);
+    const auto& thrank = dim.get_thrank();
+    REQUIRE(thrank.size() == 1);
+    CHECK(thrank[0] == 0);
+  }
+}
+
+TEST_CASE("cm512_t: thrank_v orders thresholds relative to d_q") {
   cm512_t dths{};
   dths[0] = 0.10;
   dths[1] = 0.05;
@@ -887,12 +964,9 @@ TEST_CASE("thrank_v orders thresholds relative to d_q") {
   for (uint64_t i = 0; i < 8; ++i)
     dim.aggregate_mer(0, i);
 
-  const double d_q = 0.25;
-  dim.set_query_distance(d_q);
-
+  dim.set_query_distance(0.25);
   const auto& thrank = dim.get_thrank();
   REQUIRE(thrank.size() == RWIDTH);
-  // Below d_q first (ascending): 0.03, 0.05, 0.10, 0.20; then above d_q (descending): 0.50, 0.45, 0.40, 0.35
   CHECK(thrank[0] == 3); // 0.03
   CHECK(thrank[1] == 1); // 0.05
   CHECK(thrank[2] == 0); // 0.10
@@ -903,7 +977,7 @@ TEST_CASE("thrank_v orders thresholds relative to d_q") {
   CHECK(thrank[7] == 5); // 0.35
 }
 
-TEST_CASE("thrank_v: non-flipped lanes before flipped at d_q=0.088094") {
+TEST_CASE("cm512_t: non-flipped lanes before flipped at d_q=0.088094") {
   cm512_t dths{};
   dths[0] = 0.05;
   dths[1] = 0.075;
@@ -931,6 +1005,123 @@ TEST_CASE("thrank_v: non-flipped lanes before flipped at d_q=0.088094") {
   CHECK(thrank[7] == 2); // 0.1
 }
 
+TEST_CASE("cm512_t: NaN d_q sorts thrank_v by ascending threshold") {
+  cm512_t dths{};
+  dths[0] = 0.30;
+  dths[1] = 0.05;
+  dths[2] = 0.20;
+  dths[3] = 0.10;
+  dths[4] = 0.25;
+  dths[5] = 0.15;
+  dths[6] = 0.35;
+  dths[7] = 0.45;
+
+  auto params = params_t<cm512_t>(RWIDTH, dths, 4, 2, 33.0, 0, 1000, false);
+  auto llhf = std::make_shared<LLH<cm512_t>>(27, 11, 0.5, 4, dths);
+  DIM<cm512_t> dim(params, llhf, 4, 40);
+
+  dim.set_query_distance(nanx());
+  const auto& thrank = dim.get_thrank();
+  REQUIRE(thrank.size() == RWIDTH);
+  CHECK(thrank[0] == 1); // 0.05
+  CHECK(thrank[1] == 3); // 0.10
+  CHECK(thrank[2] == 5); // 0.15
+  CHECK(thrank[3] == 2); // 0.20
+  CHECK(thrank[4] == 4); // 0.25
+  CHECK(thrank[5] == 0); // 0.30
+  CHECK(thrank[6] == 6); // 0.35
+  CHECK(thrank[7] == 7); // 0.45
+}
+
+TEST_CASE("apply_threshold_signs: flip when t exceeds d_q changes intervals") {
+  auto params = params_t<double>(1, 0.1, 4, 2, 33.0, 0, 1000, false);
+  auto llhf = std::make_shared<LLH<double>>(27, 11, 0.5, 4, 0.1);
+  const uint64_t nbins = 10;
+  const auto inject = [](DIM<double>& dim) { inject_up_down_up(dim); };
+
+  const auto iv_flip = collect_intervals_double(params, llhf, nbins, 0.05, inject);
+  const auto iv_no_flip = collect_intervals_double(params, llhf, nbins, 0.5, inject);
+  const auto iv_nan = collect_intervals_double(params, llhf, nbins, nanx(), inject);
+
+  CHECK_FALSE(intervals_equal(iv_flip, iv_no_flip));
+  CHECK(intervals_equal(iv_no_flip, iv_nan));
+}
+
+TEST_CASE("set_query_distance must be called once per inclusive_scan") {
+  auto params = params_t<double>(1, 0.1, 4, 2, 33.0, 0, 1000, false);
+  auto llhf = std::make_shared<LLH<double>>(27, 11, 0.5, 4, 0.1);
+  const uint64_t nbins = 10;
+
+  DIM<double> dim_once(params, llhf, nbins, nbins);
+  inject_up_down_up(dim_once);
+  finish_dim_scan(dim_once, llhf, 0.05);
+  dim_once.extract_intervals_mx(1, 1, nbins);
+  dim_once.expand_intervals(33.0);
+  const auto iv_once = dim_once.get_intervals(0);
+
+  DIM<double> dim_twice(params, llhf, nbins, nbins);
+  inject_up_down_up(dim_twice);
+  dim_twice.inclusive_scan();
+  dim_twice.set_query_distance(0.05);
+  dim_twice.set_query_distance(0.05);
+  dim_twice.extrema_scan();
+  dim_twice.extract_intervals_mx(1, 1, nbins);
+  dim_twice.expand_intervals(33.0);
+  const auto iv_twice = dim_twice.get_intervals(0);
+
+  CHECK_FALSE(intervals_equal(iv_once, iv_twice));
+}
+
+TEST_CASE("cm512_t: per-lane flip depends on threshold vs d_q") {
+  cm512_t dths{};
+  dths[0] = 0.05;
+  dths[1] = 0.40;
+
+  auto params = params_t<cm512_t>(2, dths, 4, 2, 33.0, 0, 1000, false);
+  auto llhf = std::make_shared<LLH<cm512_t>>(27, 11, 0.5, 4, dths);
+  const uint64_t nbins = 10;
+
+  auto collect_lane = [&](size_t ix, double d_q) {
+    DIM<cm512_t> dim(params, llhf, nbins, nbins);
+    inject_up_down_up(dim);
+    finish_dim_scan(dim, llhf, d_q);
+    dim.extract_intervals_mx(1, 1, nbins, ix);
+    dim.expand_intervals(33.0, ix);
+    return dim.get_intervals(ix);
+  };
+
+  const auto lane0_mid = collect_lane(0, 0.20);
+  const auto lane1_mid = collect_lane(1, 0.20);
+  const auto lane0_hi = collect_lane(0, 0.60);
+  const auto lane1_hi = collect_lane(1, 0.60);
+
+  CHECK(intervals_equal(lane0_mid, lane0_hi));
+  CHECK_FALSE(intervals_equal(lane1_mid, lane1_hi));
+}
+
+TEST_CASE("skipping set_query_distance differs from production scan") {
+  auto params = params_t<double>(1, 0.1, 4, 2, 33.0, 0, 1000, false);
+  auto llhf = std::make_shared<LLH<double>>(27, 11, 0.5, 4, 0.1);
+  const uint64_t nbins = 10;
+
+  const auto iv_prod = collect_intervals_double(
+    params, llhf, nbins, 0.05, [](DIM<double>& dim) { inject_up_down_up(dim); });
+
+  DIM<double> dim_skip(params, llhf, nbins, nbins);
+  inject_up_down_up(dim_skip);
+  dim_skip.inclusive_scan();
+  dim_skip.extrema_scan();
+  dim_skip.extract_intervals_mx(1, 1, nbins);
+  dim_skip.expand_intervals(33.0);
+  const auto iv_skip = dim_skip.get_intervals(0);
+
+  CHECK_FALSE(intervals_equal(iv_prod, iv_skip));
+}
+
+} // TEST_SUITE
+
+TEST_SUITE("Misc") {
+
 TEST_CASE("MH step equals sigma in sample_metropolis_hastings") {
   // Invariant: step = init.second, passed as sqrt(1/I) = sigma (map.cpp:638).
   CHECK(true);
@@ -949,8 +1140,7 @@ TEST_CASE("multi-gap extraction finds intervals in separated regions") {
     dim.aggregate_mer(0, i); dim.aggregate_mer(0, i);
   }
 
-  dim.inclusive_scan();
-  dim.extrema_scan();
+  finish_dim_scan(dim, llhf, nanx());
   dim.extract_intervals_mx(1, 1, nbins);
   dim.expand_intervals(33.0);
 
