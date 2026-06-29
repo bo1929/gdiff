@@ -138,8 +138,17 @@ static double dim_query_mle(DIM<T>& dim, const llh_sptr_t<T>& llhf)
   dim.compute_prefhistsum();
   vec<uint64_t> v;
   uint64_t u, t;
-  dim.complete_histogram(v, u, t);
+  dim.total_histogram(v, u, t);
   return llhf->mle(v.data(), u);
+}
+
+template<typename T>
+static interval_t dim_interval_at(const DIM<T>& dim, uint64_t i, size_t ix = 0)
+{
+  const auto& ivs = dim.get_intervals(ix);
+  const uint64_t nbins = dim.get_nbins();
+  if (i < ivs.size()) return ivs[i];
+  return {nbins, nbins};
 }
 
 template<typename T>
@@ -213,7 +222,7 @@ TEST_CASE("inclusive_scan with no hits yields no merged intervals") {
   finish_dim_scan(dim, llhf, nanx());
   dim.extract_intervals_mx(0, 1, nbins);
   dim.expand_intervals(33.0);
-  auto iv = dim.get_interval(0);
+  auto iv = dim_interval_at(dim, 0);
   CHECK(iv.a >= nbins);
 }
 
@@ -233,8 +242,8 @@ static void compare_mx_sx(DIM<T>& dim_mx, DIM<T>& dim_sx, uint64_t tau, size_t i
   dim_sx.expand_intervals(chisq, ix);
 
   for (uint64_t i = 0; ; ++i) {
-    auto iv_mx = dim_mx.get_interval(i, ix);
-    auto iv_sx = dim_sx.get_interval(i, ix);
+    auto iv_mx = dim_interval_at(dim_mx, i, ix);
+    auto iv_sx = dim_interval_at(dim_sx, i, ix);
     INFO("mismatch at interval ", i, " for tau=", tau, " ix=", ix,
          ": mx=(", iv_mx.a, ",", iv_mx.b, ")",
          " sx=(", iv_sx.a, ",", iv_sx.b, ")");
@@ -359,7 +368,7 @@ TEST_CASE("edge cases: full-range dip does not shortcut when nbins < 1 + tau") {
   finish_dim_scan_auto(dim_sx, llhf);
   const uint64_t tau = 6; // 1 + tau > nbins: early shortcut must not emit (1, nbins)
   compare_mx_sx(dim_mx, dim_sx, tau);
-  CHECK(dim_mx.get_interval(0, 0).a >= nbins);
+  CHECK(dim_interval_at(dim_mx, 0, 0).a >= nbins);
 }
 
 TEST_CASE("edge cases: no k-mers at all") {
@@ -443,7 +452,7 @@ TEST_CASE("merge when chi-square below threshold") {
     d.expand_intervals(chisq_th);
     uint64_t n = 0;
     for (;; ++n) {
-      const interval_t iv = d.get_interval(n);
+      const interval_t iv = dim_interval_at(d, n);
       if (iv.a >= nbins) break;
     }
     return n;
@@ -574,7 +583,7 @@ TEST_CASE("extract_histogram supports the maximum fixed SIMD hdist threshold") {
   CHECK(t == 2);
 }
 
-TEST_CASE("complete_histogram matches extract_histogram on full range when keep_hist") {
+TEST_CASE("total_histogram matches extract_histogram on full range when keep_hist") {
   auto params = params_t<double>(1, 0.1, 4, 2, 33.0, 0, 1000, true);
   auto llhf = std::make_shared<LLH<double>>(27, 11, 0.5, 4, 0.1);
   DIM<double> dim(params, llhf, 5, 50);
@@ -586,7 +595,7 @@ TEST_CASE("complete_histogram matches extract_histogram on full range when keep_
 
   vec<uint64_t> v_complete, v_extract;
   uint64_t u_complete, t_complete, u_extract, t_extract;
-  dim.complete_histogram(v_complete, u_complete, t_complete);
+  dim.total_histogram(v_complete, u_complete, t_complete);
   dim.extract_histogram(0, dim.get_nbins(), v_extract, u_extract, t_extract);
 
   CHECK(v_complete == v_extract);
@@ -594,7 +603,7 @@ TEST_CASE("complete_histogram matches extract_histogram on full range when keep_
   CHECK(t_complete == t_extract);
 }
 
-TEST_CASE("complete_histogram exposes global hit counts and explicit misses") {
+TEST_CASE("total_histogram exposes global hit counts and explicit misses") {
   auto params = params_t<double>(1, 0.1, 4, 2, 33.0, 0, 0, true); // enum_only: no per-bin hist
   auto llhf = std::make_shared<LLH<double>>(27, 11, 0.5, 4, 0.1);
   DIM<double> dim(params, llhf, 5, 50);
@@ -605,7 +614,7 @@ TEST_CASE("complete_histogram exposes global hit counts and explicit misses") {
 
   vec<uint64_t> v;
   uint64_t u, t;
-  dim.complete_histogram(v, u, t);
+  dim.total_histogram(v, u, t);
 
   CHECK(v[0] == 1);
   CHECK(v[1] == 1);
@@ -659,7 +668,7 @@ static vec<contig_slice_t> run_pipeline(DIM<T>& dim, const llh_sptr_t<T>& llhf, 
   dim.compute_prefhistsum();
   vec<uint64_t> v;
   uint64_t u, t;
-  dim.complete_histogram(v, u, t);
+  dim.total_histogram(v, u, t);
   const double d_q = llhf->mle(v.data(), u);
   dim.set_query_distance(d_q);
   dim.extrema_scan();
@@ -708,7 +717,7 @@ TEST_CASE("low threshold below d_q: matched interval brackets (prev, t]") {
 
   vec<uint64_t> v;
   uint64_t u, t;
-  dim.complete_histogram(v, u, t);
+  dim.total_histogram(v, u, t);
   const double d_q = llhf->mle(v.data(), u);
   REQUIRE(d_q > 0.01);
 
@@ -738,7 +747,7 @@ TEST_CASE("high threshold above d_q: matched interval brackets (t, next]") {
 
   vec<uint64_t> v;
   uint64_t u, t;
-  dim.complete_histogram(v, u, t);
+  dim.total_histogram(v, u, t);
   const double d_q = llhf->mle(v.data(), u);
   REQUIRE(d_q < 0.5);
 
@@ -807,7 +816,7 @@ TEST_CASE("cm512_t thresholds ranked relative to d_q") {
 
   vec<uint64_t> v;
   uint64_t u, t;
-  dim.complete_histogram(v, u, t);
+  dim.total_histogram(v, u, t);
   const double d_q = llhf->mle(v.data(), u);
 
   for (const auto& s : segs) {

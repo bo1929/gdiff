@@ -1,5 +1,4 @@
 #include "map.hpp"
-#include <array>
 #include <boost/math/tools/minima.hpp>
 
 namespace {
@@ -17,18 +16,6 @@ namespace {
     } else {
       return v[ix];
     }
-  }
-
-  // Generates two independent N(0,1) samples from two U(0,1) draws
-  double sample_box_muller(std::mt19937& rng)
-  {
-    std::uniform_real_distribution<double> U(0.0, 1.0);
-    const double u1 = U(rng);
-    const double u2 = U(rng);
-    const double r = std::sqrt(-2.0 * std::log(u1));
-    const double phi = 2.0 * M_PI * u2;
-    // return {r * std::cos(phi)
-    return r * std::cos(phi); // r * std::sin(phi) is the other sample
   }
 
   inline void add_to_acc(vec<uint64_t>& v_acc, uint64_t& u_acc, const vec<uint64_t>& v, uint64_t u)
@@ -57,6 +44,7 @@ QIE<T>::QIE(const params_t<T>& params,
   , m(lshf->get_m())
 {
   llhf = std::make_shared<LLH<T>>(k, h, sketch->get_rho(), params.hdist_th, params.dist_th);
+  diststat = std::make_shared<DistanceStat<T>>(params, llhf);
   const uint64_t u64m = std::numeric_limits<uint64_t>::max();
   mask_lr = ((u64m >> (64 - k)) << 32) + ((u64m << 32) >> (64 - k));
   mask_bp = u64m >> ((32 - k) * 2);
@@ -113,8 +101,8 @@ void QIE<T>::map_sequences(std::ostream& sout, const str& rid)
     double d_q_fw = nanx(), d_q_rc = nanx(), d_diff = nanx();
     vec<uint64_t> v_q_fw, v_q_rc;
     uint64_t u_q_fw = 0, u_q_rc = 0, t_q = 0;
-    dim_fw.complete_histogram(v_q_fw, u_q_fw, t_q);
-    dim_rc.complete_histogram(v_q_rc, u_q_rc, t_q);
+    dim_fw.total_histogram(v_q_fw, u_q_fw, t_q);
+    dim_rc.total_histogram(v_q_rc, u_q_rc, t_q);
     d_q_fw = llhf->mle(v_q_fw.data(), u_q_fw);
     d_q_rc = llhf->mle(v_q_rc.data(), u_q_rc);
     d_diff = strand_diff(d_q_fw, d_q_rc);
@@ -137,7 +125,7 @@ void QIE<T>::map_sequences(std::ostream& sout, const str& rid)
 
     // The lower-distance strand is the reference: rc when the difference > 0, else fw.
     const bool is_rc = (!std::isnan(d_diff)) && d_diff > 0.0;
-    if (!skip_test) sample_null_pool(is_rc ? dim_rc : dim_fw, tau_eff);
+    if (!skip_test) diststat->sample_null_pool(is_rc ? dim_rc : dim_fw, tau_eff, bix);
 
     if (!enum_only) {
       extract_ordered_intervals(dim_fw, false, tau_eff);
@@ -154,7 +142,11 @@ void QIE<T>::map_sequences(std::ostream& sout, const str& rid)
   }
 
   if (keep_hist) d_acc = llhf->mle(v_acc.data(), u_acc);
-  if (!skip_test) test_significance(params.sample_size);
+  if (!skip_test) {
+    for (auto& r : records_v)
+      diststat->test_significance(r, params.sample_size, qid_batch[r.bix]);
+    diststat->benjamini_hochberg_correction(records_v);
+  }
   report_contiguous(sout, rid);
 }
 
@@ -273,16 +265,6 @@ void DIM<T>::release_accumulators() noexcept
   fdc_v.shrink_to_fit();
   sdc_v.clear();
   sdc_v.shrink_to_fit();
-} // }}}
-
-template<typename T>
-interval_t DIM<T>::get_interval(uint64_t i, size_t ix) const
-{ // {{{ OK: (probably not needed)
-  if ((ix < intervals_v.size()) && (i < intervals_v[ix].size())) {
-    return intervals_v[ix][i];
-  } else {
-    return {nbins, nbins};
-  }
 } // }}}
 
 template<typename T>
@@ -573,7 +555,7 @@ void DIM<T>::compute_prefhistsum()
 } // }}}
 
 template<typename T>
-void DIM<T>::complete_histogram(vec<uint64_t>& v, uint64_t& u, uint64_t& t) const
+void DIM<T>::total_histogram(vec<uint64_t>& v, uint64_t& u, uint64_t& t) const
 {
   if (keep_hist) {
     extract_histogram(0, nbins, v, u, t);
@@ -705,202 +687,6 @@ void QIE<T>::emit_record(DIM<T>& dim, uint64_t a_bin, uint64_t b_bin, size_t th_
   // assert(seq_iv.a < seq_iv.b);
 
   records_v.emplace_back(bix, L, seq_iv, bin_iv, is_rc, d, I, th_ix);
-} // }}}
-
-template<typename T>
-void QIE<T>::sample_null_pool(DIM<T>& dim, uint64_t tau_eff)
-{ // {{{ ???
-  const uint64_t nbins_q = dim.get_nbins();
-  const uint64_t win_len = tau_eff + 1; // minimum window length in bins
-  if (nbins_q < win_len) return;
-
-  const uint64_t max_nconcat = 10;
-  const uint64_t max_len = std::min<uint64_t>(max_nconcat * win_len, nbins_q);
-  const uint64_t max_nwindows = nbins_q / win_len;
-  const uint64_t nsamples = std::min<uint64_t>(params.sample_size, max_nwindows);
-
-  std::uniform_int_distribution<uint64_t> rvstart(0, nbins_q - win_len);
-  vec<uint64_t> v(hdist_bound + 1);
-
-  for (uint64_t s = 0; s < nsamples; ++s) {
-    const uint64_t x = rvstart(gen);
-    uint64_t a_bin = x + 1;
-    uint64_t b_bin = x + win_len + 1;
-
-    uint64_t u, t;
-    dim.extract_histogram(a_bin - 1, b_bin - 1, v, u, t);
-
-    bool right = true;
-    while (t == 0 && (b_bin - a_bin) < max_len) {
-      const uint64_t exlen = std::min(win_len, max_len - (b_bin - a_bin));
-      if (exlen == 0) break;
-      bool concat = false;
-      if (right && b_bin + exlen <= nbins_q + 1) {
-        b_bin += exlen; // extend right
-        concat = true;
-      } else if (a_bin > exlen) {
-        a_bin -= exlen; // else extend left
-        concat = true;
-      } else if (b_bin + exlen <= nbins_q + 1) {
-        b_bin += exlen; // if blocked, try right regardless
-        concat = true;
-      }
-      if (!concat) break; // hit a boundary
-
-      dim.extract_histogram(a_bin - 1, b_bin - 1, v, u, t);
-      right = !right; // alternate sides so growth remains symmetric
-    }
-    if (t == 0) continue;
-
-    double d = llhf->mle(v.data(), u);
-    double I = llhf->compute_fisher_info(d);
-    d = validate_distance(d);
-    if (std::isfinite(d) && std::isfinite(I)) samples_v.push_back({d, I, bix, {a_bin, b_bin}});
-  }
-} // }}}
-
-template<typename T>
-bool QIE<T>::sample_metropolis_hastings(const xy_t& init, vec<xy_t>& di_v)
-{ // {{{ ???
-  // Metropolis-Hastings posterior draws kept (S) and burn-in iterations (B) per null window.
-  bool is_valid = true;
-  // Calculates the negative log-likelihood of the current distance
-  auto f = [&](const double& D) { return (*llhf)(D); };
-  double d = init.first;
-  // The target posterior is proportional to exp(-nll(D)).
-  const double step = init.second; // Proposal scale; sqrt(1/I) approximates the posterior sigma
-  double nll = f(d);
-
-  std::uniform_real_distribution<double> ruv(0, 1);
-
-  di_v.reserve(di_v.size() + S);
-
-  for (uint64_t iter = 0; iter < B + S; ++iter) {
-    // Reflect proposal off boundaries to stay within [d_eps, d_ub].
-    double d_i = d + step * sample_box_muller(gen);
-    // Reflect instead of reject - better mixing near boundaries
-    if (d_i <= 0.0) d_i = -d_i;
-    if (d_i >= d_ub) d_i = 2.0 * d_ub - d_i;
-    d_i = std::clamp(d_i, eps, d_ub - eps);
-
-    const double nll_i = f(d_i);
-    // log acceptance ratio = logL(prop) - logL(cur) = f(cur) - f(prop)
-    const double log_alpha = nll - nll_i;
-    if (std::log(ruv(gen)) < log_alpha) {
-      d = d_i;
-      nll = nll_i;
-    }
-    if (iter >= B) {
-      const double I = llhf->compute_fisher_info(d);
-      if ((std::isfinite(I) && std::isfinite(d)) && (d > 0.0 && I > 0.0)) {
-        di_v.push_back({d, I});
-      } else {
-        is_valid = false;
-      }
-    }
-  }
-  return is_valid;
-} // }}}
-
-template<typename T>
-void QIE<T>::filter_sample(const record_t& r, vec<xy_t>& rsample_v, uint64_t sample_size) const
-{ // {{{ ???
-  // Drop same-query null windows that overlap the candidate interval; other overlaps are kept.
-  rsample_v.clear();
-  rsample_v.reserve(samples_v.size());
-  for (const auto& s : samples_v) {
-    if (s.bix == r.bix && overlaps_half_open(s.bin_iv, r.bin_iv)) continue;
-    //TODO: Do we really need Fisher information, I, at this point (in general)?
-    if (!std::isfinite(s.I)) continue;
-    const double d = validate_distance(s.d);
-    if (!std::isfinite(d)) continue;
-    rsample_v.push_back({d, s.I});
-  }
-
-  if (rsample_v.size() <= sample_size) return;
-
-  // Reservoir sample down to sample_size (algorithm R).
-  size_t w = 0;
-  for (size_t i = 0; i < rsample_v.size(); ++i) {
-    if (w < sample_size) {
-      rsample_v[w++] = rsample_v[i];
-    } else {
-      const size_t j = std::uniform_int_distribution<size_t>(0, i)(gen);
-      if (j < sample_size) rsample_v[j] = rsample_v[i];
-    }
-  }
-  rsample_v.resize(static_cast<size_t>(sample_size));
-} // }}}
-
-template<typename T>
-void QIE<T>::test_significance(const uint64_t sample_size)
-{ // {{{ ???
-  vec<xy_t> rsample_v;
-  for (auto& r : records_v) {
-    // if (r.is_intact()) {
-    //   warn_pmsg(qid_batch[r.bix], "has a full length interval; skipping significance test");
-    //   continue;
-    // }
-
-    filter_sample(r, rsample_v, sample_size);
-
-    if (rsample_v.size() < GammaModel::min_nsamples) {
-      warn_pmsg(qid_batch[r.bix], "not enough null samples; skipping significance test");
-      continue;
-    }
-    const auto [prob, median] = score_gamma(r, rsample_v);
-    if (!std::isfinite(prob) || !std::isfinite(median)) {
-      warn_pmsg(qid_batch[r.bix], "gamma fit failed; skipping significance test");
-      continue;
-    }
-    const bool two_sided = std::isfinite(r.d_diff) && (r.is_rc == (r.d_diff > 0.0));
-    r.percentile = two_sided ? (2.0 * std::min(prob, 1.0 - prob)) : prob;
-    if (std::isfinite(r.d) && median > eps) r.fold = r.d / median;
-  }
-
-  // TODO: Check if NaN p-values are handled properly
-  benjamini_hochberg_correction();
-} // }}}
-
-template<typename T>
-xy_t QIE<T>::score_gamma(const record_t& r, const vec<xy_t>& di_v) const
-{ // {{{ ???
-  // TODO: NaNs and out of bound distances are not handled well
-  const double d_obs = validate_distance(r.d);
-  vec<double> d_v;
-  d_v.reserve(di_v.size());
-  for (const auto& s : di_v) {
-    if (const double d = validate_distance(s.first); std::isfinite(d)) {
-      // std::cout << r.bix << " " << r.seq_iv.a << " " << r.seq_iv.b << " " << d << std::endl;
-      d_v.push_back(d);
-    }
-  }
-  auto result = GammaModel::score_from_samples(d_obs, d_v, d_eps, d_ub - d_eps);
-  if (std::isfinite(result.second)) result.second = validate_distance(result.second);
-  // std::cout << r.bix << " " << r.seq_iv.a << " " << r.seq_iv.b << " " << result.first << ","<< result.second << std::endl;
-  return result;
-} // }}}
-
-// Benjamini-Hochberg correction per strand (fw and rc separately).
-template<typename T>
-void QIE<T>::benjamini_hochberg_correction()
-{ // {{{ ???
-  for (bool is_rc : {false, true}) {
-    vec<size_t> idx;
-    for (size_t i = 0; i < records_v.size(); ++i)
-      if (records_v[i].is_rc == is_rc && std::isfinite(records_v[i].percentile)) idx.push_back(i);
-    if (idx.empty()) continue;
-
-    std::sort(idx.begin(), idx.end(), [&](size_t a, size_t b) { return records_v[a].percentile < records_v[b].percentile; });
-
-    const double m = static_cast<double>(idx.size());
-    double q_min = 1.0;
-    for (size_t rank = idx.size(); rank >= 1; --rank) {
-      record_t& r = records_v[idx[rank - 1]];
-      q_min = std::min(q_min, std::min(1.0, r.percentile * m / static_cast<double>(rank)));
-      r.qvalue = q_min;
-    }
-  }
 } // }}}
 
 template<typename T>

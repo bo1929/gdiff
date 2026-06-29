@@ -19,6 +19,8 @@ template<typename T>
 class DIM;
 template<typename T>
 class QIE;
+template<typename T>
+class DistanceStat;
 class RSeq;
 class QSeq;
 class LSHF;
@@ -63,6 +65,9 @@ using vvec = std::vector<std::vector<T>>;
 
 template<typename T>
 using llh_sptr_t = std::shared_ptr<LLH<T>>;
+
+template<typename T>
+using diststat_sptr_t = std::shared_ptr<DistanceStat<T>>;
 
 using cm512_t = std::array<double, RWIDTH>;
 

@@ -1,188 +1,12 @@
 #ifndef _MAP_HPP
 #define _MAP_HPP
 
-#include <utility>
-#include <sstream>
-#include <simde/x86/avx512.h>
-#include "random.hpp"
-#include "gamma.hpp"
-#include "llh.hpp"
+#include "dim.hpp"
+#include "diststat.hpp"
 #include "lshf.hpp"
+#include "maptils.hpp"
 #include "rqseq.hpp"
 #include "sketch.hpp"
-
-// When defined, Metropolis-Hastings MCMC adds posterior draws.
-// Otherwise, only the samples are from MLE based on mesh sampling.
-// #define MCMC
-
-static constexpr double d_eps = 0.00001;
-static constexpr double d_ub = 1.0;
-static constexpr double d_lb = 0.0;
-static constexpr double eps = 1e-7;        // Tolerance for floating-point comparisons
-static constexpr uint32_t hdist_bound = 7; // Hamming distance bound for the SIMD alignment
-
-inline double nanx() noexcept { return std::numeric_limits<double>::quiet_NaN(); }
-inline double pinf() noexcept { return std::numeric_limits<double>::infinity(); }
-inline double ninf() noexcept { return -std::numeric_limits<double>::infinity(); }
-
-inline double strand_diff(const double d_q_fw, const double d_q_rc) noexcept
-{
-  const bool fw_valid = std::isfinite(d_q_fw);
-  const bool rc_valid = std::isfinite(d_q_rc);
-  if (!fw_valid && !rc_valid) return nanx(); // NaN = neither finite
-  if (fw_valid && !rc_valid) return ninf();  // -inf = only fw is finite
-  if (!fw_valid && rc_valid) return pinf();  // inf = only rc is finite
-  return d_q_fw - d_q_rc;                    // both are finite
-}
-
-inline char report_strand(const bool is_rc, const double d_diff) noexcept
-{
-  if (std::isnan(d_diff)) return '.';
-  if (std::isinf(d_diff)) {
-    if (d_diff < 0.0) return is_rc ? '.' : '+';
-    return is_rc ? '+' : '.';
-  }
-  return (is_rc == (d_diff > 0.0)) ? '+' : '-';
-}
-
-inline double validate_distance(const double d)
-{
-  if (d >= d_ub - eps || std::isnan(d) || (d < d_lb)) {
-    return nanx();
-  }
-  return d;
-}
-
-// 1-based half-open interval convention: inclusive start, exclusive end.
-inline bool overlaps_half_open(const interval_t& lhs, const interval_t& rhs) { return lhs.a < rhs.b && rhs.a < lhs.b; }
-
-template<typename T>
-class QIE;
-
-// One null-pool entry: a fixed-length window sampled from a query sequences.
-struct sample_t
-{
-  double d;          // MLE distance
-  double I;          // Fisher information
-  uint64_t bix;      // query batch index (for overlap filtering)
-  interval_t bin_iv; // 1-based half-open bin coordinates
-};
-
-struct record_t
-{
-  uint64_t bix;      // batch index of the source query
-  uint64_t L;        // effective query length (enmers + k - 1)
-  interval_t seq_iv; // 1-based inclusive coordinates on query
-  uint64_t nbins;    // number of bins covered: bin_iv.b - bin_iv.a
-  interval_t bin_iv; // 1-based inclusive bin start, 1-based exclusive bin end
-  bool is_rc;        // Is the source query on the reverse-complement strand?
-  double d;          // MLE distance for this interval in [d_eps, d_ub]
-  double I;          // Observed Fisher information I(d)
-  size_t th_ix;      // Threshold index; size_t(-1) reserved for background gaps (not reported anymore)
-  // Per-query fields, filled once both strands' distances are known
-  double d_q = nanx();    // MLE distance for the source strand
-  double d_diff = nanx(); // strand_diff() encoding; see strand_diff()
-  double fold = nanx();
-  double percentile = nanx();
-  double qvalue = nanx(); // Benjamini-Hochberg adjusted percentile
-
-  bool is_intact() const { return seq_iv.a == 1 && seq_iv.b == L; }
-  interval_t get_interval() const { return {bin_iv.a - 1, bin_iv.b - 1}; } // 0-based half-open bin-boundary
-
-  record_t(uint64_t bix, uint64_t L, interval_t seq_iv, interval_t bin_iv, bool is_rc, double d, double I, size_t th_ix)
-    : bix(bix)
-    , L(L)
-    , seq_iv(seq_iv)
-    , nbins(bin_iv.b - bin_iv.a)
-    , bin_iv(bin_iv)
-    , is_rc(is_rc)
-    , d(d)
-    , I(I)
-    , th_ix(th_ix)
-  {
-  }
-};
-
-// Breakpoints of an extracted interval
-// 1-based half-open bin range [a_bin, b_bin) with the threshold that covers it.
-struct bp_t
-{
-  uint64_t a_bin;
-  uint64_t b_bin;
-  size_t ix;
-};
-
-inline interval_t get_coordinates(const interval_t& bin_iv, uint64_t bin_shift, uint64_t enmers, uint32_t k, bool is_last)
-{
-  const uint64_t a = ((bin_iv.a - 1) << bin_shift) + 1;
-  const uint64_t b = is_last ? (enmers + k - 1) : std::min(((bin_iv.b - 1) << bin_shift) + 1, enmers + 1);
-  return {a, b};
-}
-
-inline interval_t get_pintervals(const interval_t& bin_iv, uint64_t bin_shift, uint64_t enmers, uint32_t k)
-{
-  const uint64_t a = ((bin_iv.a - 1) << bin_shift) + 1;
-  const uint64_t b = std::min(bin_iv.b << bin_shift, enmers) + k - 1;
-  return {a, b};
-}
-
-template<typename T>
-class DIM
-{
-  static constexpr size_t WIDTH = std::is_same_v<T, double> ? 1 : RWIDTH;
-
-public:
-  DIM(const params_t<T>& params, const llh_sptr_t<T>& llhf, uint64_t nbins, uint64_t nmers);
-  void release_accumulators() noexcept;
-  void inclusive_scan();
-  void extrema_scan();
-  void compute_prefhistsum();
-  // void skip_mer(uint64_t i); // TODO: Anything better than ignoring?
-  void aggregate_mer(uint32_t hdist_min, uint64_t i);
-  void set_query_distance(double d_q);
-  void extract_intervals_mx(uint64_t tau, uint64_t lix, uint64_t rix, size_t ix = 0);
-  void extract_intervals_sx(uint64_t tau, uint64_t lix, uint64_t rix, size_t ix = 0);
-  void expand_intervals(double chisq_th, size_t ix = 0);
-  void extract_histogram(uint64_t a, uint64_t b, vec<uint64_t>& v, uint64_t& u, uint64_t& t) const;
-  void complete_histogram(vec<uint64_t>& v, uint64_t& u, uint64_t& t) const;
-  uint64_t get_nbins() const { return nbins; }
-  uint64_t get_nmers() const { return nmers; }
-  const vec<size_t>& get_thrank() const { return thrank_v; }
-  const vec<interval_t>& get_intervals(size_t ti) const { return intervals_v[ti]; }
-  static inline void add_to(T& dest, const T& source)
-  {
-    if constexpr (std::is_same_v<T, double>) {
-      dest += source;
-    } else {
-      simde__m512d vd = simde_mm512_loadu_pd(dest.data());
-      simde__m512d vs = simde_mm512_loadu_pd(source.data());
-      vd = simde_mm512_add_pd(vd, vs);
-      simde_mm512_storeu_pd(dest.data(), vd);
-    }
-  }
-  interval_t get_interval(uint64_t i, size_t ix = 0) const; // in 1-based inclusive bin coordinates
-
-private:
-  const params_t<T>& params;
-  const llh_sptr_t<T> llhf;   // log-likelihood function for all calculations
-  const uint64_t nbins;       // number of bins
-  const uint64_t nmers;       // number of k-mers in query (for per-k-mer HD tracking)
-  const bool keep_hist;       // whether to keep track of the histogram(s) for the query sequence
-  uint64_t t_q = 0;           // total number of k-mers hits below hdist_th per query sequence
-  uint64_t u_q = 0;           // total number misses per query sequence
-  vec<uint64_t> hdisthist_v;  // D[i][j] is the number of hits with HD=j, [(nbins+1) x (hdist_th+1)] row-major; D[0][j]=0
-  vec<T> fdc_v;               // The f' contribution c_i of the k-mer (bin) starting at i
-  vec<T> sdc_v;               // The f'' contribution s_i of the k-mer (bin) starting at i
-  vec<T> fdps_v;              // C[i] = sum(c_0, ..., c_{i}), C[0] = 0 (length n) (shifted by 1 w.r.t. fdc_v)
-  vec<T> sdps_v;              // S[i] = sum(s_0, ..., s_{i}), S[0] = 0 (length n) (shifted by 1 w.r.t. sdc_v)
-  vec<T> fdpmax_v;            // H[i] = max(C_1, ..., C_{i}), H_0 = -inf, H_{n+1} = inf (length n+1)
-  vec<T> fdsmin_v;            // L[i] = min(C_{i}, ..., C_n), L_0 = inf, L_{n+1}= -inf (length n+1)
-  vec<size_t> thrank_v;       // extraction order for this strand (depends on d_q)
-  arr<bool, WIDTH> thneg_v{}; // which thresholds need a sign flip
-  arr<vec<interval_t>, WIDTH> intervals_v; // 1-based inclusive bin coordinates per threshold
-
-  void apply_threshold_signs();
-};
 
 template<typename T>
 class QIE
@@ -201,18 +25,9 @@ private:
   void search_mers(const char* cseq, uint64_t len, DIM<T>& dim_fw, DIM<T>& dim_rc);
   void extract_ordered_intervals(DIM<T>& dim, bool is_rc, uint64_t tau_eff);
   void extract_simple_intervals(DIM<T>& dim, bool is_rc, uint64_t tau_eff);
-  void sample_null_pool(DIM<T>& dim, uint64_t tau_eff);
   void emit_record(DIM<T>& dim, uint64_t a_bin, uint64_t b_bin, size_t th_ix, bool is_rc);
-  void filter_sample(const record_t& r, vec<xy_t>& rsample_v, uint64_t sample_size) const;
-  void benjamini_hochberg_correction();
-  void test_significance(uint64_t sample_size = 100);
-  bool sample_metropolis_hastings(const xy_t& init, vec<xy_t>& di_v); // TODO: Revisit: MCMC?
-  xy_t score_gamma(const record_t& r, const vec<xy_t>& di_v) const;
   xy_t get_distance_bin(const record_t& r, const arr<double, WIDTH>& th_sorted) const;
   void report_contiguous(std::ostream& sout, const str& rid) const;
-
-  static constexpr uint64_t S = 20;  // TODO: Revisit: MH MCMC parameters.
-  static constexpr uint64_t B = 100; // TODO: Revisit: MH MCMC parameters.
 
   const params_t<T>& params;
   const sketch_sptr_t sketch;
@@ -235,20 +50,12 @@ private:
   uint64_t nbins;  // Number of bins: ceil(enmers / bin_len)
   uint64_t bix;    // Index of the current query in the this batch
   vec<bp_t> bp_v;  // Breakpoint scratch reused across intervals
-  vec<sample_t> samples_v;
+  diststat_sptr_t<T> diststat;
   vec<record_t> records_v;
   vec<uint64_t> v_scratch;
   vec<uint64_t> v_acc;
   uint64_t u_acc = 0;
   double d_acc = nanx();
 };
-
-template<typename... Args>
-inline std::ostream& write_tsv(std::ostream& os, const Args&... args)
-{
-  size_t n = 0;
-  ((os << (n++ ? "\t" : "") << args), ...);
-  return os;
-}
 
 #endif

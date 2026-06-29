@@ -50,14 +50,14 @@ public:
   // Gamma distribution primitives
 
   // Returns 0 for x <= 0 or invalid parameters.
-  [[nodiscard]] static double gamma_pdf(double x, double shape, double scale)
+  [[nodiscard]] static double pdf(double x, double shape, double scale)
   {
     if (!(x > 0.0) || !(shape > 0.0) || !(scale > 0.0)) return 0.0;
     return boost::math::pdf(boost::math::gamma_distribution<double, hpolicy>(shape, scale), x);
   }
 
   // Returns 0 for x <= 0, NaN for invalid parameters.
-  [[nodiscard]] static double gamma_cdf(double x, double shape, double scale)
+  [[nodiscard]] static double cdf(double x, double shape, double scale)
   {
     if (!(shape > 0.0) || !(scale > 0.0)) return NaN;
     if (!(x > 0.0)) return 0.0;
@@ -76,13 +76,13 @@ public:
     if (x_v.empty()) return {1.0, 1.0};
     const params_t p0 = init_from_moments(x_v);
     const auto emp_q = compute_quantiles(x_v, cfg.quantile_probs);
-    return nelder_mead_bivariate(
+    return bivariate_nelder_mead(
       p0,
       [&](double shape, double scale) {
         if (!(shape > 0.0) || !(scale > 0.0)) return INF;
         double L = 0.0;
         for (size_t k = 0; k < emp_q.size(); ++k) {
-          const double diff = gamma_cdf(emp_q[k], shape, scale) - cfg.quantile_probs[k];
+          const double diff = cdf(emp_q[k], shape, scale) - cfg.quantile_probs[k];
           L += diff * diff;
         }
         return L;
@@ -99,11 +99,11 @@ public:
     const params_t gp = fit_from_samples(samples);
     if (!validate_params(gp)) return {NaN, NaN};
 
-    const double prob = gamma_cdf(x, gp.shape, gp.scale);
+    const double prob = cdf(x, gp.shape, gp.scale);
     if (!std::isfinite(prob)) return {NaN, NaN};
     // std::cout << x << " " << gp.shape << " " << gp.scale << " " << prob << std::endl;
 
-    auto F = [&](double t) { return gamma_cdf(t, gp.shape, gp.scale); };
+    auto F = [&](double t) { return cdf(t, gp.shape, gp.scale); };
     if (!(upper > lower) || F(upper) < 0.5) return {prob, NaN};
 
     // Median of the latent Gamma distribution by binary search.
@@ -119,7 +119,7 @@ public:
     const double median = 0.5 * (lo + hi);
     if (!(median > eps) || !std::isfinite(median)) return {prob, NaN};
     return {prob, median};
-    // Returns {gamma_cdf(x), latent median} or NaN components on failure.
+    // Returns {cdf(x), latent median} or NaN components on failure.
   }
 
 private:
@@ -189,7 +189,7 @@ private:
   // Stops when both objective spread and simplex diameter fall below tolerance.
   // The diameter check catches flat-likelihood drift that the objective only misses.
   template<typename Obj>
-  [[nodiscard]] static params_t nelder_mead_bivariate(params_t p0, Obj&& obj, const Config& cfg)
+  [[nodiscard]] static params_t bivariate_nelder_mead(params_t p0, Obj&& obj, const Config& cfg)
   {
     auto eval = [&](const coord_t& p) { return obj(std::exp(p.x), std::exp(p.y)); };
 

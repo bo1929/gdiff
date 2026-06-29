@@ -148,12 +148,19 @@ TEST_CASE("two-sided test and STRAND from d_diff encoding") {
 }
 
 TEST_CASE("null overlap uses half-open bin boundaries") {
-  const auto overlaps_half_open = [](const interval_t& lhs, const interval_t& rhs) {
-    return lhs.a < rhs.b && rhs.a < lhs.b;
-  };
-  CHECK(overlaps_half_open({1, 6}, {5, 7}));
-  CHECK_FALSE(overlaps_half_open({1, 6}, {6, 9}));
-  CHECK_FALSE(overlaps_half_open({6, 9}, {1, 6}));
+  CHECK(::overlaps_half_open({1, 6}, {5, 7}));
+  CHECK_FALSE(::overlaps_half_open({1, 6}, {6, 9}));
+  CHECK_FALSE(::overlaps_half_open({6, 9}, {1, 6}));
+}
+
+TEST_CASE("validate_distance rejects out-of-range and non-finite values") {
+  const auto nan = std::numeric_limits<double>::quiet_NaN();
+  CHECK(std::isnan(validate_distance(d_ub)));
+  CHECK(std::isnan(validate_distance(d_ub - eps)));
+  CHECK(std::isnan(validate_distance(-0.1)));
+  CHECK(std::isnan(validate_distance(nan)));
+  CHECK(validate_distance(0.5) == doctest::Approx(0.5));
+  CHECK(validate_distance(0.0) == doctest::Approx(0.0));
 }
 
 TEST_CASE("coordinate helpers preserve output conventions") {
@@ -167,18 +174,6 @@ TEST_CASE("coordinate helpers preserve output conventions") {
   row = get_coordinates({2, 4}, 2, enmers, k, true);
   CHECK(row.a == 5);
   CHECK(row.b == enmers + k - 1);
-
-  auto iv = get_pintervals({1, 3}, 2, enmers, k);
-  CHECK(iv.a == 1);
-  CHECK(iv.b == 14);
-
-  iv = get_pintervals({3, 3}, 2, enmers, k);
-  CHECK(iv.a == 9);
-  CHECK(iv.b == 14);
-
-  iv = get_pintervals({1, 1}, 0, 1, k);
-  CHECK(iv.a == 1);
-  CHECK(iv.b == k);
 
   row = get_coordinates({1, 3}, 0, 2, k, true);
   CHECK(row.a == 1);

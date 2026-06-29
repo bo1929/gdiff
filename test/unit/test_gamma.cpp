@@ -189,3 +189,28 @@ TEST_CASE("null draw near median gets moderate probability") {
 }
 
 } // TEST_SUITE
+
+TEST_SUITE("GammaModel::pdf and cdf") {
+
+TEST_CASE("pdf and cdf are positive at interior points") {
+  const double shape = 2.0;
+  const double scale = 0.05;
+  const double x = 0.1;
+  CHECK(GammaModel::pdf(x, shape, scale) > 0.0);
+  const double p = GammaModel::cdf(x, shape, scale);
+  CHECK(p > 0.0);
+  CHECK(p < 1.0);
+}
+
+TEST_CASE("pdf returns 0 for non-positive x") {
+  CHECK(GammaModel::pdf(0.0, 2.0, 0.05) == 0.0);
+  CHECK(GammaModel::pdf(-1.0, 2.0, 0.05) == 0.0);
+}
+
+TEST_CASE("cdf returns 0 for non-positive x and NaN for invalid parameters") {
+  CHECK(GammaModel::cdf(0.0, 2.0, 0.05) == 0.0);
+  CHECK(std::isnan(GammaModel::cdf(0.1, 0.0, 0.05)));
+  CHECK(std::isnan(GammaModel::cdf(0.1, 2.0, 0.0)));
+}
+
+} // TEST_SUITE

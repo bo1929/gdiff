@@ -56,7 +56,7 @@ protected:
   uint8_t k;
   uint8_t h;
   bool frac;
-  uint32_t m;
+  uint32_t m; // TODO: remove the entire modulo feature altogether
   uint32_t r;
   uint32_t nrows;
   lshf_sptr_t lshf = nullptr;
