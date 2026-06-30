@@ -78,7 +78,6 @@ private:
   str input_path;
   std::filesystem::path sketch_path;
   sfhm_sptr_t sketch_sfhm = nullptr;
-  bool strand_aware = false;
   double rho;
 };
 

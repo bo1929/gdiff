@@ -199,8 +199,8 @@ void Sketch::canonicalize()
     const enc_t* ix2 = sfhm->bucket_ptr_next(off);
     const uint32_t fw_rix = frac ? (off / (r + 1)) * m + (off % (r + 1)) : off * m + r;
     for (; ix1 < ix2; ++ix1) {
-      const uint64_t bp_ppos = lshf->inv_compute_hash(fw_rix);
-      const uint64_t bp_npos = lr64_to_bp64(lshf->inv_drop_ppos_lr(*ix1));
+      const uint64_t bp_ppos = lshf->inv_ppos_bp(fw_rix);
+      const uint64_t bp_npos = lr64_to_bp64(lshf->inv_ppos_lr(*ix1));
       const uint64_t fw_bp = (bp_ppos | bp_npos) & mask_bp;
       const uint64_t rc_bp = revcomp_bp64(fw_bp, k);
       const uint64_t can_bp = std::max(fw_bp, rc_bp);

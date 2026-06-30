@@ -87,9 +87,6 @@ void MapSC::map()
   sketch_stream.close();
 
   size_t n = dist_th.size();
-  params_t<double> params_single(n, dist_th.front(), hdist_th, tau, chisq, bin_shift, sample_size, enum_only);
-  params_t<cm512_t> params_multiple(n, {0}, hdist_th, tau, chisq, bin_shift, sample_size, enum_only);
-  std::copy(dist_th.begin(), dist_th.end(), params_multiple.dist_th.begin());
 
   // Per-sketch result buffers
   std::vector<strstream> results(nsketches);
@@ -107,17 +104,17 @@ void MapSC::map()
       sketch->load_from_offset(sketch_stream, sketch_offsets[i]);
       sketch_stream.close();
       sketch->make_rho_partial();
+      bool canonical = sketch->is_canonical();
 
       strstream sout;
       sout << std::setprecision(5);
       if (dist_th.size() == 1) {
-        params_t<double> params = params_single;
-        params.canonical = sketch->is_canonical();
+        params_t<double> params(n, dist_th.front(), hdist_th, tau, chisq, bin_shift, sample_size, canonical, enum_only);
         QIE<double> qie(params, sketch, sketch->get_lshf(), qs->get_seq_batch(), qs->get_qid_batch());
         qie.map_sequences(sout, sketch->get_rid());
       } else {
-        params_t<cm512_t> params = params_multiple;
-        params.canonical = sketch->is_canonical();
+        params_t<cm512_t> params(n, {0}, hdist_th, tau, chisq, bin_shift, sample_size, canonical, enum_only);
+        std::copy(dist_th.begin(), dist_th.end(), params.dist_th.begin());
         QIE<cm512_t> qie(params, sketch, sketch->get_lshf(), qs->get_seq_batch(), qs->get_qid_batch());
         qie.map_sequences(sout, sketch->get_rid());
       }
@@ -244,9 +241,9 @@ SketchSC::SketchSC(CLI::App& sc)
   sc.add_option("-r,--residue-lsh", r, "A k-mer x will be included only if r = LSH(x) mod m [1]")
     ->check(CLI::NonNegativeNumber);
   sc.add_flag("--frac,!--no-frac", frac, "Include k-mers with r <= LSH(x) mod m [true]");
-  sc.add_flag("--strand-aware,!--strand-agnostic", strand_aware, "Use a strand-aware sketch, default: strand-agnostic");
+  sc.add_flag(
+    "--strand-agnostic,!--strand-aware", canonical, "Use a (default) strand-agnostic (canonical) or strand-aware sketch");
   sc.callback([&]() {
-    canonical = !strand_aware;
     if (!(sc.count("-w") + sc.count("--win-len"))) {
       w = k + 6;
       h = k - 16;

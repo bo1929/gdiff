@@ -98,6 +98,7 @@ struct params_t
            double chisq,
            uint64_t bin_shift,
            uint64_t sample_size,
+           bool canonical,
            bool enum_only)
     : n(n)
     , dist_th(dist_th)
@@ -108,6 +109,7 @@ struct params_t
     , bin_shift(bin_shift)
     , bin_size(uint64_t(1) << bin_shift)
     , sample_size(sample_size)
+    , canonical(canonical)
     , enum_only(enum_only)
   {
   }

@@ -158,9 +158,9 @@ uint32_t LSHF::get_npos_accdiff(uint32_t& zc, uint32_t& i)
   return npos_v.rbegin()[i - 1];
 }
 
-uint64_t LSHF::inv_compute_hash(uint32_t rix) { return deposit_bits(static_cast<uint64_t>(rix), mask_hash_bp); }
+uint64_t LSHF::inv_ppos_bp(uint32_t bp) { return deposit_bits(static_cast<uint64_t>(bp), mask_hash_bp); }
 
-uint64_t LSHF::inv_drop_ppos_lr(uint32_t enc_lr) { return deposit_bits(static_cast<uint64_t>(enc_lr), mask_drop_lr); }
+uint64_t LSHF::inv_ppos_lr(uint32_t lr) { return deposit_bits(static_cast<uint64_t>(lr), mask_drop_lr); }
 
 char* LSHF::npos_data() { return reinterpret_cast<char*>(npos_v.data()); }
 
