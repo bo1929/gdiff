@@ -9,6 +9,7 @@
 class SDHM
 {
   friend class SFHM;
+  friend class Sketch;
 
 public:
   void fill_table(uint32_t nrows, const rseq_sptr_t& rs);
@@ -31,6 +32,8 @@ public:
   ~SFHM();
   void save(std::ofstream& sketch_stream);
   void load(std::ifstream& sketch_stream);
+  uint64_t get_nkmers() const { return nkmers; }
+  uint32_t get_nrows() const { return nrows; }
   std::vector<enc_t>::const_iterator bucket_iter_start(uint32_t rix);
   std::vector<enc_t>::const_iterator bucket_iter_next(uint32_t rix);
   const enc_t* bucket_ptr_start(uint32_t rix) const noexcept;

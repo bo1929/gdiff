@@ -58,16 +58,9 @@ bool MapSC::validate_configuration()
   return !is_invalid;
 }
 
-void MapSC::write_header()
-{
-  (*output_stream)
-    << "QUERY_ID\tSEQ_LEN\tINTERVAL_START\tINTERVAL_END\tSTRAND\tIS_RC\tREF_ID\tDIST\tMASK\tD_INTERVAL\tDIST_CONTIG\tSTRAND_DIFF\tDIST_GENOME\tPERCENTILE\tFOLD\tQVALUE\n";
-}
-
 void MapSC::map()
 {
   *(output_stream) << std::setprecision(5);
-  write_header();
 
   // Load all query sequences once? Might be inefficient
   qseq_sptr_t qs = std::make_shared<QSeq>(query_path);
@@ -118,10 +111,14 @@ void MapSC::map()
       strstream sout;
       sout << std::setprecision(5);
       if (dist_th.size() == 1) {
-        QIE<double> qie(params_single, sketch, sketch->get_lshf(), qs->get_seq_batch(), qs->get_qid_batch());
+        params_t<double> params = params_single;
+        params.canonical = sketch->is_canonical();
+        QIE<double> qie(params, sketch, sketch->get_lshf(), qs->get_seq_batch(), qs->get_qid_batch());
         qie.map_sequences(sout, sketch->get_rid());
       } else {
-        QIE<cm512_t> qie(params_multiple, sketch, sketch->get_lshf(), qs->get_seq_batch(), qs->get_qid_batch());
+        params_t<cm512_t> params = params_multiple;
+        params.canonical = sketch->is_canonical();
+        QIE<cm512_t> qie(params, sketch, sketch->get_lshf(), qs->get_seq_batch(), qs->get_qid_batch());
         qie.map_sequences(sout, sketch->get_rid());
       }
 
@@ -183,7 +180,7 @@ bool SketchSC::validate_configuration()
 
 void SketchSC::create()
 {
-  rseq_sptr_t rs = std::make_shared<RSeq>(input_path, lshf, w, r, frac);
+  rseq_sptr_t rs = std::make_shared<RSeq>(input_path, lshf, w, r, frac, canonical);
   sdhm_sptr_t sdhm = std::make_shared<SDHM>();
   sdhm->fill_table(nrows, rs);
   sketch_sfhm = std::make_shared<SFHM>(sdhm);
@@ -212,6 +209,7 @@ void SketchSC::write_config(std::ofstream& sout)
   sout.write(reinterpret_cast<char*>(&m), sizeof(uint32_t));
   sout.write(reinterpret_cast<char*>(&r), sizeof(uint32_t));
   sout.write(reinterpret_cast<char*>(&frac), sizeof(bool));
+  sout.write(reinterpret_cast<char*>(&canonical), sizeof(bool));
   sout.write(reinterpret_cast<char*>(&nrows), sizeof(uint32_t));
   sout.write(reinterpret_cast<char*>(lshf->ppos_data()), h * sizeof(uint8_t));
   sout.write(reinterpret_cast<char*>(lshf->npos_data()), (k - h) * sizeof(uint8_t));
@@ -246,7 +244,9 @@ SketchSC::SketchSC(CLI::App& sc)
   sc.add_option("-r,--residue-lsh", r, "A k-mer x will be included only if r = LSH(x) mod m [1]")
     ->check(CLI::NonNegativeNumber);
   sc.add_flag("--frac,!--no-frac", frac, "Include k-mers with r <= LSH(x) mod m [true]");
+  sc.add_flag("--strand-aware,!--strand-agnostic", strand_aware, "Use a strand-aware sketch, default: strand-agnostic");
   sc.callback([&]() {
+    canonical = !strand_aware;
     if (!(sc.count("-w") + sc.count("--win-len"))) {
       w = k + 6;
       h = k - 16;
@@ -350,12 +350,14 @@ void InfoSC::info()
     uint8_t k = 0, w = 0, h = 0;
     uint32_t m = 0, r = 0, nrows = 0;
     bool frac = false;
+    bool canonical = false;
     stream.read(reinterpret_cast<char*>(&k), sizeof(uint8_t));
     stream.read(reinterpret_cast<char*>(&w), sizeof(uint8_t));
     stream.read(reinterpret_cast<char*>(&h), sizeof(uint8_t));
     stream.read(reinterpret_cast<char*>(&m), sizeof(uint32_t));
     stream.read(reinterpret_cast<char*>(&r), sizeof(uint32_t));
     stream.read(reinterpret_cast<char*>(&frac), sizeof(bool));
+    stream.read(reinterpret_cast<char*>(&canonical), sizeof(bool));
     stream.read(reinterpret_cast<char*>(&nrows), sizeof(uint32_t));
 
     stream.seekg(static_cast<std::streamoff>(h) + static_cast<std::streamoff>(k - h), std::ios::cur);
@@ -383,6 +385,7 @@ void InfoSC::info()
     std::cout << "  m (modulo):  " << m << "\n";
     std::cout << "  r (residue): " << r << "\n";
     std::cout << "  frac:        " << (frac ? "true" : "false") << "\n";
+    std::cout << "  canonical:   " << (canonical ? "true" : "false") << "\n";
     std::cout << "  nrows:       " << nrows << "\n";
     std::cout << "  rho:         " << rho << "\n";
     std::cout << "  k-mers:      " << nkmers << "\n";

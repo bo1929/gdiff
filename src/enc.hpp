@@ -81,4 +81,29 @@ constexpr Integral extract_bits(Integral x, Integral mask)
   return res;
 }
 
+// Bit deposit for non-BMI2 architectures
+template<typename Integral>
+constexpr Integral deposit_bits(Integral x, Integral mask)
+{
+  Integral res = 0;
+  for (Integral bb = 1; mask != 0; bb += bb) {
+    if (x & 1) {
+      res |= (mask & -mask);
+    }
+    x >>= 1;
+    mask &= (mask - 1);
+  }
+  return res;
+}
+
+inline uint64_t lr64_to_bp64(uint64_t lr)
+{
+  uint64_t bp = 0;
+  for (uint8_t j = 0; j < 32; ++j) {
+    bp |= ((lr >> j) & 1ULL) << (2 * j);
+    bp |= ((lr >> (j + 32)) & 1ULL) << (2 * j + 1);
+  }
+  return bp;
+}
+
 #endif

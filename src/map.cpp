@@ -84,61 +84,95 @@ void QIE<T>::map_sequences(std::ostream& sout, const str& rid)
       warn_pmsg(qid_batch[bix], "minimum length is exceeded; using the full query as the effective minimum ");
     }
 
-    DIM<T> dim_fw(params, llhf, nbins, enmers);
-    DIM<T> dim_rc(params, llhf, nbins, enmers);
-    search_mers(cseq, len, dim_fw, dim_rc);
-
     const uint64_t tau_eff = std::min(params.tau_bin, nbins) - 1;
     const size_t srprev = records_v.size(); // record index before this query
 
-    // Build prefix sums/histograms; d_q chooses per-threshold signs before extrema_scan.
-    for (auto* dim : {&dim_fw, &dim_rc}) {
-      dim->inclusive_scan();
-      if (!coordinates_only) dim->compute_prefhistsum();
+    if (params.canonical) {
+      DIM<T> dim(params, llhf, nbins, enmers);
+      search_mers(cseq, len, dim);
+      dim.inclusive_scan();
+
+      if (!coordinates_only) dim.compute_prefhistsum();
+
+      double d_q = nanx();
+      vec<uint64_t> v_q;
+      uint64_t u_q = 0, t_q = 0;
+      dim.total_histogram(v_q, u_q, t_q);
+      d_q = llhf->mle(v_q.data(), u_q);
+      d_q = validate_distance(d_q);
+
+      dim.set_query_distance(d_q);
+      dim.extrema_scan();
+
+      if (enum_only) {
+        extract_simple_intervals(dim, false, tau_eff);
+        if (coordinates_only) continue; // skip MLE or significance
+      }
+
+      if (!skip_test) diststat->sample_null_pool(dim, tau_eff, bix);
+      if (!enum_only) extract_ordered_intervals(dim, false, tau_eff);
+
+      for (size_t ri = srprev; ri < records_v.size(); ++ri) {
+        record_t& r = records_v[ri];
+        r.d_q = d_q;
+        r.d_diff = nanx();
+      }
+
+      add_to_acc(v_acc, u_acc, v_q, u_q);
+    } else {
+      DIM<T> dim_fw(params, llhf, nbins, enmers);
+      DIM<T> dim_rc(params, llhf, nbins, enmers);
+      search_mers(cseq, len, dim_fw, dim_rc);
+
+      // Build prefix sums/histograms; d_q chooses per-threshold signs before extrema_scan.
+      for (auto* dim : {&dim_fw, &dim_rc}) {
+        dim->inclusive_scan();
+        if (!coordinates_only) dim->compute_prefhistsum();
+      }
+
+      // Strand-wide MLE distances.
+      double d_q_fw = nanx(), d_q_rc = nanx(), d_diff = nanx();
+      vec<uint64_t> v_q_fw, v_q_rc;
+      uint64_t u_q_fw = 0, u_q_rc = 0, t_q = 0;
+      dim_fw.total_histogram(v_q_fw, u_q_fw, t_q);
+      dim_rc.total_histogram(v_q_rc, u_q_rc, t_q);
+      d_q_fw = llhf->mle(v_q_fw.data(), u_q_fw);
+      d_q_rc = llhf->mle(v_q_rc.data(), u_q_rc);
+      d_diff = strand_diff(d_q_fw, d_q_rc);
+      d_q_fw = validate_distance(d_q_fw);
+      d_q_rc = validate_distance(d_q_rc);
+
+      // Determine direction per threshold, then signed extrema for extraction.
+      dim_fw.set_query_distance(d_q_fw);
+      dim_rc.set_query_distance(d_q_rc);
+
+      for (auto* dim : {&dim_fw, &dim_rc}) {
+        dim->extrema_scan();
+      }
+
+      if (enum_only) {
+        extract_simple_intervals(dim_fw, false, tau_eff);
+        extract_simple_intervals(dim_rc, true, tau_eff);
+        if (coordinates_only) continue; // skip MLE or significance
+      }
+
+      // The lower-distance strand is the reference: rc when the difference > 0, else fw
+      const bool is_rc = (!std::isnan(d_diff)) && d_diff > 0.0;
+      if (!skip_test) diststat->sample_null_pool(is_rc ? dim_rc : dim_fw, tau_eff, bix);
+
+      if (!enum_only) {
+        extract_ordered_intervals(dim_fw, false, tau_eff);
+        extract_ordered_intervals(dim_rc, true, tau_eff);
+      }
+
+      for (size_t ri = srprev; ri < records_v.size(); ++ri) {
+        record_t& r = records_v[ri];
+        r.d_q = r.is_rc ? d_q_rc : d_q_fw;
+        r.d_diff = d_diff;
+      }
+
+      add_to_acc(v_acc, u_acc, is_rc ? v_q_rc : v_q_fw, is_rc ? u_q_rc : u_q_fw);
     }
-
-    // Strand-wide MLE distances.
-    double d_q_fw = nanx(), d_q_rc = nanx(), d_diff = nanx();
-    vec<uint64_t> v_q_fw, v_q_rc;
-    uint64_t u_q_fw = 0, u_q_rc = 0, t_q = 0;
-    dim_fw.total_histogram(v_q_fw, u_q_fw, t_q);
-    dim_rc.total_histogram(v_q_rc, u_q_rc, t_q);
-    d_q_fw = llhf->mle(v_q_fw.data(), u_q_fw);
-    d_q_rc = llhf->mle(v_q_rc.data(), u_q_rc);
-    d_diff = strand_diff(d_q_fw, d_q_rc);
-    d_q_fw = validate_distance(d_q_fw);
-    d_q_rc = validate_distance(d_q_rc);
-
-    // Determine direction per threshold, then signed extrema for extraction.
-    dim_fw.set_query_distance(d_q_fw);
-    dim_rc.set_query_distance(d_q_rc);
-
-    for (auto* dim : {&dim_fw, &dim_rc}) {
-      dim->extrema_scan();
-    }
-
-    if (enum_only) {
-      extract_simple_intervals(dim_fw, false, tau_eff);
-      extract_simple_intervals(dim_rc, true, tau_eff);
-      if (coordinates_only) continue; // skip MLE or significance
-    }
-
-    // The lower-distance strand is the reference: rc when the difference > 0, else fw.
-    const bool is_rc = (!std::isnan(d_diff)) && d_diff > 0.0;
-    if (!skip_test) diststat->sample_null_pool(is_rc ? dim_rc : dim_fw, tau_eff, bix);
-
-    if (!enum_only) {
-      extract_ordered_intervals(dim_fw, false, tau_eff);
-      extract_ordered_intervals(dim_rc, true, tau_eff);
-    }
-
-    for (size_t ri = srprev; ri < records_v.size(); ++ri) {
-      record_t& r = records_v[ri];
-      r.d_q = r.is_rc ? d_q_rc : d_q_fw;
-      r.d_diff = d_diff;
-    }
-
-    add_to_acc(v_acc, u_acc, is_rc ? v_q_rc : v_q_fw, is_rc ? u_q_rc : u_q_fw);
   }
 
   if (keep_hist) d_acc = llhf->mle(v_acc.data(), u_acc);
@@ -268,6 +302,58 @@ void DIM<T>::release_accumulators() noexcept
 } // }}}
 
 template<typename T>
+void QIE<T>::search_mers(const char* cseq, uint64_t len, DIM<T>& dim)
+{
+  uint64_t i = 0, j = 0, l = 0;
+  uint32_t orrix, rcrix;
+  uint64_t orenc64_bp, orenc64_lr, rcenc64_bp;
+  for (; i < len; ++i) {
+    if (__builtin_expect(SEQ_NT4_TABLE[cseq[i]] >= 4, 0)) {
+      // TODO: What to do for missing ones? Masked repeats should be handled here, too
+      l = 0;
+      continue;
+    }
+    ++l;
+    if (l < k) {
+      // TODO: What to do for missing ones? Masked repeats should be handled here, too
+      continue;
+    }
+    j = i - k + 1;
+    if (l == k) {
+      compute_encoding(cseq + j, cseq + i + 1, orenc64_lr, orenc64_bp);
+    } else {
+      update_encoding(cseq + i, orenc64_lr, orenc64_bp);
+    }
+    orenc64_bp &= mask_bp;
+    orenc64_lr &= mask_lr;
+    rcenc64_bp = revcomp_bp64(orenc64_bp, k);
+    onmers++;
+    const uint64_t bin_j = j >> params.bin_shift; // The bin index for this k-mer position
+    if (rcenc64_bp < orenc64_bp) {
+      orrix = lshf->compute_hash(orenc64_bp);
+      const uint32_t off_fw = sketch->partial_offset(orrix);
+      sketch->prefetch_offset_inc(off_fw);
+      const enc_t enc_lr_fw = lshf->drop_ppos_lr(orenc64_lr);
+      sketch->prefetch_offset_enc(off_fw);
+      uint32_t hdist_fw;
+      if (sketch->scan_bucket(off_fw, enc_lr_fw, hdist_fw)) {
+        dim.aggregate_mer(hdist_fw, bin_j);
+      }
+    } else {
+      rcrix = lshf->compute_hash(rcenc64_bp);
+      const uint32_t off_rc = sketch->partial_offset(rcrix);
+      sketch->prefetch_offset_inc(off_rc);                                  // Phase 1
+      const enc_t enc_lr_rc = lshf->drop_ppos_lr(bp64_to_lr64(rcenc64_bp)); // Phase 2
+      sketch->prefetch_offset_enc(off_rc);                                  // Phase 3
+      uint32_t hdist_rc;
+      if (sketch->scan_bucket(off_rc, enc_lr_rc, hdist_rc)) {
+        dim.aggregate_mer(hdist_rc, bin_j);
+      }
+    }
+  }
+}
+
+template<typename T>
 void QIE<T>::search_mers(const char* cseq, uint64_t len, DIM<T>& dim_fw, DIM<T>& dim_rc)
 {
   uint64_t i = 0, j = 0, l = 0;
@@ -295,29 +381,6 @@ void QIE<T>::search_mers(const char* cseq, uint64_t len, DIM<T>& dim_fw, DIM<T>&
     rcenc64_bp = revcomp_bp64(orenc64_bp, k);
     onmers++;
     const uint64_t bin_j = j >> params.bin_shift; // The bin index for this k-mer position
-#ifdef CANONICAL
-    if (rcenc64_bp < orenc64_bp) {
-      orrix = lshf->compute_hash(orenc64_bp);
-      const uint32_t off_fw = sketch->partial_offset(orrix);
-      sketch->prefetch_offset_inc(off_fw);
-      const enc_t enc_lr_fw = lshf->drop_ppos_lr(orenc64_lr);
-      sketch->prefetch_offset_enc(off_fw);
-      uint32_t hdist_fw;
-      if (sketch->scan_bucket(off_fw, enc_lr_fw, hdist_fw)) {
-        dim_fw.aggregate_mer(hdist_fw, bin_j);
-      }
-    } else {
-      rcrix = lshf->compute_hash(rcenc64_bp);
-      const uint32_t off_rc = sketch->partial_offset(rcrix);
-      sketch->prefetch_offset_inc(off_rc);                                  // Phase 1
-      const enc_t enc_lr_rc = lshf->drop_ppos_lr(bp64_to_lr64(rcenc64_bp)); // Phase 2
-      sketch->prefetch_offset_enc(off_rc);                                  // Phase 3
-      uint32_t hdist_rc;
-      if (sketch->scan_bucket(off_rc, enc_lr_rc, hdist_rc)) {
-        dim_fw.aggregate_mer(hdist_rc, bin_j);
-      }
-    }
-#else
     orrix = lshf->compute_hash(orenc64_bp);
     rcrix = lshf->compute_hash(rcenc64_bp);
     const uint32_t off_fw = sketch->partial_offset(orrix);
@@ -336,7 +399,6 @@ void QIE<T>::search_mers(const char* cseq, uint64_t len, DIM<T>& dim_fw, DIM<T>&
     if (sketch->scan_bucket(off_rc, enc_lr_rc, hdist_rc)) {
       dim_rc.aggregate_mer(hdist_rc, bin_j);
     }
-#endif /* CANONICAL */
   }
 }
 
@@ -733,24 +795,42 @@ void QIE<T>::report_contiguous(std::ostream& sout, const str& rid) const
     d_bin.precision(sout.precision());
     d_bin << '(' << d_range.first << ", " << d_range.second << ')';
 
-    write_tsv(sout,
-              qid_batch[r.bix],
-              r.L,
-              r.seq_iv.a,
-              r.seq_iv.b,
-              report_strand(r.is_rc, r.d_diff),
-              static_cast<uint32_t>(r.is_rc),
-              rid,
-              r.d,
-              static_cast<uint32_t>(mask),
-              d_bin.str(),
-              r.d_q,
-              r.d_diff,
-              d_acc,
-              r.percentile,
-              r.fold,
-              r.qvalue)
-      << '\n';
+    if (params.canonical) {
+      write_tsv(sout,
+                qid_batch[r.bix],
+                r.L,
+                r.seq_iv.a,
+                r.seq_iv.b,
+                rid,
+                r.d,
+                static_cast<uint32_t>(mask),
+                d_bin.str(),
+                r.d_q,
+                d_acc,
+                r.percentile,
+                r.fold,
+                r.qvalue)
+        << '\n';
+    } else {
+      write_tsv(sout,
+                qid_batch[r.bix],
+                r.L,
+                r.seq_iv.a,
+                r.seq_iv.b,
+                report_strand(r.is_rc, r.d_diff),
+                static_cast<uint32_t>(r.is_rc),
+                rid,
+                r.d,
+                static_cast<uint32_t>(mask),
+                d_bin.str(),
+                r.d_q,
+                r.d_diff,
+                d_acc,
+                r.percentile,
+                r.fold,
+                r.qvalue)
+        << '\n';
+    }
   }
 } // }}}
 

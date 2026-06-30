@@ -88,7 +88,8 @@ struct params_t
   uint64_t bin_shift;   // Shift value for fast bin index calculation
   uint64_t bin_size;    // Bin size in sites, equals to pow(2, bin_shift)
   uint64_t sample_size; // Number of null samples for significance test (0 = skip)
-  bool enum_only;
+  bool canonical;       // Strand-agnostic sketch mode and canonical k-mers
+  bool enum_only;       // Only enumerate intervals, no iterative interval removal
 
   params_t(size_t n,
            T dist_th,

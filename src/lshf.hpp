@@ -20,6 +20,8 @@ public:
   uint32_t compute_hash(uint64_t enc_bp);
   uint32_t drop_ppos_lr(uint64_t enc64_lr);
   uint32_t drop_ppos_bp(uint64_t enc64_bp);
+  uint64_t inv_compute_hash(uint32_t rix);
+  uint64_t inv_drop_ppos_lr(uint32_t enc_lr);
   uint32_t get_npos_accdiff(uint32_t& zc, uint32_t& i);
   uint32_t get_npos_diff(uint32_t zc);
   char* npos_data();

@@ -5,7 +5,7 @@
 #include <cstring>
 
 // Helper: write a minimal but valid sketch file byte-by-byte
-static std::filesystem::path write_tiny_sketch(const std::string& name = "test_sketch")
+static std::filesystem::path write_tiny_sketch(const std::string& name = "test_sketch", bool canonical = true)
 {
   auto tmp = std::filesystem::temp_directory_path() / (name + ".skc");
 
@@ -40,6 +40,7 @@ static std::filesystem::path write_tiny_sketch(const std::string& name = "test_s
   sout.write(reinterpret_cast<const char*>(&m), sizeof(uint32_t));
   sout.write(reinterpret_cast<const char*>(&r), sizeof(uint32_t));
   sout.write(reinterpret_cast<const char*>(&frac), sizeof(bool));
+  sout.write(reinterpret_cast<const char*>(&canonical), sizeof(bool));
 
   uint32_t nrows = 4;
   sout.write(reinterpret_cast<const char*>(&nrows), sizeof(uint32_t));
@@ -153,6 +154,35 @@ TEST_CASE("seek_past correctly advances stream position") {
   CHECK(stream.eof());
 
   stream.close();
+  std::filesystem::remove(path);
+}
+
+TEST_CASE("is_canonical reflects sketch header") {
+  auto path_can = write_tiny_sketch("test_canonical", true);
+  auto path_sa = write_tiny_sketch("test_strand_aware", false);
+
+  Sketch sketch_can(path_can);
+  load_sketch_from_file(sketch_can, path_can);
+  Sketch sketch_sa(path_sa);
+  load_sketch_from_file(sketch_sa, path_sa);
+
+  CHECK(sketch_can.is_canonical());
+  CHECK_FALSE(sketch_sa.is_canonical());
+
+  std::filesystem::remove(path_can);
+  std::filesystem::remove(path_sa);
+}
+
+TEST_CASE("canonicalize on already-canonical sketch is no-op") {
+  auto path = write_tiny_sketch("test_noop", true);
+  Sketch sketch(path);
+  load_sketch_from_file(sketch, path);
+
+  const uint64_t nkmers = sketch.get_sfhm_sptr()->get_nkmers();
+  sketch.canonicalize();
+  CHECK(sketch.is_canonical());
+  CHECK(sketch.get_sfhm_sptr()->get_nkmers() == nkmers);
+
   std::filesystem::remove(path);
 }
 

@@ -114,7 +114,7 @@ TEST_CASE("two-sided test and STRAND from d_diff encoding") {
   const auto pinf = std::numeric_limits<double>::infinity();
   const auto ninf = -std::numeric_limits<double>::infinity();
   const auto two_sided = [](bool rec_is_rc, double d_diff) {
-    return std::isfinite(d_diff) && (rec_is_rc == (d_diff > 0.0));
+    return !std::isnan(d_diff) && (rec_is_rc == (d_diff > 0.0));
   };
 
   CHECK(two_sided(false, -0.1));
@@ -136,15 +136,24 @@ TEST_CASE("two-sided test and STRAND from d_diff encoding") {
   CHECK(report_strand(false, nan) == '.');
   CHECK(report_strand(true, nan) == '.');
 
-  CHECK_FALSE(two_sided(false, ninf));
+  CHECK(two_sided(false, ninf));
   CHECK_FALSE(two_sided(true, ninf));
   CHECK(report_strand(false, ninf) == '+');
   CHECK(report_strand(true, ninf) == '.');
 
   CHECK_FALSE(two_sided(false, pinf));
-  CHECK_FALSE(two_sided(true, pinf));
+  CHECK(two_sided(true, pinf));
   CHECK(report_strand(false, pinf) == '.');
   CHECK(report_strand(true, pinf) == '+');
+}
+
+TEST_CASE("canonical NaN d_diff uses one-sided test") {
+  const auto nan = std::numeric_limits<double>::quiet_NaN();
+  const auto two_sided = [](bool rec_is_rc, double d_diff) {
+    return !std::isnan(d_diff) && (rec_is_rc == (d_diff > 0.0));
+  };
+  CHECK_FALSE(two_sided(false, nan));
+  CHECK_FALSE(two_sided(true, nan));
 }
 
 TEST_CASE("null overlap uses half-open bin boundaries") {

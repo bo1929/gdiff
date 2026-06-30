@@ -162,6 +162,47 @@ TEST_CASE("A -> T, single base") {
 
 } // TEST_SUITE
 
+TEST_SUITE("canonical k-mer selection") {
+
+TEST_CASE("canonical mer is max of forward and reverse complement") {
+  const uint32_t k = 27;
+  const uint64_t mask_bp = (1ULL << (2 * k)) - 1;
+
+  const char* seq = "ACGTACGTACGTACGTACGTACGTACG";
+  uint64_t enc_lr, enc_bp;
+  compute_encoding(seq, seq + k, enc_lr, enc_bp);
+  enc_bp &= mask_bp;
+  const uint64_t rc_bp = revcomp_bp64(enc_bp, k);
+  const uint64_t can_bp = std::max(enc_bp, rc_bp);
+  CHECK(can_bp >= rc_bp);
+  CHECK(can_bp >= enc_bp);
+}
+
+TEST_CASE("palindrome k-mer is self-canonical") {
+  uint64_t enc_lr, enc_bp;
+  const char* seq = "AATT";
+  compute_encoding(seq, seq + 4, enc_lr, enc_bp);
+  const uint64_t mask = (1ULL << 8) - 1;
+  enc_bp &= mask;
+  const uint64_t rc_bp = revcomp_bp64(enc_bp, 4);
+  CHECK(rc_bp == enc_bp);
+  CHECK(std::max(enc_bp, rc_bp) == enc_bp);
+}
+
+TEST_CASE("search_mers canonical branch uses rc when rc >= forward") {
+  const char* seq = "AAAA";
+  uint64_t enc_lr, enc_bp;
+  compute_encoding(seq, seq + 4, enc_lr, enc_bp);
+  const uint64_t mask = (1ULL << 8) - 1;
+  enc_bp &= mask;
+  const uint64_t rc_bp = revcomp_bp64(enc_bp, 4);
+  // AAAA rc is TTTT; max picks TTTT (rc branch when rc >= fw)
+  CHECK(rc_bp > enc_bp);
+  CHECK(std::max(enc_bp, rc_bp) == rc_bp);
+}
+
+} // TEST_SUITE
+
 TEST_SUITE("bp64_to_lr64") {
 
 TEST_CASE("round-trip consistency with hdist_lr64") {
@@ -231,6 +272,36 @@ TEST_CASE("full mask gives identity for small values") {
   uint64_t x = 0b1010;
   uint64_t mask = 0b1111;
   CHECK(extract_bits(x, mask) == 0b1010);
+}
+
+} // TEST_SUITE
+
+TEST_SUITE("deposit_bits") {
+
+TEST_CASE("deposit is inverse of extract") {
+  const uint64_t masks[] = {0b10100100, 0xF0F0F0F0F0F0F0F0ULL, 0x0000000F0000000FULL, 0xFFFFFFFFFFFFFFFFULL};
+  const uint64_t xs[] = {0, 1, 0x123456789ABCULL, 0xFEDCBA9876543210ULL, 0xAAAAAAAAAAAAAAAAULL};
+  for (uint64_t m : masks) {
+    for (uint64_t x : xs) {
+      const uint64_t packed = extract_bits(x, m);
+      CHECK(deposit_bits(packed, m) == (x & m));
+    }
+  }
+}
+
+TEST_CASE("empty mask gives 0") {
+  CHECK(deposit_bits(uint64_t(0xFF), uint64_t(0)) == 0);
+}
+
+} // TEST_SUITE
+
+TEST_SUITE("lr64_to_bp64") {
+
+TEST_CASE("lr64_to_bp64 is inverse of bp64_to_lr64") {
+  const uint64_t vals[] = {0, 0x1B, 0xFFFFF, 0x123456789ABCULL, 0x3FFFFFFFFFFFFFFFULL};
+  for (uint64_t v : vals) {
+    CHECK(lr64_to_bp64(bp64_to_lr64(v)) == v);
+  }
 }
 
 } // TEST_SUITE

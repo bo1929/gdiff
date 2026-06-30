@@ -22,6 +22,7 @@ public:
   void map_sequences(std::ostream& sout, const str& rid);
 
 private:
+  void search_mers(const char* cseq, uint64_t len, DIM<T>& dim);
   void search_mers(const char* cseq, uint64_t len, DIM<T>& dim_fw, DIM<T>& dim_rc);
   void extract_ordered_intervals(DIM<T>& dim, bool is_rc, uint64_t tau_eff);
   void extract_simple_intervals(DIM<T>& dim, bool is_rc, uint64_t tau_eff);

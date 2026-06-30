@@ -48,6 +48,7 @@ public:
     m = 2;
     r = 1;
     frac = true;
+    canonical = true;
     nrows = pow(2, (2 * h) - 1);
   }
 
@@ -58,6 +59,7 @@ protected:
   bool frac;
   uint32_t m; // TODO: remove the entire modulo feature altogether
   uint32_t r;
+  bool canonical = true;
   uint32_t nrows;
   lshf_sptr_t lshf = nullptr;
 };
@@ -73,10 +75,11 @@ public:
   void write_config(std::ofstream& stream);
 
 private:
-  double rho;
   str input_path;
   std::filesystem::path sketch_path;
   sfhm_sptr_t sketch_sfhm = nullptr;
+  bool strand_aware = false;
+  double rho;
 };
 
 class MapSC
@@ -84,7 +87,6 @@ class MapSC
 public:
   MapSC(CLI::App& sc);
   void map();
-  void write_header();
   bool validate_configuration();
   uint64_t get_total_qseq() const { return total_qseq; }
 

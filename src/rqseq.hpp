@@ -15,7 +15,6 @@
 #include "exthash.hpp"
 #include "hyperloglog.hpp"
 
-/* #define CANONICAL */
 #define RBATCH_SIZE 512
 
 class HandlerURL
@@ -71,7 +70,7 @@ KSEQ_INIT(gzFile, gzread)
 class RSeq : public HandlerURL
 {
 public:
-  RSeq(const str& input, const lshf_sptr_t& lshf, uint8_t w, uint32_t r, bool frac);
+  RSeq(const str& input, const lshf_sptr_t& lshf, uint8_t w, uint32_t r, bool frac, bool canonical);
   ~RSeq();
   bool set_curr_seq();
   bool read_next_seq();
@@ -89,6 +88,7 @@ private:
   uint32_t m;
   uint32_t r;
   bool frac;
+  bool canonical;
   char* cseq;
   char* name;
   uint64_t len;

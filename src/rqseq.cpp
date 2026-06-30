@@ -1,9 +1,10 @@
 #include "rqseq.hpp"
 
-RSeq::RSeq(const str& input, const lshf_sptr_t& lshf, uint8_t w, uint32_t r, bool frac)
+RSeq::RSeq(const str& input, const lshf_sptr_t& lshf, uint8_t w, uint32_t r, bool frac, bool canonical)
   : w(w)
   , r(r)
   , frac(frac)
+  , canonical(canonical)
   , lshf(lshf)
 {
   uint64_t u64m = std::numeric_limits<uint64_t>::max();
@@ -69,9 +70,6 @@ void RSeq::extract_mers(vvec<T>& table)
   hll::HyperLogLog c2(12);
   uint64_t klix = 0;
   uint64_t orenc64_bp, orenc64_lr;
-#ifdef CANONICAL
-  uint64_t rcenc64_bp;
-#endif
   std::vector<hmer_t> winenc_v(ldiff);
   hmer_t cminimizer;
   // uint32_t mrs = 0, mre = len; // These may be needed for masking purposes
@@ -98,13 +96,13 @@ void RSeq::extract_mers(vvec<T>& table)
     }
     cminimizer = *std::min_element(winenc_v.begin(), winenc_v.end(), [](hmer_t lhs, hmer_t rhs) { return lhs.z < rhs.z; });
     c2.add(cminimizer.z);
-#ifdef CANONICAL
-    rcenc64_bp = revcomp_bp64(cminimizer.x, k);
-    if (cminimizer.x < rcenc64_bp) {
-      cminimizer.x = rcenc64_bp;
-      cminimizer.y = bp64_to_lr64(rcenc64_bp);
+    if (canonical) {
+      uint64_t rcenc64_bp = revcomp_bp64(cminimizer.x, k);
+      if (cminimizer.x < rcenc64_bp) {
+        cminimizer.x = rcenc64_bp;
+        cminimizer.y = bp64_to_lr64(rcenc64_bp);
+      }
     }
-#endif /* CANONICAL */
     rix = lshf->compute_hash(cminimizer.x);
     rix_res = rix % m;
     if (frac ? rix_res <= r : rix_res == r) {

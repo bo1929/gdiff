@@ -25,7 +25,9 @@ public:
   std::pair<vec_enc_it, vec_enc_it> bucket_indices(uint32_t rix);
   sfhm_sptr_t get_sfhm_sptr();
   lshf_sptr_t get_lshf();
+  void canonicalize();
   double get_rho() const;
+  bool is_canonical() const { return canonical; }
   str get_rid() { return rid; }
   uint64_t get_timestamp() const { return timestamp; }
 
@@ -37,6 +39,7 @@ private:
   uint32_t r;
   uint32_t m;
   double rho;
+  bool canonical;
   uint32_t nrows;
   lshf_sptr_t lshf = nullptr;
   sfhm_sptr_t sfhm = nullptr;

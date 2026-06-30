@@ -25,6 +25,7 @@ void Sketch::load_from_offset(std::ifstream& stream, uint64_t offset)
   stream.read(reinterpret_cast<char*>(&m), sizeof(uint32_t));
   stream.read(reinterpret_cast<char*>(&r), sizeof(uint32_t));
   stream.read(reinterpret_cast<char*>(&frac), sizeof(bool));
+  stream.read(reinterpret_cast<char*>(&canonical), sizeof(bool));
   stream.read(reinterpret_cast<char*>(&nrows), sizeof(uint32_t));
 
   vec<uint8_t> ppos_v(h), npos_v(k - h);
@@ -52,8 +53,13 @@ void Sketch::seek_past(std::ifstream& stream)
   stream.read(reinterpret_cast<char*>(&k), sizeof(uint8_t));
   stream.seekg(sizeof(uint8_t), std::ios::cur);
   stream.read(reinterpret_cast<char*>(&h), sizeof(uint8_t));
-  // skip: m (4), r (4), frac (1), nrows (4) = 13 bytes
-  stream.seekg(sizeof(uint32_t) + sizeof(uint32_t) + sizeof(bool) + sizeof(uint32_t), std::ios::cur);
+  // skip: m (4), r (4), frac (1) = 9 bytes
+  stream.seekg(sizeof(uint32_t) + sizeof(uint32_t) + sizeof(bool), std::ios::cur);
+  // read canonical (1 byte)
+  bool canonical = true;
+  stream.read(reinterpret_cast<char*>(&canonical), sizeof(bool));
+  // skip: nrows (4 bytes)
+  stream.seekg(sizeof(uint32_t), std::ios::cur);
   // skip: ppos_v (h bytes) + npos_v ((k-h) bytes) = k bytes total
   stream.seekg(static_cast<std::streamoff>(k), std::ios::cur);
   // skip: rho (8 bytes)
@@ -178,4 +184,37 @@ std::pair<vec_enc_it, vec_enc_it> Sketch::bucket_indices(uint32_t rix)
     offset = rix / m;
   }
   return std::make_pair(sfhm->bucket_iter_start(offset), sfhm->bucket_iter_next(offset));
+}
+
+void Sketch::canonicalize()
+{
+  if (canonical) {
+    return;
+  }
+  const uint64_t mask_bp = std::numeric_limits<uint64_t>::max() >> ((32 - k) * 2);
+  sdhm_sptr_t sdhm = std::make_shared<SDHM>();
+  sdhm->enc_vvec.resize(nrows);
+  for (uint32_t off = 0; off < nrows; ++off) {
+    const enc_t* ix1 = sfhm->bucket_ptr_start(off);
+    const enc_t* ix2 = sfhm->bucket_ptr_next(off);
+    const uint32_t fw_rix = frac ? (off / (r + 1)) * m + (off % (r + 1)) : off * m + r;
+    for (; ix1 < ix2; ++ix1) {
+      const uint64_t bp_ppos = lshf->inv_compute_hash(fw_rix);
+      const uint64_t bp_npos = lr64_to_bp64(lshf->inv_drop_ppos_lr(*ix1));
+      const uint64_t fw_bp = (bp_ppos | bp_npos) & mask_bp;
+      const uint64_t rc_bp = revcomp_bp64(fw_bp, k);
+      const uint64_t can_bp = std::max(fw_bp, rc_bp);
+      const uint32_t rixn = lshf->compute_hash(can_bp);
+      const uint32_t resn = rixn % m;
+      const bool keep = frac ? (resn <= r) : (resn == r);
+      if (!keep) continue;
+      const uint32_t new_off = frac ? (rixn / m) * (r + 1) + resn : rixn / m;
+      const enc_t new_enc = lshf->drop_ppos_lr(bp64_to_lr64(can_bp));
+      sdhm->enc_vvec[new_off].push_back(new_enc);
+    }
+  }
+  sdhm->sort_columns();
+  sdhm->make_unique();
+  sfhm = std::make_shared<SFHM>(sdhm);
+  canonical = true;
 }

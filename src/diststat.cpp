@@ -171,7 +171,7 @@ bool DistanceStat<T>::test_significance(record_t& r, uint64_t sample_size, const
     warn_pmsg(qid, "gamma fit failed; skipping significance test");
     return false;
   }
-  const bool two_sided = std::isfinite(r.d_diff) && (r.is_rc == (r.d_diff > 0.0));
+  const bool two_sided = !std::isnan(r.d_diff) && (r.is_rc == (r.d_diff > 0.0));
   r.percentile = two_sided ? (2.0 * std::min(prob, 1.0 - prob)) : prob;
   if (std::isfinite(r.d) && median > eps) r.fold = r.d / median;
   return true;
