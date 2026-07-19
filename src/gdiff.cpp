@@ -91,7 +91,7 @@ void MapSC::map()
   // Per-sketch result buffers
   std::vector<strstream> results(nsketches);
   std::atomic<uint32_t> next_idx{0};
-  std::atomic<uint32_t> done_count{0};
+  std::atomic<uint32_t> count_p{0};
   std::mutex cerr_mtx;
 
   auto worker = [&](const uint32_t tseed) {
@@ -122,11 +122,11 @@ void MapSC::map()
       // Store result at its reserved slot (no aliasing between threads)
       results[i] = std::move(sout);
 
-      uint32_t done = done_count.fetch_add(1, std::memory_order_relaxed) + 1;
+      uint32_t num_p = count_p.fetch_add(1, std::memory_order_relaxed) + 1;
       {
         std::lock_guard<std::mutex> lock(cerr_mtx);
-        std::cerr << "\rProcessed sketch " << done << "/" << nsketches << "..." << std::flush;
-        if (done == nsketches) std::cerr << std::endl;
+        std::cerr << "\rProcessed sketch " << num_p << "/" << nsketches << "..." << std::flush;
+        if (num_p == nsketches) std::cerr << std::endl;
       }
     }
   };
