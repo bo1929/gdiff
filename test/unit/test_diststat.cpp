@@ -8,8 +8,7 @@ namespace {
 
 static std::pair<llh_sptr_t<double>, params_t<double>> make_diststat_params(uint64_t sample_size = 32)
 {
-  auto params = params_t<double>(1, 0.1, 4, 2, 33.0, 0, sample_size, true);
-  params.canonical = true;
+  auto params = params_t<double>(1, 0.1, 4, 2, 33.0, 0, sample_size, true, false);
   auto llhf = std::make_shared<LLH<double>>(27, 11, 0.5, 4, 0.1);
   return {llhf, params};
 }
@@ -278,7 +277,7 @@ TEST_CASE("benjamini_hochberg_correction with canonical-only records") {
   records[0].percentile = 0.05;
   records[1].percentile = 0.10;
 
-  DistanceStat<double> diststat(params_t<double>(1, 0.1, 4, 2, 33.0, 0, 20, true),
+  DistanceStat<double> diststat(params_t<double>(1, 0.1, 4, 2, 33.0, 0, 20, true, false),
                                 std::make_shared<LLH<double>>(27, 11, 0.5, 4, 0.1));
   diststat.benjamini_hochberg_correction(records);
 
@@ -293,7 +292,7 @@ TEST_CASE("benjamini_hochberg_correction leaves NaN qvalues untouched") {
   records[0].percentile = 0.05;
   records[1].percentile = nanx();
 
-  DistanceStat<double> diststat(params_t<double>(1, 0.1, 4, 2, 33.0, 0, 20, true),
+  DistanceStat<double> diststat(params_t<double>(1, 0.1, 4, 2, 33.0, 0, 20, true, false),
                                 std::make_shared<LLH<double>>(27, 11, 0.5, 4, 0.1));
   diststat.benjamini_hochberg_correction(records);
 

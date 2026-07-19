@@ -74,7 +74,7 @@ TEST_CASE("constructor from known positions") {
   CHECK(lshf.get_m() == 4);
 }
 
-TEST_CASE("inv_compute_hash + inv_drop_ppos_lr reconstruct bp64") {
+TEST_CASE("inv_ppos_bp + inv_ppos_lr reconstruct bp64") {
   vec<uint8_t> ppos = {26, 25, 20, 18, 15, 14, 13, 10, 7, 5, 0};
   vec<uint8_t> npos;
   std::set<uint8_t> pset(ppos.begin(), ppos.end());
@@ -90,7 +90,7 @@ TEST_CASE("inv_compute_hash + inv_drop_ppos_lr reconstruct bp64") {
     const uint64_t bp = dist(rng) & mask_bp;
     const uint32_t rix = lshf.compute_hash(bp);
     const uint32_t enc_lr = lshf.drop_ppos_lr(bp64_to_lr64(bp));
-    const uint64_t recon = (lshf.inv_compute_hash(rix) | lr64_to_bp64(lshf.inv_drop_ppos_lr(enc_lr))) & mask_bp;
+    const uint64_t recon = (lshf.inv_ppos_bp(rix) | lr64_to_bp64(lshf.inv_ppos_lr(enc_lr))) & mask_bp;
     CHECK(recon == bp);
   }
 }
