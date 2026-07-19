@@ -67,8 +67,12 @@ gdiff dist -i reference.skc -q queries.fasta -l 500 --sample-size 200 -o distanc
 ```
 
 Use `--samples-output sampled_regions.tsv` to also write every valid sampled
-region and its distance. Sampling is with replacement and is controlled by the
-global `--seed` option.
+region and its distance. The sample size applies to the entire query file, with
+each eligible sequence selected in proportion to its length via weighted
+reservoir sampling. Histograms are built only for sequences that claim sample
+slots and are discarded afterward. Use `-b/--bin-shift` to bin k-mers (as in
+`map`) and `--num-threads` to process references in parallel. Sampling is with
+replacement and is controlled by the global `--seed` option.
 
 ## Output format
 
@@ -146,15 +150,17 @@ Providing 8 distance thresholds runs all eight in one SIMD-wide pass.
 | `-q, --query-path` | (required) | Query FASTA/FASTQ file or URL (gzip compatible) |
 | `-i, --sketch-path` | (required) | Sketch file to query against |
 | `-l, --length` | (required) | Exact sampled region length in base pairs |
-| `--sample-size` | `200` | Regions sampled per query/reference pair |
+| `-b, --bin-shift` | `0` | Bin size = 2^b; groups consecutive k-mers |
+| `--sample-size` | `200` | Regions sampled across the whole query file per reference |
 | `--hdist-th` | `4` | Max Hamming distance for a k-mer hit (0-7) |
 | `-o, --output-path` | stdout | Write summary output to a file |
 | `--samples-output` | off | Write sampled region details to a TSV file |
+| `--num-threads` | `1` | Parallel sketch/reference processing threads |
 
 Summary rows contain:
 
 ```
-QUERY_ID  REF_ID  N  MEAN  SD  Q01  Q05  Q25  Q50  Q75  Q95  Q99
+QUERY_FILE  REF_ID  N  MEAN  SD  Q01  Q05  Q25  Q50  Q75  Q95  Q99
 ```
 
 `N` is the number of valid MLE samples, `SD` is the sample standard deviation,

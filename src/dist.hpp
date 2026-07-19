@@ -12,20 +12,23 @@
 #include <iostream>
 #include <random>
 
-class HDHistogram
+class HDHist
 {
 public:
-  HDHistogram(uint64_t nmers, uint32_t hdist_th);
+  HDHist(uint64_t nbins, uint64_t nmers, uint32_t hdist_th, uint64_t bin_shift);
 
-  void aggregate_mer(uint32_t hdist, uint64_t pos);
-  void inclusive_scan();
-  void extract_histogram(uint64_t a, uint64_t b, vec<uint64_t>& hist, uint64_t& misses, uint64_t& hits) const;
+  void aggregate_mer(uint32_t hdist_min, uint64_t i);
+  void compute_prefhistsum();
+  void extract_histogram(uint64_t a, uint64_t b, vec<uint64_t>& v, uint64_t& u, uint64_t& t) const;
+  uint64_t get_nbins() const { return nbins; }
+  uint64_t get_nmers() const { return nmers; }
 
 private:
+  uint64_t nbins;
   uint64_t nmers;
   uint32_t hdist_th;
-  uint32_t width;
-  vec<uint64_t> hist_v;
+  uint64_t bin_shift;
+  vec<uint64_t> hdisthist_v;
 };
 
 struct dist_summary_t
@@ -36,8 +39,18 @@ struct dist_summary_t
   arr<double, 7> quantiles{};
 };
 
-dist_summary_t summarize_distances(vec<double> distances);
-vec<uint64_t> sample_region_starts(uint64_t seq_len, uint64_t region_len, uint64_t sample_size, std::mt19937& rng);
+struct dist_sample_t
+{
+  str qid;
+  uint64_t L = 0;
+  uint64_t a = 0; // 0-based sequence start
+  char strand = '.';
+  double d = nanx();
+};
+
+dist_summary_t summarize_distances(vec<double> d_v);
+vec<uint64_t> sample_coordinates(uint64_t npos, uint64_t sample_size, std::mt19937& rng);
+vec<size_t> select_with_weights(uint64_t w_prev, uint64_t w_seq, uint64_t sample_size, std::mt19937& rng);
 std::pair<double, char> select_strand_distance(double d_fw, double d_rc);
 
 class DistSC
@@ -47,11 +60,26 @@ public:
   void dist();
 
 private:
-  void process_pair(const sketch_sptr_t& sketch, const str& seq, const str& qid);
-  void
-  search_mers(const sketch_sptr_t& sketch, const char* cseq, uint64_t len, HDHistogram& hist_fw, HDHistogram* hist_rc) const;
-  void write_summary(const str& qid, const str& rid, const dist_summary_t& summary);
-  void write_sample(const str& qid, uint64_t seq_len, uint64_t start, char strand, const str& rid, double distance);
+  void sample_sequences(const sketch_sptr_t& sketch,
+                        const vec<str>& seq_batch,
+                        const vec<str>& qid_batch,
+                        strstream& sout,
+                        strstream* samples_sout);
+  void sample_sequence(const sketch_sptr_t& sketch,
+                       const str& seq,
+                       const str& qid,
+                       const vec<size_t>& slots,
+                       vec<double>& d_v,
+                       vec<dist_sample_t>* samples_v);
+  void search_mers(const sketch_sptr_t& sketch, const char* cseq, uint64_t len, HDHist& hist) const;
+  void search_mers(const sketch_sptr_t& sketch, const char* cseq, uint64_t len, HDHist& hist_fw, HDHist& hist_rc) const;
+  void search_window(const sketch_sptr_t& sketch,
+                     const char* cseq,
+                     uint64_t len,
+                     uint64_t j0,
+                     uint64_t j1,
+                     vec<uint64_t>& v_fw,
+                     vec<uint64_t>* v_rc) const;
 
   str query_path;
   std::filesystem::path sketch_path;
@@ -61,8 +89,9 @@ private:
   std::ofstream samples_output_file;
   std::ostream* output_stream = &std::cout;
   std::ostream* samples_output_stream = nullptr;
-  uint64_t region_len = 0;
+  uint64_t tau = 0;
   uint64_t sample_size = 200;
+  uint64_t bin_shift = 0;
   uint32_t hdist_th = 4;
 };
 
