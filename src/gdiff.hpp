@@ -13,6 +13,7 @@
 #include "lshf.hpp"
 #include "rqseq.hpp"
 #include "map.hpp"
+#include "dist.hpp"
 #include "sketch.hpp"
 #include "hm.hpp"
 #include "CLI11.hpp"

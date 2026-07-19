@@ -26,7 +26,7 @@ public:
   std::vector<uint64_t> binom_coef_k;
   std::vector<uint64_t> binom_coef_hnk;
 
-  LLH(uint32_t k, uint32_t h, double rho, uint32_t hdist_th, T extrema)
+  LLH(uint32_t k, uint32_t h, double rho, uint32_t hdist_th, T extrema, bool compute_derivatives = true)
     : k(k)
     , h(h)
     , rho(rho)
@@ -34,8 +34,8 @@ public:
     , extrema(extrema)
     , binom_coef_k(k + 1)
     , binom_coef_hnk(hdist_th + 1)
-    , fdc_v(hdist_th + 1)
-    , sdc_v(hdist_th + 1)
+    , fdc_v(compute_derivatives ? hdist_th + 1 : 0)
+    , sdc_v(compute_derivatives ? hdist_th + 1 : 0)
   {
     // Binomial coefficients for the likelihood model.
     const uint32_t nh = k - h;
@@ -48,6 +48,8 @@ public:
       vc = (vc * (nh - d + 1)) / d;
       binom_coef_hnk[d] = binom_coef_k[d] - vc;
     }
+
+    if (!compute_derivatives) return;
 
     if constexpr (std::is_same_v<T, double>) {
       sign = extrema < 0 ? -1.0 : 1.0;

@@ -417,11 +417,13 @@ int main(int argc, char** argv)
 
   auto& sc_sketch = *app.add_subcommand("sketch", "Create sketches from FASTA/FASTQ files");
   auto& sc_map = *app.add_subcommand("map", "Map queries and extract distance-based patterns from sketches");
+  auto& sc_dist = *app.add_subcommand("dist", "Sample query regions and summarize MLE distances");
   auto& sc_merge = *app.add_subcommand("merge", "Merge multiple sketches into a single sketch file");
   auto& sc_info = *app.add_subcommand("info", "Show metadata for all sketches in a sketch file");
 
   SketchSC gdiff_sketch(sc_sketch);
   MapSC gdiff_map(sc_map);
+  DistSC gdiff_dist(sc_dist);
   MergeSC gdiff_merge(sc_merge);
   InfoSC gdiff_info(sc_info);
 
@@ -466,6 +468,14 @@ int main(int argc, char** argv)
     std::chrono::duration<float> es_s = std::chrono::system_clock::now() - tstart - es_b;
     cerr_msg("Done mapping sequences, elapsed: ", es_s.count(), " sec");
     cerr_msg("Total number of sequences queried: ", gdiff_map.get_total_qseq());
+  }
+
+  if (sc_dist.parsed()) {
+    cerr_msg("Sampling query regions and calculating distances...");
+    std::chrono::duration<float> es_b = std::chrono::system_clock::now() - tstart;
+    gdiff_dist.dist();
+    std::chrono::duration<float> es_s = std::chrono::system_clock::now() - tstart - es_b;
+    cerr_msg("Done calculating distances, elapsed: ", es_s.count(), " sec");
   }
 
   if (sc_info.parsed()) {
