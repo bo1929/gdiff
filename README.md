@@ -58,6 +58,18 @@ gdiff merge -i ref_A.skc ref_B.skc ref_C.skc -o combined.skc
 gdiff info -i reference.skc
 ```
 
+### 5. Sample fixed-length distances
+
+Sample exact-length query regions and summarize their MLE distances:
+
+```bash
+gdiff dist -i reference.skc -q queries.fasta -l 500 --sample-size 200 -o distance_summary.tsv
+```
+
+Use `--samples-output sampled_regions.tsv` to also write every valid sampled
+region and its distance. Sampling is with replacement and is controlled by the
+global `--seed` option.
+
 ## Output format
 
 The default (continuous) output is a tab-separated file with these columns:
@@ -126,6 +138,35 @@ In `--enum-only` mode, each row is an independent interval covering the k-mer bi
 | `--enum-only` | off | Simple per-threshold enumeration; with `--sample-size 0` emits coordinates only |
 
 Providing 8 distance thresholds runs all eight in one SIMD-wide pass.
+
+### `gdiff dist`
+
+| Option | Default | Description |
+|--------|--------|-------------|
+| `-q, --query-path` | (required) | Query FASTA/FASTQ file or URL (gzip compatible) |
+| `-i, --sketch-path` | (required) | Sketch file to query against |
+| `-l, --length` | (required) | Exact sampled region length in base pairs |
+| `--sample-size` | `200` | Regions sampled per query/reference pair |
+| `--hdist-th` | `4` | Max Hamming distance for a k-mer hit (0-7) |
+| `-o, --output-path` | stdout | Write summary output to a file |
+| `--samples-output` | off | Write sampled region details to a TSV file |
+
+Summary rows contain:
+
+```
+QUERY_ID  REF_ID  N  MEAN  SD  Q01  Q05  Q25  Q50  Q75  Q95  Q99
+```
+
+`N` is the number of valid MLE samples, `SD` is the sample standard deviation,
+and quantiles use linear interpolation. Sample detail rows contain:
+
+```
+QUERY_ID  SEQ_LEN  START  END  STRAND  REF_ID  DIST
+```
+
+Coordinates are 1-based and inclusive. For strand-aware sketches, each sample
+uses the lower of the forward and reverse-complement MLE distances and reports
+the selected strand.
 
 ## Interactive visualization
 
