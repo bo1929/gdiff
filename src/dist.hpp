@@ -20,8 +20,8 @@ public:
   void aggregate_mer(uint32_t hdist_min, uint64_t i);
   void compute_prefhistsum();
   void extract_histogram(uint64_t a, uint64_t b, vec<uint64_t>& v, uint64_t& u, uint64_t& t) const;
-  uint64_t get_nbins() const { return nbins; }
-  uint64_t get_nmers() const { return nmers; }
+  [[nodiscard]] uint64_t get_nbins() const { return nbins; }
+  [[nodiscard]] uint64_t get_nmers() const { return nmers; }
 
 private:
   uint64_t nbins;
@@ -49,8 +49,6 @@ struct dist_sample_t
 };
 
 dist_summary_t summarize_distances(vec<double> d_v);
-vec<uint64_t> sample_coordinates(uint64_t npos, uint64_t sample_size, std::mt19937& rng);
-vec<size_t> select_with_weights(uint64_t w_prev, uint64_t w_seq, uint64_t sample_size, std::mt19937& rng);
 std::pair<double, char> select_strand_distance(double d_fw, double d_rc);
 
 class DistSC
@@ -58,6 +56,7 @@ class DistSC
 public:
   explicit DistSC(CLI::App& sc);
   void dist();
+  bool validate_configuration();
 
 private:
   void sample_sequences(const sketch_sptr_t& sketch,
@@ -68,7 +67,7 @@ private:
   void sample_sequence(const sketch_sptr_t& sketch,
                        const str& seq,
                        const str& qid,
-                       const vec<size_t>& slots,
+                       uint64_t n_samples,
                        vec<double>& d_v,
                        vec<dist_sample_t>* samples_v);
   void search_mers(const sketch_sptr_t& sketch, const char* cseq, uint64_t len, HDHist& hist) const;

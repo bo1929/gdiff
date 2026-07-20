@@ -25,17 +25,6 @@
 extern uint32_t num_threads;
 extern str invocation;
 
-const auto url_validator = CLI::Validator(
-  [](std::string& input) {
-    if (match_url(input)) {
-      return std::string("");
-    } else {
-      return "Given URL is not valid: " + input;
-    }
-  },
-  "URL",
-  "URL validator");
-
 class BaseLSH
 {
 public:

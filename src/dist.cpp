@@ -1,9 +1,5 @@
 #include "dist.hpp"
 
-#include "common.hpp"
-#include "enc.hpp"
-#include "msg.hpp"
-#include "random.hpp"
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -13,14 +9,14 @@
 #include <simde/x86/avx512.h>
 #include <thread>
 
+#include "common.hpp"
+#include "enc.hpp"
+#include "msg.hpp"
+#include "random.hpp"
+
 extern uint32_t num_threads;
 
 namespace {
-
-  const auto url_validator = CLI::Validator(
-    [](std::string& input) { return match_url(input) ? std::string("") : "Given URL is not valid: " + input; },
-    "URL",
-    "URL validator");
 
   double linear_quantile(const vec<double>& v, const double p)
   {
@@ -64,7 +60,7 @@ void HDHist::extract_histogram(const uint64_t a, const uint64_t b, vec<uint64_t>
 {
   assert(a <= b && b <= nbins);
   const uint32_t W = hdist_th + 1;
-  v.assign(hdist_bound + 1, 0);
+  v.resize(hdist_bound + 1);
   const simde__mmask8 mask = static_cast<simde__mmask8>((1u << W) - 1);
   const simde__m512i vb = simde_mm512_maskz_loadu_epi64(mask, &hdisthist_v[b * W]);
   const simde__m512i va = simde_mm512_maskz_loadu_epi64(mask, &hdisthist_v[a * W]);
@@ -109,29 +105,6 @@ dist_summary_t summarize_distances(vec<double> d_v)
   return summary;
 }
 
-vec<uint64_t> sample_coordinates(const uint64_t npos, const uint64_t sample_size, std::mt19937& rng)
-{
-  vec<uint64_t> starts_v;
-  if (npos == 0) return starts_v;
-  starts_v.reserve(sample_size);
-  std::uniform_int_distribution<uint64_t> rvstart(0, npos - 1);
-  for (uint64_t i = 0; i < sample_size; ++i)
-    starts_v.push_back(rvstart(rng));
-  return starts_v;
-}
-
-vec<size_t> select_with_weights(const uint64_t w_prev, const uint64_t w_seq, const uint64_t sample_size, std::mt19937& rng)
-{
-  vec<size_t> slots_v;
-  if (w_seq == 0) return slots_v;
-  const uint64_t w_tot = w_prev + w_seq;
-  std::uniform_int_distribution<uint64_t> ruv(0, w_tot - 1);
-  for (uint64_t i = 0; i < sample_size; ++i) {
-    if (ruv(rng) >= w_prev) slots_v.push_back(static_cast<size_t>(i));
-  }
-  return slots_v;
-}
-
 std::pair<double, char> select_strand_distance(const double d_fw, const double d_rc)
 {
   const bool fw_valid = std::isfinite(d_fw);
@@ -156,9 +129,8 @@ DistSC::DistSC(CLI::App& sc)
   sc.add_option("-o,--output-path", output_path, "Write summary output to a file at <path> [stdout]");
   sc.add_option("--samples-output", samples_output_path, "Write sampled regions and distances to a TSV file");
   sc.callback([&]() {
-    if (bin_shift >= 63) error_exit(concat_msg("--bin-shift must be less than 63; got ", bin_shift));
-    if (!output_path.empty() && !samples_output_path.empty() && output_path == samples_output_path) {
-      error_exit("--output-path and --samples-output must be different files");
+    if (!validate_configuration()) {
+      error_exit("Invalid configuration!");
     }
     if (!output_path.empty()) {
       output_file.open(output_path);
@@ -171,6 +143,20 @@ DistSC::DistSC(CLI::App& sc)
       samples_output_stream = &samples_output_file;
     }
   });
+}
+
+bool DistSC::validate_configuration()
+{
+  bool is_invalid = false;
+  if (bin_shift >= 63) {
+    is_invalid = true;
+    cerr_msg("--bin-shift must be less than 63; got ", bin_shift);
+  }
+  if (!output_path.empty() && !samples_output_path.empty() && output_path == samples_output_path) {
+    is_invalid = true;
+    cerr_msg("--output-path and --samples-output must be different files");
+  }
+  return !is_invalid;
 }
 
 void DistSC::dist()
@@ -259,28 +245,50 @@ void DistSC::sample_sequences(const sketch_sptr_t& sketch,
     error_exit(concat_msg("--bin-shift gives bin_size=", bin_size, ", which exceeds --length=", tau));
   }
 
-  vec<double> d_v(sample_size, nanx());
+  uint64_t total_len = 0;
+  vec<uint64_t> cum_lens(seq_batch.size());
+  for (size_t bix = 0; bix < seq_batch.size(); ++bix) {
+    if (seq_batch[bix].size() >= tau) total_len += seq_batch[bix].size();
+    cum_lens[bix] = total_len;
+  }
+
+  vec<double> d_v;
+  d_v.reserve(sample_size);
   vec<dist_sample_t> samples_v;
   vec<dist_sample_t>* samples_ptr = nullptr;
   if (samples_sout) {
-    samples_v.assign(sample_size, {});
+    samples_v.reserve(sample_size);
     samples_ptr = &samples_v;
   }
 
-  uint64_t w_tot = 0;
-  for (size_t bix = 0; bix < seq_batch.size(); ++bix) {
+  if (total_len == 0) {
+    const dist_summary_t summary = summarize_distances(std::move(d_v));
+    sout << std::setprecision(8);
+    write_tsv(sout, query_path, sketch->get_rid(), summary.n, summary.mean, summary.sd);
+    for (const double q : summary.quantiles)
+      sout << '\t' << q;
+    sout << '\n';
+    return;
+  }
+
+  vec<uint64_t> positions;
+  positions.reserve(sample_size);
+  std::uniform_int_distribution<uint64_t> rpos(0, total_len - 1);
+  for (uint64_t i = 0; i < sample_size; ++i)
+    positions.push_back(rpos(gen));
+  std::sort(positions.begin(), positions.end());
+
+  size_t pidx = 0;
+  for (size_t bix = 0; bix < seq_batch.size() && pidx < positions.size(); ++bix) {
     const str& seq = seq_batch[bix];
-    const str& qid = qid_batch[bix];
-    if (seq.size() < tau) {
-      warn_pmsg(qid, "skipped for ", sketch->get_rid(), ": sequence shorter than requested region length");
-      continue;
+    if (seq.size() < tau) continue;
+    const uint64_t seq_end = cum_lens[bix];
+    uint64_t n_for_seq = 0;
+    while (pidx < positions.size() && positions[pidx] < seq_end) {
+      ++n_for_seq;
+      ++pidx;
     }
-    if (seq.size() > std::numeric_limits<uint64_t>::max() - w_tot) {
-      error_exit("Total query length exceeds the supported range");
-    }
-    const vec<size_t> slots_v = select_with_weights(w_tot, seq.size(), sample_size, gen);
-    w_tot += seq.size();
-    if (!slots_v.empty()) sample_sequence(sketch, seq, qid, slots_v, d_v, samples_ptr);
+    if (n_for_seq > 0) sample_sequence(sketch, seq, qid_batch[bix], n_for_seq, d_v, samples_ptr);
   }
 
   if (samples_ptr) {
@@ -302,7 +310,7 @@ void DistSC::sample_sequences(const sketch_sptr_t& sketch,
 void DistSC::sample_sequence(const sketch_sptr_t& sketch,
                              const str& seq,
                              const str& qid,
-                             const vec<size_t>& slots_v,
+                             uint64_t n_samples,
                              vec<double>& d_v,
                              vec<dist_sample_t>* samples_v)
 {
@@ -317,12 +325,11 @@ void DistSC::sample_sequence(const sketch_sptr_t& sketch,
   if (nbins < tau_bin) return;
 
   const uint64_t npos = nbins - tau_bin + 1;
-  const vec<uint64_t> starts_v = sample_coordinates(npos, slots_v.size(), gen);
+  std::uniform_int_distribution<uint64_t> rvstart(0, npos - 1);
   LLH<double> llhf(k, lshf->get_h(), sketch->get_rho(), hdist_th, 0.0, false);
   const bool canonical = sketch->is_canonical();
 
-  // Prefer a single binned pass when many slots_v land here; otherwise scan windows only.
-  const bool full_pass = (bin_shift > 0) || (slots_v.size() * region_nmers >= enmers);
+  const bool full_pass = n_samples * region_nmers >= enmers;
   std::unique_ptr<HDHist> hist_fw;
   std::unique_ptr<HDHist> hist_rc;
   if (full_pass) {
@@ -342,8 +349,8 @@ void DistSC::sample_sequence(const sketch_sptr_t& sketch,
   vec<uint64_t> v_scratch(hdist_bound + 1, 0);
   vec<uint64_t> v_rc(hdist_bound + 1, 0);
 
-  for (size_t i = 0; i < slots_v.size(); ++i) {
-    const uint64_t a_bin = starts_v[i];
+  for (uint64_t i = 0; i < n_samples; ++i) {
+    const uint64_t a_bin = rvstart(gen);
     const uint64_t b_bin = a_bin + tau_bin;
     uint64_t u = 0, t = 0;
     double d_fw = nanx(), d_rc = nanx();
@@ -380,11 +387,10 @@ void DistSC::sample_sequence(const sketch_sptr_t& sketch,
     if (!canonical) std::tie(d, strand) = select_strand_distance(d_fw, d_rc);
     if (!std::isfinite(d)) continue;
 
-    const size_t slot = slots_v[i];
-    d_v[slot] = d;
+    d_v.push_back(d);
     if (samples_v) {
       const uint64_t a = a_bin << bin_shift;
-      (*samples_v)[slot] = {qid, L, a, strand, d};
+      samples_v->push_back({qid, L, a, strand, d});
     }
   }
 }
