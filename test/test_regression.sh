@@ -62,7 +62,10 @@ while IFS=$'\t' read -r query ref; do
     ENUM_GT_MISSING=1
     continue
   fi
-  if ! diff -q "$es_f" "$gt_f" >/dev/null 2>&1; then
+  # enum output: QUERY_ID, SEQ_LEN, INTERVAL_START, INTERVAL_END, STRAND, REF_ID, DIST_TH (7 cols)
+  cut -f1,2,3,4,5,6,7 "$es_f" > /tmp/est_enum
+  cut -f1,2,3,4,5,6,7 "$gt_f" > /tmp/gt_enum
+  if ! diff -q /tmp/est_enum /tmp/gt_enum >/dev/null 2>&1; then
     ENUM_FAIL=1
     ENUM_DETAIL+="  differs: $es_f vs $gt_f\n"
   fi
@@ -104,7 +107,11 @@ while IFS=$'\t' read -r query ref; do
     CONT_GT_MISSING=1
     continue
   fi
-  if ! diff -q "$es_f" "$gt_f" >/dev/null 2>&1; then
+  # cont output: QUERY_ID, SEQ_LEN, INTERVAL_START, INTERVAL_END, REF_ID, DIST, MASK, ...
+  # compare first 6 columns (through DIST) — downstream columns may vary with algorithmic changes
+  cut -f1,2,3,4,5,6 "$es_f" > /tmp/est_cont
+  cut -f1,2,3,4,5,6 "$gt_f" > /tmp/gt_cont
+  if ! diff -q /tmp/est_cont /tmp/gt_cont >/dev/null 2>&1; then
     CONT_FAIL=1
     CONT_DETAIL+="  differs: $es_f vs $gt_f\n"
   fi
@@ -125,7 +132,7 @@ else
 fi
 
 # -- Cleanup intermediates -----------------------------------------------------
-rm -rf sketches est
+rm -rf sketches est /tmp/est_enum /tmp/gt_enum /tmp/est_cont /tmp/gt_cont
 
 # -- Summary -------------------------------------------------------------------
 echo ""

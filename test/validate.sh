@@ -34,11 +34,11 @@ for arg in "$@"; do
 
 		diff <(cd est && ls *.cont.txt | sort) <(cd gt && ls *.cont.txt | sort)
 		for f in est/*.cont.txt; do diff -q "$f" "gt/$(basename "$f")"; done
-		# for f in est/*.cont.txt; do 
-      # # cut -f1,2,3,4,5,7,8 "$f" | tail -n+2 > /tmp/est
-      # cut -f1,2,3,4,5,6,7 "$f" | tail -n+2 > /tmp/est
-      # cut -f1,2,3,4,5,6,7 "gt/$(basename "$f")" | tail -n+2 > /tmp/gt
-      # diff -q /tmp/est /tmp/gt
-    # done
+		for f in est/*.cont.txt; do 
+      # cut -f1,2,3,4,5,7,8 "$f" | tail -n+2 > /tmp/est
+      cut -f1,2,3,4,5,6,7 "$f" | tail -n+2 > /tmp/est
+      cut -f1,2,3,4,5,6,7 "gt/$(basename "$f")" | tail -n+2 > /tmp/gt
+      diff -q /tmp/est /tmp/gt
+    done
 	fi
 done
