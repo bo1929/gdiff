@@ -38,7 +38,6 @@ private:
   const uint64_t batch_size;
   const uint32_t k;
   const uint32_t h;
-  const uint32_t m;
   llh_sptr_t<T> llhf;
   bool skip_test;
   bool keep_hist;

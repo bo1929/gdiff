@@ -5,15 +5,14 @@
 
 TEST_SUITE("LSHF") {
 
-TEST_CASE("constructor sets k, h, m correctly") {
-  LSHF lshf(27, 11, 2);
+TEST_CASE("constructor sets k, h correctly") {
+  LSHF lshf(27, 11);
   CHECK(lshf.get_k() == 27);
   CHECK(lshf.get_h() == 11);
-  CHECK(lshf.get_m() == 2);
 }
 
 TEST_CASE("ppos and npos partition {0, ..., k-1}") {
-  LSHF lshf(27, 11, 2);
+  LSHF lshf(27, 11);
   auto ppos = lshf.get_ppos();
   auto npos = lshf.get_npos();
 
@@ -43,7 +42,7 @@ TEST_CASE("compute_hash is deterministic for same input") {
     if (pset.find(i) == pset.end()) npos.push_back(i);
   }
 
-  LSHF lshf(2, ppos, npos);
+  LSHF lshf(ppos, npos);
 
   uint64_t enc_bp = 0x123456789ABCULL;
   uint32_t h1 = lshf.compute_hash(enc_bp);
@@ -52,7 +51,7 @@ TEST_CASE("compute_hash is deterministic for same input") {
 }
 
 TEST_CASE("hash distribution is not degenerate") {
-  LSHF lshf(27, 11, 2);
+  LSHF lshf(27, 11);
   std::mt19937 rng(42);
   std::uniform_int_distribution<uint64_t> dist(0, (1ULL << 54) - 1);
 
@@ -68,10 +67,9 @@ TEST_CASE("constructor from known positions") {
   vec<uint8_t> ppos = {5, 3, 1};
   vec<uint8_t> npos = {0, 2, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
                        19, 20, 21, 22, 23, 24, 25, 26};
-  LSHF lshf(4, ppos, npos);
+  LSHF lshf(ppos, npos);
   CHECK(lshf.get_k() == 27);
   CHECK(lshf.get_h() == 3);
-  CHECK(lshf.get_m() == 4);
 }
 
 TEST_CASE("inv_ppos_bp + inv_ppos_lr reconstruct bp64") {
@@ -81,7 +79,7 @@ TEST_CASE("inv_ppos_bp + inv_ppos_lr reconstruct bp64") {
   for (uint8_t i = 0; i < 27; ++i) {
     if (pset.find(i) == pset.end()) npos.push_back(i);
   }
-  LSHF lshf(2, ppos, npos);
+  LSHF lshf(ppos, npos);
   const uint64_t mask_bp = (1ULL << (2 * 27)) - 1;
 
   std::mt19937 rng(7);

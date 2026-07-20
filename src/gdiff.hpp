@@ -35,20 +35,16 @@ public:
     k = 27;
     w = k + 6;
     h = 11;
-    m = 2;
-    r = 1;
-    frac = true;
+    rate = 1.0;
     canonical = true;
-    nrows = pow(2, (2 * h) - 1);
+    nrows = uint32_t(1) << (2 * h); // recomputed by set_nrows()
   }
 
 protected:
   uint8_t w;
   uint8_t k;
   uint8_t h;
-  bool frac;
-  uint32_t m; // TODO: remove the entire modulo feature altogether
-  uint32_t r;
+  double rate = 1.0; // k-mer sampling rate on top of minimizers: keep if LSH(x) < rate * 2^(2h)
   bool canonical = true;
   uint32_t nrows;
   lshf_sptr_t lshf = nullptr;

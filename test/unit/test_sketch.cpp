@@ -10,11 +10,9 @@ static std::filesystem::path write_tiny_sketch(const std::string& name = "test_s
   auto tmp = std::filesystem::temp_directory_path() / (name + ".skc");
 
   const uint8_t k = 27, w = 33, h = 11;
-  const uint32_t m = 2, r = 1;
-  const bool frac = true;
 
   // Build an LSHF just to get valid ppos/npos
-  auto lshf_obj = std::make_shared<LSHF>(k, h, m);
+  auto lshf_obj = std::make_shared<LSHF>(k, h);
   auto ppos = lshf_obj->get_ppos();
   auto npos = lshf_obj->get_npos();
 
@@ -37,9 +35,6 @@ static std::filesystem::path write_tiny_sketch(const std::string& name = "test_s
   sout.write(reinterpret_cast<const char*>(&k), sizeof(uint8_t));
   sout.write(reinterpret_cast<const char*>(&w), sizeof(uint8_t));
   sout.write(reinterpret_cast<const char*>(&h), sizeof(uint8_t));
-  sout.write(reinterpret_cast<const char*>(&m), sizeof(uint32_t));
-  sout.write(reinterpret_cast<const char*>(&r), sizeof(uint32_t));
-  sout.write(reinterpret_cast<const char*>(&frac), sizeof(bool));
   sout.write(reinterpret_cast<const char*>(&canonical), sizeof(bool));
 
   uint32_t nrows = 4;
@@ -93,17 +88,15 @@ TEST_CASE("load sketch and verify fields") {
   std::filesystem::remove(path);
 }
 
-TEST_CASE("partial_offset returns valid values for frac=true, m=2, r=1") {
+TEST_CASE("partial_offset is identity below the keep threshold") {
   auto path = write_tiny_sketch("test_partial");
   Sketch sketch(path);
   load_sketch_from_file(sketch, path);
 
-  // With m=2, r=1, frac=true: rix%m <= r is always true (0<=1, 1<=1)
-  uint32_t off0 = sketch.partial_offset(0);
-  CHECK(off0 != std::numeric_limits<uint32_t>::max());
-
-  uint32_t off1 = sketch.partial_offset(1);
-  CHECK(off1 != std::numeric_limits<uint32_t>::max());
+  // Flat sketches keep rix < nrows (= 4); the offset is the hash itself.
+  CHECK(sketch.partial_offset(0) == 0);
+  CHECK(sketch.partial_offset(3) == 3);
+  CHECK(sketch.partial_offset(4) == std::numeric_limits<uint32_t>::max());
 
   std::filesystem::remove(path);
 }
@@ -129,8 +122,8 @@ TEST_CASE("make_rho_partial adjusts rho") {
   sketch.make_rho_partial();
   double rho_after = sketch.get_rho();
 
-  // For frac=true, m=2, r=1: rho *= (r+1)/m = 2/2 = 1.0 -> unchanged
-  CHECK(rho_after == doctest::Approx(rho_before));
+  // Flat sketches: rho *= nrows / 2^(2h) = 4 / 2^22
+  CHECK(rho_after == doctest::Approx(rho_before * 4.0 / (1u << 22)));
 
   std::filesystem::remove(path);
 }

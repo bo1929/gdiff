@@ -1,15 +1,13 @@
 #include "rqseq.hpp"
 
-RSeq::RSeq(const str& input, const lshf_sptr_t& lshf, uint8_t w, uint32_t r, bool frac, bool canonical)
+RSeq::RSeq(const str& input, const lshf_sptr_t& lshf, uint8_t w, uint32_t off_thresh, bool canonical)
   : w(w)
-  , r(r)
-  , frac(frac)
+  , off_thresh(off_thresh)
   , canonical(canonical)
   , lshf(lshf)
 {
   uint64_t u64m = std::numeric_limits<uint64_t>::max();
   k = lshf->get_k();
-  m = lshf->get_m();
   mask_bp = u64m >> ((32 - k) * 2);
   mask_lr = ((u64m >> (64 - k)) << 32) + ((u64m << 32) >> (64 - k));
 
@@ -58,7 +56,7 @@ template<typename T>
 void RSeq::extract_mers(vvec<T>& table)
 {
   uint32_t i, l;
-  uint32_t rix, rix_res;
+  uint32_t rix;
   uint8_t ldiff;
   if (w > k) {
     ldiff = w - k + 1;
@@ -104,9 +102,7 @@ void RSeq::extract_mers(vvec<T>& table)
       }
     }
     rix = lshf->compute_hash(cminimizer.x);
-    rix_res = rix % m;
-    if (frac ? rix_res <= r : rix_res == r) {
-      rix = frac ? (rix / m * (r + 1)) + rix_res : rix / m;
+    if (rix < off_thresh) {
       table[rix].push_back(lshf->drop_ppos_lr(cminimizer.y));
     }
   }

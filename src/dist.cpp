@@ -1,13 +1,10 @@
 #include "dist.hpp"
 
 #include <algorithm>
-#include <atomic>
 #include <cmath>
 #include <iomanip>
-#include <mutex>
 #include <numeric>
 #include <simde/x86/avx512.h>
-#include <thread>
 
 #include "common.hpp"
 #include "enc.hpp"
@@ -28,21 +25,164 @@ namespace {
     return v[lo] + (ix - static_cast<double>(lo)) * (v[hi] - v[lo]);
   }
 
+  // Branchless minimum Hamming distance of enc against a bucket; identical
+  // result to the early-exit scan but without data-dependent branches.
+  inline uint32_t bucket_hdist_min(const enc_t* ix1, const enc_t* ix2, const enc_t enc)
+  {
+    uint32_t hmin = std::numeric_limits<uint32_t>::max();
+    for (; ix1 < ix2; ++ix1) {
+      const uint32_t hd = popcount_lr32((*ix1) ^ enc);
+      hmin = hd < hmin ? hd : hmin;
+    }
+    return hmin;
+  }
+
+  struct scan_ctx_t
+  {
+    const Sketch* sketch;
+    const LSHF* lshf;
+    const SFHM* sfhm;
+    uint32_t k;
+    uint64_t mask_bp;
+    uint64_t mask_lr;
+    uint64_t bin_shift;
+    uint32_t hdist_th;
+  };
+
+  // Block size of the software pipeline: hashes/offsets for scan_blk mers are
+  // resolved first while their prefetches are in flight, hiding memory latency.
+  constexpr size_t scan_blk = 64;
+
+  // Scans mers whose start position j lies in [j0, j1) (j1 <= enmers).
+  // agg(bin_j, hdist, is_rc) is invoked for every hit with hdist <= hdist_th.
+  // STRAND_AWARE: query both strands; otherwise query only the canonical one.
+  template<bool STRAND_AWARE, typename Agg>
+  inline void scan_mers_range(const scan_ctx_t& ctx, const char* cseq, const uint64_t j0, const uint64_t j1, Agg&& agg)
+  {
+    const uint32_t k = ctx.k;
+    const uint64_t i1 = j1 + k - 1;
+    const LSHF* lshf = ctx.lshf;
+    const Sketch* sketch = ctx.sketch;
+    const SFHM* sfhm = ctx.sfhm;
+    uint64_t l = 0;
+    uint64_t enc_lr = 0, enc_bp = 0;
+    size_t n = 0;
+    uint64_t b_bin[scan_blk];
+    uint32_t b_off[2][scan_blk];
+    enc_t b_enc[2][scan_blk];
+
+    auto flush = [&]() {
+      // Phase A: prefetch the bucket-boundary lines for the whole block.
+      for (size_t s = 0; s < n; ++s) {
+        if (b_off[0][s] != Sketch::OFF_INVALID) sfhm->prefetch_inc(b_off[0][s]);
+        if constexpr (STRAND_AWARE) {
+          if (b_off[1][s] != Sketch::OFF_INVALID) sfhm->prefetch_inc(b_off[1][s]);
+        }
+      }
+      // Phase B: resolve bucket bounds (now cache-warm) and prefetch enc lines.
+      const enc_t* beg[2][scan_blk];
+      const enc_t* end[2][scan_blk];
+      for (size_t s = 0; s < n; ++s) {
+        const uint32_t off0 = b_off[0][s];
+        if (off0 == Sketch::OFF_INVALID) {
+          beg[0][s] = end[0][s] = nullptr;
+        } else {
+          beg[0][s] = sfhm->bucket_ptr_start(off0);
+          end[0][s] = sfhm->bucket_ptr_next(off0);
+          if (beg[0][s] < end[0][s]) __builtin_prefetch(beg[0][s], 0, 0);
+        }
+        if constexpr (STRAND_AWARE) {
+          const uint32_t off1 = b_off[1][s];
+          if (off1 == Sketch::OFF_INVALID) {
+            beg[1][s] = end[1][s] = nullptr;
+          } else {
+            beg[1][s] = sfhm->bucket_ptr_start(off1);
+            end[1][s] = sfhm->bucket_ptr_next(off1);
+            if (beg[1][s] < end[1][s]) __builtin_prefetch(beg[1][s], 0, 0);
+          }
+        }
+      }
+      // Phase C: scan buckets and aggregate hits.
+      for (size_t s = 0; s < n; ++s) {
+        if (beg[0][s] != nullptr) {
+          const uint32_t hd = bucket_hdist_min(beg[0][s], end[0][s], b_enc[0][s]);
+          if (hd <= ctx.hdist_th) agg(b_bin[s], hd, false);
+        }
+        if constexpr (STRAND_AWARE) {
+          if (beg[1][s] != nullptr) {
+            const uint32_t hd = bucket_hdist_min(beg[1][s], end[1][s], b_enc[1][s]);
+            if (hd <= ctx.hdist_th) agg(b_bin[s], hd, true);
+          }
+        }
+      }
+      n = 0;
+    };
+
+    for (uint64_t i = j0; i < i1; ++i) {
+      if (__builtin_expect(SEQ_NT4_TABLE[static_cast<uint8_t>(cseq[i])] >= 4, 0)) {
+        l = 0;
+        continue;
+      }
+      ++l;
+      if (l < k) continue;
+      const uint64_t j = i - k + 1;
+      if (l == k) {
+        compute_encoding(cseq + j, cseq + i + 1, enc_lr, enc_bp);
+      } else {
+        update_encoding(cseq + i, enc_lr, enc_bp);
+      }
+      enc_bp &= ctx.mask_bp;
+      enc_lr &= ctx.mask_lr;
+      if (__builtin_expect(j >= j1, 0)) break;
+      const uint64_t rc_bp = revcomp_bp64(enc_bp, k);
+      if constexpr (STRAND_AWARE) {
+        b_off[0][n] = sketch->partial_offset(lshf->compute_hash(enc_bp));
+        b_off[1][n] = sketch->partial_offset(lshf->compute_hash(rc_bp));
+        b_enc[0][n] = lshf->drop_ppos_lr(enc_lr);
+        b_enc[1][n] = lshf->drop_ppos_lr(bp64_to_lr64(rc_bp));
+      } else {
+        if (rc_bp < enc_bp) {
+          b_off[0][n] = sketch->partial_offset(lshf->compute_hash(enc_bp));
+          b_enc[0][n] = lshf->drop_ppos_lr(enc_lr);
+        } else {
+          b_off[0][n] = sketch->partial_offset(lshf->compute_hash(rc_bp));
+          b_enc[0][n] = lshf->drop_ppos_lr(bp64_to_lr64(rc_bp));
+        }
+      }
+      b_bin[n] = j >> ctx.bin_shift;
+      if (++n == scan_blk) flush();
+    }
+    if (n) flush();
+  }
+
 } // namespace
 
-HDHist::HDHist(const uint64_t nbins, const uint64_t nmers, const uint32_t hdist_th, const uint64_t bin_shift)
+HDHist::HDHist(const uint64_t nbins, const uint64_t nmers, const uint32_t hdist_th, const uint64_t bin_shift, bool zero)
   : nbins(nbins)
   , nmers(nmers)
   , hdist_th(hdist_th)
   , bin_shift(bin_shift)
-  , hdisthist_v((nbins + 1) * (hdist_th + 1), 0)
+  , hdisthist_v(new uint64_t[(nbins + 1) * (hdist_th + 1)])
 {
+  if (zero) std::fill_n(hdisthist_v.get(), (nbins + 1) * (hdist_th + 1), uint64_t(0));
+}
+
+void HDHist::zero_range(const uint64_t r0, const uint64_t r1)
+{
+  std::fill_n(hdisthist_v.get() + r0 * (hdist_th + 1), (r1 - r0) * (hdist_th + 1), uint64_t(0));
 }
 
 void HDHist::aggregate_mer(const uint32_t hdist_min, const uint64_t i)
 {
   if (hdist_min <= hdist_th && i < nbins) {
     ++hdisthist_v[((i + 1) * (hdist_th + 1)) + hdist_min];
+  }
+}
+
+void HDHist::aggregate_mer_atomic(const uint32_t hdist_min, const uint64_t i)
+{
+  if (hdist_min <= hdist_th && i < nbins) {
+    __atomic_add_fetch(&hdisthist_v[((i + 1) * (hdist_th + 1)) + hdist_min], 1, __ATOMIC_RELAXED);
   }
 }
 
@@ -54,6 +194,50 @@ void HDHist::compute_prefhistsum()
       hdisthist_v[((i + 1) * W) + d] += hdisthist_v[(i * W) + d];
     }
   }
+}
+
+void HDHist::compute_prefhistsum_parallel(ThreadPool& pool, uint32_t nchunks)
+{
+  const uint32_t W = hdist_th + 1;
+  const uint64_t n_rows = nbins + 1;
+  if (nchunks <= 1 || n_rows < (uint64_t(1) << 16)) {
+    compute_prefhistsum();
+    return;
+  }
+  nchunks = std::min<uint32_t>(nchunks, static_cast<uint32_t>((n_rows + 4095) / 4096));
+  if (nchunks <= 1) {
+    compute_prefhistsum();
+    return;
+  }
+  const uint64_t rows_per = (n_rows + nchunks - 1) / nchunks;
+  uint64_t* h = hdisthist_v.get();
+  // Phase A: exclusive-local prefix sums inside each chunk.
+  pool.parallel_for(nchunks, 1, [&](uint64_t c) {
+    const uint64_t c0 = c * rows_per;
+    const uint64_t c1 = std::min(c0 + rows_per, n_rows);
+    for (uint64_t r = c0 + 1; r < c1; ++r) {
+      for (uint32_t d = 0; d < W; ++d)
+        h[r * W + d] += h[(r - 1) * W + d];
+    }
+  });
+  // Serial combine of chunk bases (few chunks).
+  vec<uint64_t> base(static_cast<uint64_t>(nchunks) * W, 0);
+  for (uint32_t c = 1; c < nchunks; ++c) {
+    const uint64_t last = std::min((c * rows_per), n_rows) - 1;
+    for (uint32_t d = 0; d < W; ++d)
+      base[c * W + d] = base[(c - 1) * W + d] + h[last * W + d];
+  }
+  // Phase B: add each chunk's base to all of its rows.
+  pool.parallel_for(nchunks - 1, 1, [&](uint64_t ci) {
+    const uint64_t c = ci + 1;
+    const uint64_t c0 = c * rows_per;
+    const uint64_t c1 = std::min(c0 + rows_per, n_rows);
+    const uint64_t* b = &base[c * W];
+    for (uint64_t r = c0; r < c1; ++r) {
+      for (uint32_t d = 0; d < W; ++d)
+        h[r * W + d] += b[d];
+    }
+  });
 }
 
 void HDHist::extract_histogram(const uint64_t a, const uint64_t b, vec<uint64_t>& v, uint64_t& u, uint64_t& t) const
@@ -114,6 +298,30 @@ std::pair<double, char> select_strand_distance(const double d_fw, const double d
   return {d_rc, '-'};
 }
 
+vec<uint64_t> sample_region_starts(const uint64_t npos, const uint64_t n_samples, std::mt19937& rng)
+{
+  assert(npos >= 1);
+  vec<uint64_t> starts;
+  starts.reserve(n_samples);
+  std::uniform_int_distribution<uint64_t> rstart(0, npos - 1);
+  for (uint64_t i = 0; i < n_samples; ++i)
+    starts.push_back(rstart(rng));
+  return starts;
+}
+
+vec<size_t> select_reservoir_slots(const uint64_t offset, const uint64_t size, const uint64_t total, std::mt19937& rng)
+{
+  vec<size_t> slots;
+  if (size == 0 || total == 0) return slots;
+  const uint64_t cum = offset + size;
+  slots.reserve((total * size) / cum + 1);
+  std::uniform_real_distribution<double> runif(0.0, 1.0);
+  for (size_t i = 0; i < total; ++i) {
+    if (runif(rng) * static_cast<double>(cum) < static_cast<double>(size)) slots.push_back(i);
+  }
+  return slots;
+}
+
 DistSC::DistSC(CLI::App& sc)
 {
   sc.add_option("-q,--query-path", query_path, "Query FASTA/FASTQ file <path> (or URL) (gzip compatible)")
@@ -171,8 +379,6 @@ void DistSC::dist()
 
   uint32_t nsketches = 0;
   sketch_stream.read(reinterpret_cast<char*>(&nsketches), sizeof(uint32_t));
-  const uint32_t nthreads = std::max(1u, std::min(num_threads, nsketches));
-  cerr_msg("Processing ", nsketches, " sketches w/ ", nthreads, " thread(s)...");
 
   vec<uint64_t> sketch_offsets(nsketches);
   for (uint32_t i = 0; i < nsketches; ++i) {
@@ -181,59 +387,97 @@ void DistSC::dist()
   }
   sketch_stream.close();
 
-  vec<strstream> results(nsketches);
-  vec<strstream> samples_results(samples_output_stream ? nsketches : 0);
-  std::atomic<uint32_t> next_idx{0};
-  std::atomic<uint32_t> count_p{0};
-  std::mutex cerr_mtx;
+  ThreadPool pool(num_threads);
+  cerr_msg("Processing ", nsketches, " sketches w/ ", pool.size(), " thread(s)...");
+
+  init_thread_rng(1);
 
   const auto& seq_batch = qs->get_seq_batch();
   const auto& qid_batch = qs->get_qid_batch();
 
-  auto worker = [&](const uint32_t tseed) {
-    init_thread_rng(tseed);
-    uint32_t i;
-    while ((i = next_idx.fetch_add(1, std::memory_order_relaxed)) < nsketches) {
-      std::ifstream sketch_stream(sketch_path, std::ifstream::binary);
-      sketch_sptr_t sketch = std::make_shared<Sketch>(sketch_path);
-      sketch->load_from_offset(sketch_stream, sketch_offsets[i]);
-      sketch_stream.close();
-      sketch->make_rho_partial();
+  std::ifstream sin(sketch_path, std::ifstream::binary);
+  check_fstream(sin, "Cannot open sketch file for reading", sketch_path.string());
 
-      strstream* samples_sout = samples_output_stream ? &samples_results[i] : nullptr;
-      sample_sequences(sketch, seq_batch, qid_batch, results[i], samples_sout);
+  for (uint32_t i = 0; i < nsketches; ++i) {
+    sketch_sptr_t sketch = std::make_shared<Sketch>(sketch_path);
+    sketch->load_from_offset(sin, sketch_offsets[i]);
+    sketch->make_rho_partial();
 
-      const uint32_t num_p = count_p.fetch_add(1, std::memory_order_relaxed) + 1;
-      {
-        std::lock_guard<std::mutex> lock(cerr_mtx);
-        std::cerr << "\rProcessed sketch " << num_p << "/" << nsketches << "..." << std::flush;
-        if (num_p == nsketches) std::cerr << std::endl;
-      }
+    strstream sout;
+    strstream samples_sout;
+    sample_sequences(sketch, seq_batch, qid_batch, sout, samples_output_stream ? &samples_sout : nullptr, pool);
+
+    if (sout.tellp() > 0) *output_stream << sout.rdbuf();
+    if (samples_output_stream && samples_sout.tellp() > 0) *samples_output_stream << samples_sout.rdbuf();
+
+    std::cerr << "\rProcessed sketch " << i + 1 << "/" << nsketches << "..." << std::flush;
+    if (i + 1 == nsketches) std::cerr << std::endl;
+  }
+}
+
+namespace {
+
+  // Per-sequence sampling plan; all randomness is resolved before the parallel
+  // phases begin, so results are independent of scheduling.
+  struct seq_plan_t
+  {
+    uint64_t bix = 0;
+    uint64_t n_samples = 0;
+    bool full_pass = false;
+    uint64_t enmers = 0;
+    uint64_t nbins = 0;
+    bool big = false;
+    vec<uint64_t> starts;
+    vec<double> d_res;
+    vec<char> strand_res;
+    std::unique_ptr<HDHist> hist_fw;
+    std::unique_ptr<HDHist> hist_rc;
+  };
+
+  enum task_kind_t : uint8_t
+  {
+    TASK_HIST_CHUNK, // mer range of a big full-pass plan
+    TASK_SAMPLES,    // sample range (window plans, or eval for big full-pass)
+    TASK_FUSED       // whole small full-pass sequence: build + prefix + eval
+  };
+
+  struct task_t
+  {
+    uint32_t plan;
+    uint64_t a, b;
+    task_kind_t kind;
+  };
+
+  struct hist_agg_t
+  {
+    HDHist* fw;
+    HDHist* rc;
+    bool atomic;
+    inline void operator()(uint64_t bin, uint32_t hd, bool is_rc) const
+    {
+      HDHist* h = is_rc ? rc : fw;
+      if (atomic)
+        h->aggregate_mer_atomic(hd, bin);
+      else
+        h->aggregate_mer(hd, bin);
     }
   };
 
-  vec<std::thread> threads;
-  threads.reserve(nthreads);
-  for (uint32_t t = 0; t < nthreads; ++t)
-    threads.emplace_back([&, t]() { worker(t + 1); });
-  for (auto& t : threads)
-    t.join();
+  struct window_agg_t
+  {
+    uint64_t* fw;
+    uint64_t* rc;
+    inline void operator()(uint64_t, uint32_t hd, bool is_rc) const { ++(is_rc ? rc[hd] : fw[hd]); }
+  };
 
-  for (uint32_t i = 0; i < nsketches; ++i) {
-    if (results[i].tellp() > 0) *output_stream << results[i].rdbuf();
-  }
-  if (samples_output_stream) {
-    for (uint32_t i = 0; i < nsketches; ++i) {
-      if (samples_results[i].tellp() > 0) *samples_output_stream << samples_results[i].rdbuf();
-    }
-  }
-}
+} // namespace
 
 void DistSC::sample_sequences(const sketch_sptr_t& sketch,
                               const vec<str>& seq_batch,
                               const vec<str>& qid_batch,
                               strstream& sout,
-                              strstream* samples_sout)
+                              strstream* samples_sout,
+                              ThreadPool& pool)
 {
   const lshf_sptr_t lshf = sketch->get_lshf();
   const uint32_t k = lshf->get_k();
@@ -244,6 +488,10 @@ void DistSC::sample_sequences(const sketch_sptr_t& sketch,
   if (bin_size > tau) {
     error_exit(concat_msg("--bin-shift gives bin_size=", bin_size, ", which exceeds --length=", tau));
   }
+  const uint64_t region_nmers = tau - k + 1;
+  const uint64_t tau_bin = std::max<uint64_t>(1, (region_nmers + bin_size - 1) >> bin_shift);
+  const bool canonical = sketch->is_canonical();
+  const uint32_t nworkers = pool.size();
 
   uint64_t total_len = 0;
   vec<uint64_t> cum_lens(seq_batch.size());
@@ -252,17 +500,8 @@ void DistSC::sample_sequences(const sketch_sptr_t& sketch,
     cum_lens[bix] = total_len;
   }
 
-  vec<double> d_v;
-  d_v.reserve(sample_size);
-  vec<dist_sample_t> samples_v;
-  vec<dist_sample_t>* samples_ptr = nullptr;
-  if (samples_sout) {
-    samples_v.reserve(sample_size);
-    samples_ptr = &samples_v;
-  }
-
   if (total_len == 0) {
-    const dist_summary_t summary = summarize_distances(std::move(d_v));
+    const dist_summary_t summary = summarize_distances({});
     sout << std::setprecision(8);
     write_tsv(sout, query_path, sketch->get_rid(), summary.n, summary.mean, summary.sd);
     for (const double q : summary.quantiles)
@@ -271,6 +510,11 @@ void DistSC::sample_sequences(const sketch_sptr_t& sketch,
     return;
   }
 
+  const bool prof = std::getenv("GDIFF_PROF") != nullptr;
+  auto t0 = std::chrono::steady_clock::now();
+
+  // File-wide uniform positions, then per-sequence sample counts (identical
+  // RNG consumption to a sequential implementation).
   vec<uint64_t> positions;
   positions.reserve(sample_size);
   std::uniform_int_distribution<uint64_t> rpos(0, total_len - 1);
@@ -278,315 +522,265 @@ void DistSC::sample_sequences(const sketch_sptr_t& sketch,
     positions.push_back(rpos(gen));
   std::sort(positions.begin(), positions.end());
 
+  // Build per-sequence plans and pre-draw region starts.
+  vec<seq_plan_t> plans;
+  plans.reserve(seq_batch.size());
   size_t pidx = 0;
+  uint32_t n_fullpass = 0;
   for (size_t bix = 0; bix < seq_batch.size() && pidx < positions.size(); ++bix) {
-    const str& seq = seq_batch[bix];
-    if (seq.size() < tau) continue;
+    const uint64_t L = seq_batch[bix].size();
+    if (L < tau) continue;
     const uint64_t seq_end = cum_lens[bix];
     uint64_t n_for_seq = 0;
     while (pidx < positions.size() && positions[pidx] < seq_end) {
       ++n_for_seq;
       ++pidx;
     }
-    if (n_for_seq > 0) sample_sequence(sketch, seq, qid_batch[bix], n_for_seq, d_v, samples_ptr);
+    if (n_for_seq == 0) continue;
+    const uint64_t enmers = L - k + 1;
+    const uint64_t nbins = (enmers + bin_size - 1) >> bin_shift;
+    if (nbins < tau_bin) continue; // defensive; cannot happen when L >= tau
+    seq_plan_t p;
+    p.bix = bix;
+    p.n_samples = n_for_seq;
+    p.enmers = enmers;
+    p.nbins = nbins;
+    p.full_pass = n_for_seq * region_nmers >= enmers;
+    n_fullpass += p.full_pass;
+    const uint64_t npos = nbins - tau_bin + 1;
+    p.starts = sample_region_starts(npos, n_for_seq, gen);
+    p.d_res.assign(n_for_seq, nanx());
+    p.strand_res.assign(n_for_seq, '+');
+    plans.push_back(std::move(p));
+  }
+  // Full-pass sequences become "big" (parallel chunked build) only when there
+  // aren't enough of them to keep workers busy; others use fused per-sequence tasks.
+  const uint64_t big_thresh = uint64_t(1) << 21;
+  uint32_t n_big = 0;
+  for (auto& p : plans) {
+    if (p.full_pass && p.enmers >= big_thresh && n_fullpass < nworkers * 2) {
+      p.big = true;
+      ++n_big;
+    }
+  }
+  for (auto& p : plans) {
+    if (!p.big) continue;
+    p.hist_fw = std::make_unique<HDHist>(p.nbins, p.enmers, hdist_th, bin_shift, /*zero=*/false);
+    if (!canonical) p.hist_rc = std::make_unique<HDHist>(p.nbins, p.enmers, hdist_th, bin_shift, /*zero=*/false);
   }
 
-  if (samples_ptr) {
-    *samples_sout << std::setprecision(8);
-    for (const auto& s : samples_v) {
-      if (!std::isfinite(s.d)) continue;
-      write_tsv(*samples_sout, s.qid, s.L, s.a + 1, s.a + tau, s.strand, sketch->get_rid(), s.d) << '\n';
+  const uint64_t u64m = std::numeric_limits<uint64_t>::max();
+  const scan_ctx_t ctx{sketch.get(),
+                       lshf.get(),
+                       sketch->get_sfhm_sptr().get(),
+                       k,
+                       u64m >> ((32 - k) * 2),
+                       ((u64m >> (64 - k)) << 32) + ((u64m << 32) >> (64 - k)),
+                       bin_shift,
+                       hdist_th};
+  const LLH<double> llhf(k, lshf->get_h(), sketch->get_rho(), hdist_th, 0.0, false);
+
+  using clock = std::chrono::steady_clock;
+  auto toc = [&](const char* name, clock::time_point t0) {
+    if (prof) std::cerr << "    [" << name << "] " << std::chrono::duration<double>(clock::now() - t0).count() << " s\n";
+  };
+  if (prof) std::cerr << "    [plan+alloc] " << std::chrono::duration<double>(clock::now() - t0).count() << " s\n";
+  auto tpz = clock::now();
+
+  // Zero the big histogram backing stores in parallel (page faults and memsets
+  // are spread across workers).
+  if (n_big > 0) {
+    struct zero_task_t
+    {
+      uint32_t plan;
+      uint64_t r0, r1;
+    };
+    vec<zero_task_t> zero_tasks;
+    for (uint32_t pi = 0; pi < plans.size(); ++pi) {
+      const seq_plan_t& p = plans[pi];
+      if (!p.big) continue;
+      const uint64_t rows = p.hist_fw->storage_rows();
+      const uint64_t step = std::max<uint64_t>(rows / (nworkers * 4) + 1, 1u << 16);
+      for (uint64_t r0 = 0; r0 < rows; r0 += step)
+        zero_tasks.push_back({pi, r0, std::min(r0 + step, rows)});
+    }
+    pool.parallel_for(zero_tasks.size(), 1, [&](const uint64_t ti) {
+      const zero_task_t& z = zero_tasks[ti];
+      seq_plan_t& p = plans[z.plan];
+      p.hist_fw->zero_range(z.r0, z.r1);
+      if (p.hist_rc) p.hist_rc->zero_range(z.r0, z.r1);
+    });
+  }
+  if (prof) toc("zero hists", tpz);
+  auto tp0 = clock::now();
+
+  // Per-sample evaluation helper for full-pass histograms (used by fused tasks
+  // and by phase 3 for big plans).
+  auto eval_fullpass =
+    [&](seq_plan_t& p, const HDHist& hist_fw, const HDHist* hist_rc, const uint64_t s0, const uint64_t s1) {
+      vec<uint64_t> v_scratch(hdist_bound + 1, 0);
+      for (uint64_t s = s0; s < s1; ++s) {
+        const uint64_t a_bin = p.starts[s];
+        const uint64_t b_bin = a_bin + tau_bin;
+        uint64_t u = 0, t = 0;
+        hist_fw.extract_histogram(a_bin, b_bin, v_scratch, u, t);
+        const double d_fw = validate_distance(llhf.mle_at(v_scratch.data(), u));
+        double d = d_fw;
+        char strand = '+';
+        if (!canonical) {
+          hist_rc->extract_histogram(a_bin, b_bin, v_scratch, u, t);
+          const double d_rc = validate_distance(llhf.mle_at(v_scratch.data(), u));
+          std::tie(d, strand) = select_strand_distance(d_fw, d_rc);
+        }
+        p.d_res[s] = d;
+        p.strand_res[s] = strand;
+      }
+    };
+
+  // Phase 1: window scans, fused small full-pass sequences, and chunked builds
+  // for big full-pass sequences.
+  {
+    vec<task_t> tasks;
+    // Fused plans first, largest first, to avoid stragglers.
+    vec<uint32_t> fused;
+    for (uint32_t pi = 0; pi < plans.size(); ++pi)
+      if (plans[pi].full_pass && !plans[pi].big) fused.push_back(pi);
+    std::sort(fused.begin(), fused.end(), [&](uint32_t x, uint32_t y) { return plans[x].enmers > plans[y].enmers; });
+    for (const uint32_t pi : fused)
+      tasks.push_back({pi, 0, 0, TASK_FUSED});
+    for (uint32_t pi = 0; pi < plans.size(); ++pi) {
+      const seq_plan_t& p = plans[pi];
+      if (p.big) {
+        const uint64_t chunk_mers = std::max<uint64_t>(uint64_t(1) << 18, (p.enmers + nworkers * 2 - 1) / (nworkers * 2));
+        for (uint64_t c0 = 0; c0 < p.enmers; c0 += chunk_mers)
+          tasks.push_back({pi, c0, std::min(c0 + chunk_mers, p.enmers), TASK_HIST_CHUNK});
+      }
+    }
+    for (uint32_t pi = 0; pi < plans.size(); ++pi) {
+      const seq_plan_t& p = plans[pi];
+      if (p.full_pass) continue;
+      const uint64_t n_per = std::max<uint64_t>(4, (p.n_samples + nworkers * 4 - 1) / (nworkers * 4));
+      for (uint64_t s0 = 0; s0 < p.n_samples; s0 += n_per)
+        tasks.push_back({pi, s0, std::min(s0 + n_per, p.n_samples), TASK_SAMPLES});
+    }
+    pool.parallel_for(tasks.size(), 1, [&](const uint64_t ti) {
+      const task_t& t = tasks[ti];
+      seq_plan_t& p = plans[t.plan];
+      const char* cseq = seq_batch[p.bix].data();
+      if (t.kind == TASK_HIST_CHUNK) {
+        hist_agg_t agg{p.hist_fw.get(), p.hist_rc.get(), /*atomic=*/true};
+        if (canonical)
+          scan_mers_range<false>(ctx, cseq, t.a, t.b, agg);
+        else
+          scan_mers_range<true>(ctx, cseq, t.a, t.b, agg);
+      } else if (t.kind == TASK_FUSED) {
+        HDHist hist_fw(p.nbins, p.enmers, hdist_th, bin_shift);
+        std::unique_ptr<HDHist> hist_rc;
+        if (!canonical) hist_rc = std::make_unique<HDHist>(p.nbins, p.enmers, hdist_th, bin_shift);
+        hist_agg_t agg{&hist_fw, hist_rc.get(), /*atomic=*/false};
+        if (canonical)
+          scan_mers_range<false>(ctx, cseq, 0, p.enmers, agg);
+        else
+          scan_mers_range<true>(ctx, cseq, 0, p.enmers, agg);
+        hist_fw.compute_prefhistsum();
+        if (hist_rc) hist_rc->compute_prefhistsum();
+        eval_fullpass(p, hist_fw, hist_rc.get(), 0, p.n_samples);
+      } else {
+        uint64_t v_fw[hdist_bound + 1];
+        uint64_t v_rc[hdist_bound + 1];
+        window_agg_t agg{v_fw, v_rc};
+        for (uint64_t s = t.a; s < t.b; ++s) {
+          const uint64_t a_bin = p.starts[s];
+          const uint64_t j0 = a_bin << bin_shift;
+          const uint64_t j1 = std::min(j0 + region_nmers, p.enmers);
+          std::fill(v_fw, v_fw + hdist_bound + 1, 0);
+          std::fill(v_rc, v_rc + hdist_bound + 1, 0);
+          if (canonical)
+            scan_mers_range<false>(ctx, cseq, j0, j1, agg);
+          else
+            scan_mers_range<true>(ctx, cseq, j0, j1, agg);
+          uint64_t t_fw = 0;
+          for (uint32_t d = 0; d <= hdist_th; ++d)
+            t_fw += v_fw[d];
+          const double d_fw = validate_distance(llhf.mle_at(v_fw, (j1 - j0) - t_fw));
+          double d = d_fw;
+          char strand = '+';
+          if (!canonical) {
+            uint64_t t_rc = 0;
+            for (uint32_t d = 0; d <= hdist_th; ++d)
+              t_rc += v_rc[d];
+            const double d_rc = validate_distance(llhf.mle_at(v_rc, (j1 - j0) - t_rc));
+            std::tie(d, strand) = select_strand_distance(d_fw, d_rc);
+          }
+          p.d_res[s] = d;
+          p.strand_res[s] = strand;
+        }
+      }
+    });
+  }
+
+  // Phase 2: prefix sums over the big per-bin histograms.
+  toc("phase1 scan", tp0);
+  tp0 = clock::now();
+  if (n_big > 1) {
+    vec<HDHist*> big_hists;
+    for (auto& p : plans) {
+      if (!p.big) continue;
+      big_hists.push_back(p.hist_fw.get());
+      if (p.hist_rc) big_hists.push_back(p.hist_rc.get());
+    }
+    pool.parallel_for(big_hists.size(), 1, [&](uint64_t j) { big_hists[j]->compute_prefhistsum(); });
+  } else {
+    for (auto& p : plans) {
+      if (!p.big) continue;
+      p.hist_fw->compute_prefhistsum_parallel(pool, nworkers);
+      if (p.hist_rc) p.hist_rc->compute_prefhistsum_parallel(pool, nworkers);
+    }
+  }
+  toc("phase2 prefix", tp0);
+  tp0 = clock::now();
+
+  // Phase 3: window histogram extraction + MLE for big full-pass plans.
+  if (n_big > 0) {
+    vec<task_t> tasks;
+    for (uint32_t pi = 0; pi < plans.size(); ++pi) {
+      const seq_plan_t& p = plans[pi];
+      if (!p.big) continue;
+      const uint64_t n_per = std::max<uint64_t>(4, (p.n_samples + nworkers * 4 - 1) / (nworkers * 4));
+      for (uint64_t s0 = 0; s0 < p.n_samples; s0 += n_per)
+        tasks.push_back({pi, s0, std::min(s0 + n_per, p.n_samples), TASK_SAMPLES});
+    }
+    pool.parallel_for(tasks.size(), 1, [&](const uint64_t ti) {
+      const task_t& t = tasks[ti];
+      seq_plan_t& p = plans[t.plan];
+      eval_fullpass(p, *p.hist_fw, p.hist_rc.get(), t.a, t.b);
+    });
+  }
+
+  // Merge per-sequence results in sequence order (deterministic).
+  toc("phase3 eval", tp0);
+  tp0 = clock::now();
+  vec<double> d_v;
+  d_v.reserve(sample_size);
+  if (samples_sout) *samples_sout << std::setprecision(8);
+  for (const auto& p : plans) {
+    const str& qid = qid_batch[p.bix];
+    for (uint64_t s = 0; s < p.n_samples; ++s) {
+      const double d = p.d_res[s];
+      if (!std::isfinite(d)) continue;
+      d_v.push_back(d);
+      if (samples_sout) {
+        const uint64_t a = p.starts[s] << bin_shift;
+        write_tsv(*samples_sout, qid, p.enmers + k - 1, a + 1, a + tau, p.strand_res[s], sketch->get_rid(), d) << '\n';
+      }
     }
   }
 
   const dist_summary_t summary = summarize_distances(std::move(d_v));
+  toc("merge+summarize", tp0);
   sout << std::setprecision(8);
   write_tsv(sout, query_path, sketch->get_rid(), summary.n, summary.mean, summary.sd);
   for (const double q : summary.quantiles)
     sout << '\t' << q;
   sout << '\n';
-}
-
-void DistSC::sample_sequence(const sketch_sptr_t& sketch,
-                             const str& seq,
-                             const str& qid,
-                             uint64_t n_samples,
-                             vec<double>& d_v,
-                             vec<dist_sample_t>* samples_v)
-{
-  const lshf_sptr_t lshf = sketch->get_lshf();
-  const uint32_t k = lshf->get_k();
-  const uint64_t L = seq.size();
-  const uint64_t enmers = L - k + 1;
-  const uint64_t region_nmers = tau - k + 1;
-  const uint64_t bin_size = uint64_t(1) << bin_shift;
-  const uint64_t nbins = (enmers + bin_size - 1) >> bin_shift;
-  const uint64_t tau_bin = std::max<uint64_t>(1, (region_nmers + bin_size - 1) >> bin_shift);
-  if (nbins < tau_bin) return;
-
-  const uint64_t npos = nbins - tau_bin + 1;
-  std::uniform_int_distribution<uint64_t> rvstart(0, npos - 1);
-  LLH<double> llhf(k, lshf->get_h(), sketch->get_rho(), hdist_th, 0.0, false);
-  const bool canonical = sketch->is_canonical();
-
-  const bool full_pass = n_samples * region_nmers >= enmers;
-  std::unique_ptr<HDHist> hist_fw;
-  std::unique_ptr<HDHist> hist_rc;
-  if (full_pass) {
-    if (canonical) {
-      hist_fw = std::make_unique<HDHist>(nbins, enmers, hdist_th, bin_shift);
-      search_mers(sketch, seq.data(), L, *hist_fw);
-      hist_fw->compute_prefhistsum();
-    } else {
-      hist_fw = std::make_unique<HDHist>(nbins, enmers, hdist_th, bin_shift);
-      hist_rc = std::make_unique<HDHist>(nbins, enmers, hdist_th, bin_shift);
-      search_mers(sketch, seq.data(), L, *hist_fw, *hist_rc);
-      hist_fw->compute_prefhistsum();
-      hist_rc->compute_prefhistsum();
-    }
-  }
-
-  vec<uint64_t> v_scratch(hdist_bound + 1, 0);
-  vec<uint64_t> v_rc(hdist_bound + 1, 0);
-
-  for (uint64_t i = 0; i < n_samples; ++i) {
-    const uint64_t a_bin = rvstart(gen);
-    const uint64_t b_bin = a_bin + tau_bin;
-    uint64_t u = 0, t = 0;
-    double d_fw = nanx(), d_rc = nanx();
-
-    if (full_pass) {
-      hist_fw->extract_histogram(a_bin, b_bin, v_scratch, u, t);
-      d_fw = validate_distance(llhf.mle(v_scratch.data(), u));
-      if (hist_rc) {
-        hist_rc->extract_histogram(a_bin, b_bin, v_scratch, u, t);
-        d_rc = validate_distance(llhf.mle(v_scratch.data(), u));
-      }
-    } else {
-      const uint64_t j0 = a_bin << bin_shift;
-      const uint64_t j1 = std::min(j0 + region_nmers, enmers);
-      v_scratch.assign(hdist_bound + 1, 0);
-      if (!canonical) v_rc.assign(hdist_bound + 1, 0);
-      search_window(sketch, seq.data(), L, j0, j1, v_scratch, canonical ? nullptr : &v_rc);
-      t = 0;
-      for (uint32_t d = 0; d <= hdist_th; ++d)
-        t += v_scratch[d];
-      u = (j1 - j0) - t;
-      d_fw = validate_distance(llhf.mle(v_scratch.data(), u));
-      if (!canonical) {
-        t = 0;
-        for (uint32_t d = 0; d <= hdist_th; ++d)
-          t += v_rc[d];
-        u = (j1 - j0) - t;
-        d_rc = validate_distance(llhf.mle(v_rc.data(), u));
-      }
-    }
-
-    double d = d_fw;
-    char strand = '+';
-    if (!canonical) std::tie(d, strand) = select_strand_distance(d_fw, d_rc);
-    if (!std::isfinite(d)) continue;
-
-    d_v.push_back(d);
-    if (samples_v) {
-      const uint64_t a = a_bin << bin_shift;
-      samples_v->push_back({qid, L, a, strand, d});
-    }
-  }
-}
-
-void DistSC::search_mers(const sketch_sptr_t& sketch, const char* cseq, const uint64_t len, HDHist& hist) const
-{
-  const lshf_sptr_t lshf = sketch->get_lshf();
-  const uint32_t k = lshf->get_k();
-  const uint64_t u64m = std::numeric_limits<uint64_t>::max();
-  const uint64_t mask_lr = ((u64m >> (64 - k)) << 32) + ((u64m << 32) >> (64 - k));
-  const uint64_t mask_bp = u64m >> ((32 - k) * 2);
-
-  uint64_t i = 0, j = 0, l = 0;
-  uint32_t orrix, rcrix;
-  uint64_t orenc64_bp, orenc64_lr, rcenc64_bp;
-  for (; i < len; ++i) {
-    if (__builtin_expect(SEQ_NT4_TABLE[cseq[i]] >= 4, 0)) {
-      l = 0;
-      continue;
-    }
-    ++l;
-    if (l < k) continue;
-
-    j = i - k + 1;
-    if (l == k) {
-      compute_encoding(cseq + j, cseq + i + 1, orenc64_lr, orenc64_bp);
-    } else {
-      update_encoding(cseq + i, orenc64_lr, orenc64_bp);
-    }
-    orenc64_bp &= mask_bp;
-    orenc64_lr &= mask_lr;
-    rcenc64_bp = revcomp_bp64(orenc64_bp, k);
-    const uint64_t bin_j = j >> bin_shift;
-
-    if (rcenc64_bp < orenc64_bp) {
-      orrix = lshf->compute_hash(orenc64_bp);
-      const uint32_t off_fw = sketch->partial_offset(orrix);
-      sketch->prefetch_offset_inc(off_fw);
-      const enc_t enc_lr_fw = lshf->drop_ppos_lr(orenc64_lr);
-      sketch->prefetch_offset_enc(off_fw);
-      uint32_t hdist_fw;
-      if (sketch->scan_bucket(off_fw, enc_lr_fw, hdist_fw)) {
-        hist.aggregate_mer(hdist_fw, bin_j);
-      }
-    } else {
-      rcrix = lshf->compute_hash(rcenc64_bp);
-      const uint32_t off_rc = sketch->partial_offset(rcrix);
-      sketch->prefetch_offset_inc(off_rc);
-      const enc_t enc_lr_rc = lshf->drop_ppos_lr(bp64_to_lr64(rcenc64_bp));
-      sketch->prefetch_offset_enc(off_rc);
-      uint32_t hdist_rc;
-      if (sketch->scan_bucket(off_rc, enc_lr_rc, hdist_rc)) {
-        hist.aggregate_mer(hdist_rc, bin_j);
-      }
-    }
-  }
-}
-
-void DistSC::search_mers(const sketch_sptr_t& sketch,
-                         const char* cseq,
-                         const uint64_t len,
-                         HDHist& hist_fw,
-                         HDHist& hist_rc) const
-{
-  const lshf_sptr_t lshf = sketch->get_lshf();
-  const uint32_t k = lshf->get_k();
-  const uint64_t u64m = std::numeric_limits<uint64_t>::max();
-  const uint64_t mask_lr = ((u64m >> (64 - k)) << 32) + ((u64m << 32) >> (64 - k));
-  const uint64_t mask_bp = u64m >> ((32 - k) * 2);
-
-  uint64_t i = 0, j = 0, l = 0;
-  uint32_t orrix, rcrix;
-  uint64_t orenc64_bp, orenc64_lr, rcenc64_bp;
-  for (; i < len; ++i) {
-    if (__builtin_expect(SEQ_NT4_TABLE[cseq[i]] >= 4, 0)) {
-      l = 0;
-      continue;
-    }
-    ++l;
-    if (l < k) continue;
-
-    j = i - k + 1;
-    if (l == k) {
-      compute_encoding(cseq + j, cseq + i + 1, orenc64_lr, orenc64_bp);
-    } else {
-      update_encoding(cseq + i, orenc64_lr, orenc64_bp);
-    }
-    orenc64_bp &= mask_bp;
-    orenc64_lr &= mask_lr;
-    rcenc64_bp = revcomp_bp64(orenc64_bp, k);
-    const uint64_t bin_j = j >> bin_shift;
-
-    orrix = lshf->compute_hash(orenc64_bp);
-    rcrix = lshf->compute_hash(rcenc64_bp);
-    const uint32_t off_fw = sketch->partial_offset(orrix);
-    const uint32_t off_rc = sketch->partial_offset(rcrix);
-    sketch->prefetch_offset_inc(off_fw);
-    sketch->prefetch_offset_inc(off_rc);
-    const enc_t enc_lr_fw = lshf->drop_ppos_lr(orenc64_lr);
-    const enc_t enc_lr_rc = lshf->drop_ppos_lr(bp64_to_lr64(rcenc64_bp));
-    sketch->prefetch_offset_enc(off_fw);
-    sketch->prefetch_offset_enc(off_rc);
-    uint32_t hdist_fw;
-    if (sketch->scan_bucket(off_fw, enc_lr_fw, hdist_fw)) {
-      hist_fw.aggregate_mer(hdist_fw, bin_j);
-    }
-    uint32_t hdist_rc;
-    if (sketch->scan_bucket(off_rc, enc_lr_rc, hdist_rc)) {
-      hist_rc.aggregate_mer(hdist_rc, bin_j);
-    }
-  }
-}
-
-void DistSC::search_window(const sketch_sptr_t& sketch,
-                           const char* cseq,
-                           const uint64_t len,
-                           const uint64_t j0,
-                           const uint64_t j1,
-                           vec<uint64_t>& v_fw,
-                           vec<uint64_t>* v_rc) const
-{
-  if (j0 >= j1) return;
-  const lshf_sptr_t lshf = sketch->get_lshf();
-  const uint32_t k = lshf->get_k();
-  const uint64_t u64m = std::numeric_limits<uint64_t>::max();
-  const uint64_t mask_lr = ((u64m >> (64 - k)) << 32) + ((u64m << 32) >> (64 - k));
-  const uint64_t mask_bp = u64m >> ((32 - k) * 2);
-
-  if (j0 + k > len) return;
-  uint64_t orenc64_bp = 0, orenc64_lr = 0;
-  compute_encoding(cseq + j0, cseq + j0 + k, orenc64_lr, orenc64_bp);
-  orenc64_bp &= mask_bp;
-  orenc64_lr &= mask_lr;
-
-  for (uint64_t j = j0;;) {
-    const uint64_t rcenc64_bp = revcomp_bp64(orenc64_bp, k);
-    if (v_rc) {
-      uint32_t orrix = lshf->compute_hash(orenc64_bp);
-      uint32_t rcrix = lshf->compute_hash(rcenc64_bp);
-      const uint32_t off_fw = sketch->partial_offset(orrix);
-      const uint32_t off_rc = sketch->partial_offset(rcrix);
-      sketch->prefetch_offset_inc(off_fw);
-      sketch->prefetch_offset_inc(off_rc);
-      const enc_t enc_lr_fw = lshf->drop_ppos_lr(orenc64_lr);
-      const enc_t enc_lr_rc = lshf->drop_ppos_lr(bp64_to_lr64(rcenc64_bp));
-      sketch->prefetch_offset_enc(off_fw);
-      sketch->prefetch_offset_enc(off_rc);
-      uint32_t hdist_fw;
-      if (sketch->scan_bucket(off_fw, enc_lr_fw, hdist_fw) && hdist_fw <= hdist_th) ++v_fw[hdist_fw];
-      uint32_t hdist_rc;
-      if (sketch->scan_bucket(off_rc, enc_lr_rc, hdist_rc) && hdist_rc <= hdist_th) ++(*v_rc)[hdist_rc];
-    } else if (rcenc64_bp < orenc64_bp) {
-      const uint32_t orrix = lshf->compute_hash(orenc64_bp);
-      const uint32_t off_fw = sketch->partial_offset(orrix);
-      sketch->prefetch_offset_inc(off_fw);
-      const enc_t enc_lr_fw = lshf->drop_ppos_lr(orenc64_lr);
-      sketch->prefetch_offset_enc(off_fw);
-      uint32_t hdist_fw;
-      if (sketch->scan_bucket(off_fw, enc_lr_fw, hdist_fw) && hdist_fw <= hdist_th) ++v_fw[hdist_fw];
-    } else {
-      const uint32_t rcrix = lshf->compute_hash(rcenc64_bp);
-      const uint32_t off_rc = sketch->partial_offset(rcrix);
-      sketch->prefetch_offset_inc(off_rc);
-      const enc_t enc_lr_rc = lshf->drop_ppos_lr(bp64_to_lr64(rcenc64_bp));
-      sketch->prefetch_offset_enc(off_rc);
-      uint32_t hdist_rc;
-      if (sketch->scan_bucket(off_rc, enc_lr_rc, hdist_rc) && hdist_rc <= hdist_th) ++v_fw[hdist_rc];
-    }
-
-    ++j;
-    if (j >= j1) break;
-    const uint64_t i = j + k - 1;
-    if (__builtin_expect(SEQ_NT4_TABLE[cseq[i]] >= 4, 0)) {
-      uint64_t nxt = i + 1;
-      while (nxt + k <= len) {
-        bool ok = true;
-        for (uint64_t p = nxt; p < nxt + k; ++p) {
-          if (SEQ_NT4_TABLE[cseq[p]] >= 4) {
-            nxt = p + 1;
-            ok = false;
-            break;
-          }
-        }
-        if (!ok) continue;
-        if (nxt >= j1) return;
-        j = nxt;
-        compute_encoding(cseq + j, cseq + j + k, orenc64_lr, orenc64_bp);
-        orenc64_bp &= mask_bp;
-        orenc64_lr &= mask_lr;
-        break;
-      }
-      if (j >= j1 || j + k > len) return;
-      continue;
-    }
-    update_encoding(cseq + i, orenc64_lr, orenc64_bp);
-    orenc64_bp &= mask_bp;
-    orenc64_lr &= mask_lr;
-  }
 }

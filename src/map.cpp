@@ -41,7 +41,6 @@ QIE<T>::QIE(const params_t<T>& params,
   , batch_size(seq_batch.size())
   , k(lshf->get_k())
   , h(lshf->get_h())
-  , m(lshf->get_m())
 {
   llhf = std::make_shared<LLH<T>>(k, h, sketch->get_rho(), params.hdist_th, params.dist_th);
   diststat = std::make_shared<DistanceStat<T>>(params, llhf);

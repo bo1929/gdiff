@@ -25,6 +25,8 @@ public:
   const T extrema;
   std::vector<uint64_t> binom_coef_k;
   std::vector<uint64_t> binom_coef_hnk;
+  std::vector<double> binom_coef_k_d;
+  std::vector<double> binom_coef_hnk_d;
 
   LLH(uint32_t k, uint32_t h, double rho, uint32_t hdist_th, T extrema, bool compute_derivatives = true)
     : k(k)
@@ -48,6 +50,10 @@ public:
       vc = (vc * (nh - d + 1)) / d;
       binom_coef_hnk[d] = binom_coef_k[d] - vc;
     }
+    // Same values as doubles (exact); avoids per-call conversions in the hot
+    // likelihood evaluation loop.
+    binom_coef_k_d.assign(binom_coef_k.begin(), binom_coef_k.end());
+    binom_coef_hnk_d.assign(binom_coef_hnk.begin(), binom_coef_hnk.end());
 
     if (!compute_derivatives) return;
 
@@ -145,7 +151,9 @@ public:
 
   double prob_hit(double D, uint32_t d) const { return rho * prob_collide(d) * prob_mutate(D, d); }
 
-  double operator()(const double& D) const
+  // Negative log-likelihood at D for explicit counts (vv, uu). Pure: safe to
+  // call concurrently on a shared instance.
+  double nll(const double& D, const uint64_t* vv, const uint64_t uu) const
   {
     double lsum = 0.0;
     double lv_m = 0.0;
@@ -156,16 +164,18 @@ public:
 
     for (uint32_t d = 0; d <= k; ++d) {
       if (d <= hdist_th) {
-        lsum -= (logdn + (d * logdp)) * v[d];
-        lv_m += binom_coef_hnk[d] * powdc;
+        lsum -= (logdn + (d * logdp)) * vv[d];
+        lv_m += binom_coef_hnk_d[d] * powdc;
       } else {
-        lv_m += powdc * binom_coef_k[d];
+        lv_m += powdc * binom_coef_k_d[d];
       }
       powdc *= ratioD;
     }
 
-    return lsum - (std::log((rho * lv_m) + 1.0 - rho) * u);
+    return lsum - (std::log((rho * lv_m) + 1.0 - rho) * uu);
   }
+
+  double operator()(const double& D) const { return nll(D, v, u); }
 
   // Analytic observed Fisher information:
   // I(D) = -d^2/dD^2 log L(D) (the negative log-likelihood evaluated at the given D)
@@ -196,6 +206,15 @@ public:
     auto f = [&](const double& D) { return (*this)(D); };
     xy_t result = boost::math::tools::brent_find_minima(f, LB, UB, 24);
     // if (std::isnan(result.first)) result.first = UB;
+    return result.first;
+  }
+
+  // Pure variant of mle(): does not touch member counts, so a single instance
+  // may be shared across threads.
+  double mle_at(const uint64_t* v_r, uint64_t u_r) const
+  {
+    auto f = [&](const double& D) { return nll(D, v_r, u_r); };
+    xy_t result = boost::math::tools::brent_find_minima(f, LB, UB, 24);
     return result.first;
   }
 

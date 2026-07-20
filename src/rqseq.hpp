@@ -70,7 +70,7 @@ KSEQ_INIT(gzFile, gzread)
 class RSeq : public HandlerURL
 {
 public:
-  RSeq(const str& input, const lshf_sptr_t& lshf, uint8_t w, uint32_t r, bool frac, bool canonical);
+  RSeq(const str& input, const lshf_sptr_t& lshf, uint8_t w, uint32_t off_thresh, bool canonical);
   ~RSeq();
   bool set_curr_seq();
   bool read_next_seq();
@@ -85,9 +85,7 @@ private:
   bool is_url;
   uint8_t k;
   uint8_t w;
-  uint32_t m;
-  uint32_t r;
-  bool frac;
+  uint32_t off_thresh;
   bool canonical;
   char* cseq;
   char* name;

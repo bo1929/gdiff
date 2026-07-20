@@ -19,7 +19,7 @@ if [ ! -x "$GDIFF" ]; then
 fi
 
 NPROC="${NPROC:-4}"
-SKETCHING_OPTS="-k 27 -w 31 -h 11 -m 2 -r 1 --frac"
+SKETCHING_OPTS="-k 27 -w 31 -h 11"
 
 # -- Phase 0: Create sketches --------------------------------------------------
 echo "=== Phase 0: Sketching ==="

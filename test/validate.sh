@@ -3,7 +3,7 @@
 rm -rf sketches && mkdir -p sketches
 rm -rf est && mkdir -p est
 
-export sketching_options='-k 27 -w 31 -h 11 -m 2 -r 1 --frac'
+export sketching_options='-k 27 -w 31 -h 11'
 cat genome_names.txt | \
   xargs -I{} -P 16 bash -c \
   '../gdiff sketch `echo ${sketching_options}` -i genomes/{}.fna.gz -o sketches/{}.skc > /dev/null 2>&1'

@@ -121,9 +121,7 @@ In `--enum-only` mode, each row is an independent interval covering the k-mer bi
 | `-k, --mer-len` | `27` | k-mer length (19–32) |
 | `-w, --win-len` | `k+6` | Minimizer window length (>= k) |
 | `-h, --num-positions` | `k-16` | Number of LSH positions (3–16) |
-| `-m, --modulo-lsh` | `2` | LSH space partition modulus |
-| `-r, --residue-lsh` | `1` | Keep k-mer if LSH(x) mod m == r |
-| `--frac / --no-frac` | `true` | Keep k-mer if LSH(x) mod m <= r |
+| `--rate` | `1.0` | Keep k-mer if LSH(x) < rate · 2^2h; subsamples on top of minimizers |
 
 ### `gdiff map`
 

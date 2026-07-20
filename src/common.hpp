@@ -12,7 +12,7 @@ static const std::regex urlexp = std::regex(
 
 inline bool match_url(std::string& input) { return std::regex_match(input, urlexp); }
 
-const auto url_validator = CLI::Validator(
+inline const auto url_validator = CLI::Validator(
   [](std::string& input) {
     if (match_url(input)) {
       return std::string("");

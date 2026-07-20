@@ -1,19 +1,14 @@
 #include "gdiff.hpp"
 #include "random.hpp"
 
-void BaseLSH::set_lshf() { lshf = std::make_shared<LSHF>(k, h, m); }
+void BaseLSH::set_lshf() { lshf = std::make_shared<LSHF>(k, h); }
 
 void BaseLSH::set_nrows()
 {
-  uint32_t hash_size = 1u << (2 * h);
-  uint32_t full_residue = hash_size % m;
-  if (frac) {
-    nrows = (hash_size / m) * (r + 1);
-    nrows = full_residue > r ? nrows + (r + 1) : nrows + full_residue;
-  } else {
-    nrows = (hash_size / m);
-    nrows = full_residue > r ? nrows + 1 : nrows;
-  }
+  // Flat sampling: keep the prefix [0, T) of the 2^(2h) LSH space.
+  const uint64_t hash_size = uint64_t(1) << (2 * h);
+  const uint64_t t = static_cast<uint64_t>(hash_size * rate + 0.5);
+  nrows = static_cast<uint32_t>(std::max<uint64_t>(1, std::min(t, hash_size)));
 }
 
 bool MapSC::validate_configuration()
@@ -148,6 +143,10 @@ void MapSC::map()
 bool SketchSC::validate_configuration()
 {
   bool is_invalid = false;
+  if (rate <= 0.0 || rate > 1.0) {
+    is_invalid = true;
+    cerr_msg("--rate must be in (0, 1]; got ", rate);
+  }
   if (w < k) {
     is_invalid = true;
     cerr_msg("The minimum minimizer window size (-w) is k (-k)!");
@@ -156,13 +155,13 @@ bool SketchSC::validate_configuration()
     is_invalid = true;
     cerr_msg("The minimum number of LSH positions (-h) is 3!");
   }
-  if (h > 16) {
+  if (h > 15) {
     is_invalid = true;
-    cerr_msg("The maximum number of LSH positions (-h) is 16!");
+    cerr_msg("The maximum number of LSH positions (-h) is 15!");
   }
-  if (k > 32) {
+  if (k > 31) {
     is_invalid = true;
-    cerr_msg("The maximum allowed k-mer length (-k) is 32!");
+    cerr_msg("The maximum allowed k-mer length (-k) is 31!");
   }
   if (k < 19) {
     is_invalid = true;
@@ -177,7 +176,7 @@ bool SketchSC::validate_configuration()
 
 void SketchSC::create()
 {
-  rseq_sptr_t rs = std::make_shared<RSeq>(input_path, lshf, w, r, frac, canonical);
+  rseq_sptr_t rs = std::make_shared<RSeq>(input_path, lshf, w, nrows, canonical);
   sdhm_sptr_t sdhm = std::make_shared<SDHM>();
   sdhm->fill_table(nrows, rs);
   sketch_sfhm = std::make_shared<SFHM>(sdhm);
@@ -200,12 +199,10 @@ void SketchSC::write_header(std::ofstream& sout)
 
 void SketchSC::write_config(std::ofstream& sout)
 {
-  sout.write(reinterpret_cast<char*>(&k), sizeof(uint8_t));
-  sout.write(reinterpret_cast<char*>(&w), sizeof(uint8_t));
-  sout.write(reinterpret_cast<char*>(&h), sizeof(uint8_t));
-  sout.write(reinterpret_cast<char*>(&m), sizeof(uint32_t));
-  sout.write(reinterpret_cast<char*>(&r), sizeof(uint32_t));
-  sout.write(reinterpret_cast<char*>(&frac), sizeof(bool));
+  // The sketch keeps a k-mer iff LSH(x) < nrows (flat threshold sampling).
+  sout.write(reinterpret_cast<const char*>(&k), sizeof(uint8_t));
+  sout.write(reinterpret_cast<const char*>(&w), sizeof(uint8_t));
+  sout.write(reinterpret_cast<const char*>(&h), sizeof(uint8_t));
   sout.write(reinterpret_cast<char*>(&canonical), sizeof(bool));
   sout.write(reinterpret_cast<char*>(&nrows), sizeof(uint32_t));
   sout.write(reinterpret_cast<char*>(lshf->ppos_data()), h * sizeof(uint8_t));
@@ -234,13 +231,11 @@ SketchSC::SketchSC(CLI::App& sc)
     ->required()
     ->check(url_validator | CLI::ExistingFile);
   sc.add_option("-o,--output-path", sketch_path, "Path to store the resulting binary sketch file")->required();
-  sc.add_option("-k,--mer-len", k, "Length of k-mers [27]")->check(CLI::Range(19, 32))->check(CLI::PositiveNumber);
+  sc.add_option("-k,--mer-len", k, "Length of k-mers [27]")->check(CLI::Range(19, 31))->check(CLI::PositiveNumber);
   sc.add_option("-w,--win-len", w, "Length of the minimizer window (w>=k) [k+6]")->check(CLI::PositiveNumber);
   sc.add_option("-h,--num-positions", h, "Number of positions for the LSH [k-16]")->check(CLI::PositiveNumber);
-  sc.add_option("-m,--modulo-lsh", m, "Modulo value to partition LSH space [2]")->check(CLI::PositiveNumber);
-  sc.add_option("-r,--residue-lsh", r, "A k-mer x will be included only if r = LSH(x) mod m [1]")
-    ->check(CLI::NonNegativeNumber);
-  sc.add_flag("--frac,!--no-frac", frac, "Include k-mers with r <= LSH(x) mod m [true]");
+  sc.add_option("--rate", rate, "Keep a k-mer if LSH(x) < rate * 2^(2h); subsamples on top of minimizers [1.0]")
+    ->check(CLI::Range(0.0, 1.0));
   sc.add_flag(
     "--strand-agnostic,!--strand-aware", canonical, "Use a (default) strand-agnostic (canonical) or strand-aware sketch");
   sc.callback([&]() {
@@ -345,15 +340,11 @@ void InfoSC::info()
     stream.read(reinterpret_cast<char*>(&timestamp), sizeof(uint64_t));
 
     uint8_t k = 0, w = 0, h = 0;
-    uint32_t m = 0, r = 0, nrows = 0;
-    bool frac = false;
+    uint32_t nrows = 0;
     bool canonical = false;
     stream.read(reinterpret_cast<char*>(&k), sizeof(uint8_t));
     stream.read(reinterpret_cast<char*>(&w), sizeof(uint8_t));
     stream.read(reinterpret_cast<char*>(&h), sizeof(uint8_t));
-    stream.read(reinterpret_cast<char*>(&m), sizeof(uint32_t));
-    stream.read(reinterpret_cast<char*>(&r), sizeof(uint32_t));
-    stream.read(reinterpret_cast<char*>(&frac), sizeof(bool));
     stream.read(reinterpret_cast<char*>(&canonical), sizeof(bool));
     stream.read(reinterpret_cast<char*>(&nrows), sizeof(uint32_t));
 
@@ -379,11 +370,9 @@ void InfoSC::info()
     std::cout << "  k (mer len): " << static_cast<int>(k) << "\n";
     std::cout << "  w (win len): " << static_cast<int>(w) << "\n";
     std::cout << "  h (LSH pos): " << static_cast<int>(h) << "\n";
-    std::cout << "  m (modulo):  " << m << "\n";
-    std::cout << "  r (residue): " << r << "\n";
-    std::cout << "  frac:        " << (frac ? "true" : "false") << "\n";
     std::cout << "  canonical:   " << (canonical ? "true" : "false") << "\n";
     std::cout << "  nrows:       " << nrows << "\n";
+    std::cout << "  rate:        " << static_cast<double>(nrows) / static_cast<double>(uint64_t(1) << (2 * h)) << "\n";
     std::cout << "  rho:         " << rho << "\n";
     std::cout << "  k-mers:      " << nkmers << "\n";
   }
