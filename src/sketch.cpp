@@ -10,7 +10,9 @@ Sketch::Sketch(std::filesystem::path sketch_path)
 void Sketch::load_from_offset(std::ifstream& stream, uint64_t offset)
 {
   if (offset > 0) {
+    stream.clear();
     stream.seekg(offset);
+    check_fstream(stream, "Failed to seek in the sketch file", sketch_path);
   }
 
   uint64_t rid_len;

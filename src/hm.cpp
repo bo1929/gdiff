@@ -30,8 +30,8 @@ SFHM::~SFHM()
 void SFHM::load(std::ifstream& sketch_stream)
 {
   sketch_stream.read(reinterpret_cast<char*>(&nkmers), sizeof(uint64_t));
-  if (nkmers > static_cast<uint64_t>(std::numeric_limits<inc_t>::max())) {
-    error_exit("There are more k-mers than maximum inc_t. Recompile with an appropriate type or reduce the sketch size.");
+  if (nkmers > static_cast<uint64_t>(1) << 40) {
+    error_exit("Corrupt sketch file, or a compatibility issue!?!");
   }
   enc_v.resize(nkmers);
   sketch_stream.read(reinterpret_cast<char*>(enc_v.data()), nkmers * sizeof(enc_t));
