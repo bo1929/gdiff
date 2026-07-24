@@ -68,12 +68,6 @@ void Sketch::seek_past(std::ifstream& stream)
   stream.seekg(static_cast<std::streamoff>(sfhm_nrows) * static_cast<std::streamoff>(sizeof(inc_t)), std::ios::cur);
 }
 
-void Sketch::make_rho_partial()
-{
-  // The sketch keeps the prefix [0, nrows) of the 2^(2h) LSH space.
-  rho *= static_cast<double>(nrows) / static_cast<double>(uint64_t(1) << (2 * h));
-}
-
 sfhm_sptr_t Sketch::get_sfhm_sptr() { return sfhm; }
 
 lshf_sptr_t Sketch::get_lshf() { return lshf; }

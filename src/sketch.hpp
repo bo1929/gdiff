@@ -14,7 +14,6 @@ public:
   Sketch(std::filesystem::path sketch_path);
   void load_from_offset(std::ifstream& stream, uint64_t offset);
   static void seek_past(std::ifstream& stream);
-  void make_rho_partial();
 
   // Bucket offset for a hash value: a k-mer is in the sketch iff its LSH value
   // is below nrows (the keep threshold), and the offset is the hash itself.

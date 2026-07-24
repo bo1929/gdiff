@@ -22,6 +22,12 @@ gdiff works in two steps: **sketch** a reference, then **map** queries against i
 gdiff sketch -i reference.fasta -o reference.skc
 ```
 
+Multiple references can be sketched into one file in a single step (use `--num-threads` to sketch files in parallel; save order is not fixed):
+
+```bash
+gdiff --num-threads 8 sketch -i ref_A.fasta ref_B.fasta ref_C.fasta -o combined.skc
+```
+
 Uses sensible defaults (`k=27`, `w=33`, `h=11`). For large genomes, tune the LSH parameters to trade speed for sensitivity (see Options below).
 
 ### 2. Map queries to find divergent intervals
@@ -46,7 +52,7 @@ gdiff map -i ref.skc -q queries.fasta -d 0.05 -l 500 --enum-only --sample-size 0
 
 ### 3. Merge sketches (optional)
 
-Combine sketches from multiple references into one file; gdiff maps against all of them in parallel:
+Combine sketches from multiple references into one file; gdiff maps against all of them in parallel. Prefer `gdiff sketch -i a.fa b.fa -o combined.skc` when starting from FASTA:
 
 ```bash
 gdiff merge -i ref_A.skc ref_B.skc ref_C.skc -o combined.skc
@@ -116,12 +122,13 @@ In `--enum-only` mode, each row is an independent interval covering the k-mer bi
 
 | Option | Default | Description |
 |--------|--------|-------------|
-| `-i, --input-path` | (required) | Input FASTA/FASTQ file or URL (gzip compatible) |
-| `-o, --output-path` | (required) | Output sketch file |
+| `-i, --input-path` | (required) | Input FASTA/FASTQ file(s) or URL (gzip compatible) |
+| `-o, --output-path` | (required) | Output sketch file (one or more sketches) |
 | `-k, --mer-len` | `27` | k-mer length (19–32) |
 | `-w, --win-len` | `k+6` | Minimizer window length (>= k) |
 | `-h, --num-positions` | `k-16` | Number of LSH positions (3–16) |
-| `--rate` | `1.0` | Keep k-mer if LSH(x) < rate · 2^2h; subsamples on top of minimizers |
+| `--frac` | `1.0` | Keep k-mer if LSH(x) < frac · 2^2h; subsamples on top of minimizers |
+| `--num-threads` | `1` | Parallel input-file sketching threads |
 
 ### `gdiff map`
 

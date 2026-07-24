@@ -50,6 +50,7 @@ private:
   uint64_t t_q = 0;           // total number of k-mers hits below hdist_th per query sequence
   uint64_t u_q = 0;           // total number misses per query sequence
   vec<uint64_t> hdisthist_v;  // D[i][j] is the number of hits with HD=j, [(nbins+1) x (hdist_th+1)] row-major; D[0][j]=0
+  vec<uint64_t> miss_v;       // per-bin explicit misses (same row layout as hdisthist); unobserved omitted
   vec<T> fdc_v;               // The f' contribution c_i of the k-mer (bin) starting at i
   vec<T> sdc_v;               // The f'' contribution s_i of the k-mer (bin) starting at i
   vec<T> fdps_v;              // C[i] = sum(c_0, ..., c_{i}), C[0] = 0 (length n) (shifted by 1 w.r.t. fdc_v)

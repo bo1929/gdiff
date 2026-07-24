@@ -6,7 +6,7 @@ TEST_SUITE("dist") {
 
 TEST_CASE("cumulative histograms extract exact half-open intervals")
 {
-  HDHist hist(5, 5, 2, 0);
+  HDHist hist(5, 2, 0);
   hist.aggregate_mer(0, 0);
   hist.aggregate_mer(1, 2);
   hist.aggregate_mer(2, 4);
@@ -20,7 +20,33 @@ TEST_CASE("cumulative histograms extract exact half-open intervals")
   CHECK(counts[1] == 1);
   CHECK(counts[2] == 1);
   CHECK(t == 2);
+  CHECK(u == 0);
+}
+
+TEST_CASE("explicit misses accumulate into u")
+{
+  HDHist hist(5, 2, 0);
+  hist.aggregate_mer(0, 0);
+  hist.aggregate_mer(3, 1);
+  hist.aggregate_mer(5, 2);
+  hist.aggregate_mer(1, 3);
+  hist.compute_prefhistsum();
+
+  vec<uint64_t> counts;
+  uint64_t u = 0, t = 0;
+  hist.extract_histogram(0, 5, counts, u, t);
+
+  CHECK(counts[0] == 1);
+  CHECK(counts[1] == 1);
+  CHECK(t == 2);
   CHECK(u == 2);
+
+  uint64_t u1 = 0, t1 = 0, u2 = 0, t2 = 0;
+  vec<uint64_t> c1, c2;
+  hist.extract_histogram(0, 2, c1, u1, t1);
+  hist.extract_histogram(2, 5, c2, u2, t2);
+  CHECK(u1 + u2 == u);
+  CHECK(t1 + t2 == t);
 }
 
 TEST_CASE("summary uses sample deviation and linear quantiles")

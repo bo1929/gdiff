@@ -93,8 +93,8 @@ private:
   lshf_sptr_t lshf;
   uint64_t mask_bp = 0;
   uint64_t mask_lr = 0;
-  double n1_est = 0;
-  double n2_est = 0;
+  double n1_est = 0; // HLL estimate of all k-mers
+  double n2_est = 0; // HLL estimate of sketched k-mers
   double rho = 1.0;
   std::filesystem::path input_path;
 };

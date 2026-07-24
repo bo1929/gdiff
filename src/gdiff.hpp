@@ -35,7 +35,7 @@ public:
     k = 27;
     w = k + 6;
     h = 11;
-    rate = 1.0;
+    frac = 1.0;
     canonical = true;
     nrows = uint32_t(1) << (2 * h); // recomputed by set_nrows()
   }
@@ -44,7 +44,7 @@ protected:
   uint8_t w;
   uint8_t k;
   uint8_t h;
-  double rate = 1.0; // k-mer sampling rate on top of minimizers: keep if LSH(x) < rate * 2^(2h)
+  double frac = 1.0; // k-mer sampling fraction on top of minimizers: keep if LSH(x) < frac * 2^(2h)
   bool canonical = true;
   uint32_t nrows;
   lshf_sptr_t lshf = nullptr;
@@ -54,17 +54,15 @@ class SketchSC : public BaseLSH
 {
 public:
   SketchSC(CLI::App& sc);
-  void create();
-  void save();
+  void process();
   bool validate_configuration();
-  void write_header(std::ofstream& stream);
-  void write_config(std::ofstream& stream);
+  void write_header(std::ofstream& stream, uint32_t i);
+  void write_config(std::ofstream& stream, uint32_t i);
 
 private:
-  str input_path;
+  std::vector<str> input_paths;
   std::filesystem::path sketch_path;
-  sfhm_sptr_t sketch_sfhm = nullptr;
-  double rho;
+  std::vector<double> rho_v;
 };
 
 class MapSC

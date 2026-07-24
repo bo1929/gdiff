@@ -494,6 +494,31 @@ TEST_CASE("extract_histogram returns correct counts for enum_only=false") {
   }
 }
 
+TEST_CASE("extract_histogram counts explicit misses only") {
+  auto params = params_t<double>(1, 0.1, 4, 2, 33.0, 0, 1000, true, false);
+  auto llhf = std::make_shared<LLH<double>>(27, 11, 0.5, 4, 0.1);
+  DIM<double> dim(params, llhf, 8, 100);
+
+  dim.aggregate_mer(0, 0);
+  dim.aggregate_mer(5, 1);
+  dim.aggregate_mer(2, 2);
+  dim.aggregate_mer(7, 3);
+  dim.compute_prefhistsum();
+
+  vec<uint64_t> v;
+  uint64_t u = 0, t = 0;
+  dim.extract_histogram(0, 8, v, u, t);
+  CHECK(t == 2);
+  CHECK(u == 2);
+
+  uint64_t u1 = 0, t1 = 0, u2 = 0, t2 = 0;
+  vec<uint64_t> v1, v2;
+  dim.extract_histogram(0, 2, v1, u1, t1);
+  dim.extract_histogram(2, 8, v2, u2, t2);
+  CHECK(u1 + u2 == u);
+  CHECK(t1 + t2 == t);
+}
+
 TEST_CASE("extract_histogram full range matches partial sums") {
   auto params = params_t<double>(1, 0.1, 4, 2, 33.0, 0, 1000, true, false);
   auto llhf = std::make_shared<LLH<double>>(27, 11, 0.5, 4, 0.1);

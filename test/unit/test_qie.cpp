@@ -114,7 +114,6 @@ struct qie_fixture_t
     fx.sketch = std::make_shared<Sketch>(sketch_path);
     fx.sketch->load_from_offset(sketch_stream, 0);
     sketch_stream.close();
-    fx.sketch->make_rho_partial();
 
     fx.qs = std::make_shared<QSeq>(GENOMES_DIR + query_name + ".fna.gz");
     while (fx.qs->read_next_batch()) {}

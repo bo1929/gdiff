@@ -54,7 +54,7 @@ namespace {
   constexpr size_t scan_blk = 64;
 
   // Scans mers whose start position j lies in [j0, j1) (j1 <= enmers).
-  // agg(bin_j, hdist, is_rc) is invoked for every hit with hdist <= hdist_th.
+  // agg(bin_j, hdist, is_rc) is invoked for every observed k-mer (valid LSH bucket).
   // STRAND_AWARE: query both strands; otherwise query only the canonical one.
   template<bool STRAND_AWARE, typename Agg>
   inline void scan_mers_range(const scan_ctx_t& ctx, const char* cseq, const uint64_t j0, const uint64_t j1, Agg&& agg)
@@ -102,16 +102,16 @@ namespace {
           }
         }
       }
-      // Phase C: scan buckets and aggregate hits.
+      // Phase C: scan buckets and aggregate observed k-mers (hits and misses).
       for (size_t s = 0; s < n; ++s) {
         if (beg[0][s] != nullptr) {
           const uint32_t hd = bucket_hdist_min(beg[0][s], end[0][s], b_enc[0][s]);
-          if (hd <= ctx.hdist_th) agg(b_bin[s], hd, false);
+          agg(b_bin[s], hd, false);
         }
         if constexpr (STRAND_AWARE) {
           if (beg[1][s] != nullptr) {
             const uint32_t hd = bucket_hdist_min(beg[1][s], end[1][s], b_enc[1][s]);
-            if (hd <= ctx.hdist_th) agg(b_bin[s], hd, true);
+            agg(b_bin[s], hd, true);
           }
         }
       }
@@ -157,32 +157,42 @@ namespace {
 
 } // namespace
 
-HDHist::HDHist(const uint64_t nbins, const uint64_t nmers, const uint32_t hdist_th, const uint64_t bin_shift, bool zero)
+HDHist::HDHist(const uint64_t nbins, const uint32_t hdist_th, const uint64_t bin_shift, bool zero)
   : nbins(nbins)
-  , nmers(nmers)
   , hdist_th(hdist_th)
   , bin_shift(bin_shift)
   , hdisthist_v(new uint64_t[(nbins + 1) * (hdist_th + 1)])
+  , miss_v(new uint64_t[nbins + 1])
 {
-  if (zero) std::fill_n(hdisthist_v.get(), (nbins + 1) * (hdist_th + 1), uint64_t(0));
+  if (zero) {
+    std::fill_n(hdisthist_v.get(), (nbins + 1) * (hdist_th + 1), uint64_t(0));
+    std::fill_n(miss_v.get(), nbins + 1, uint64_t(0));
+  }
 }
 
 void HDHist::zero_range(const uint64_t r0, const uint64_t r1)
 {
   std::fill_n(hdisthist_v.get() + r0 * (hdist_th + 1), (r1 - r0) * (hdist_th + 1), uint64_t(0));
+  std::fill_n(miss_v.get() + r0, r1 - r0, uint64_t(0));
 }
 
 void HDHist::aggregate_mer(const uint32_t hdist_min, const uint64_t i)
 {
-  if (hdist_min <= hdist_th && i < nbins) {
+  if (i >= nbins) return;
+  if (hdist_min <= hdist_th) {
     ++hdisthist_v[((i + 1) * (hdist_th + 1)) + hdist_min];
+  } else {
+    ++miss_v[i + 1];
   }
 }
 
 void HDHist::aggregate_mer_atomic(const uint32_t hdist_min, const uint64_t i)
 {
-  if (hdist_min <= hdist_th && i < nbins) {
+  if (i >= nbins) return;
+  if (hdist_min <= hdist_th) {
     __atomic_add_fetch(&hdisthist_v[((i + 1) * (hdist_th + 1)) + hdist_min], 1, __ATOMIC_RELAXED);
+  } else {
+    __atomic_add_fetch(&miss_v[i + 1], 1, __ATOMIC_RELAXED);
   }
 }
 
@@ -193,6 +203,7 @@ void HDHist::compute_prefhistsum()
     for (uint32_t d = 0; d < W; ++d) {
       hdisthist_v[((i + 1) * W) + d] += hdisthist_v[(i * W) + d];
     }
+    miss_v[i + 1] += miss_v[i];
   }
 }
 
@@ -238,6 +249,8 @@ void HDHist::compute_prefhistsum_parallel(ThreadPool& pool, uint32_t nchunks)
         h[r * W + d] += b[d];
     }
   });
+  for (uint64_t i = 0; i < nbins; ++i)
+    miss_v[i + 1] += miss_v[i];
 }
 
 void HDHist::extract_histogram(const uint64_t a, const uint64_t b, vec<uint64_t>& v, uint64_t& u, uint64_t& t) const
@@ -257,9 +270,7 @@ void HDHist::extract_histogram(const uint64_t a, const uint64_t b, vec<uint64_t>
   const simde__m128i s4_rend = simde_mm256_extracti128_si256(s4, 1);
   const simde__m128i s2 = simde_mm_add_epi64(s4_lend, s4_rend);
   t = static_cast<uint64_t>(simde_mm_extract_epi64(s2, 0) + simde_mm_extract_epi64(s2, 1));
-  const uint64_t mers_b = std::min(b << bin_shift, nmers);
-  const uint64_t mers_a = std::min(a << bin_shift, nmers);
-  u = (mers_b - mers_a) - t;
+  u = miss_v[b] - miss_v[a];
 }
 
 dist_summary_t summarize_distances(vec<double> d_v)
@@ -401,7 +412,6 @@ void DistSC::dist()
   for (uint32_t i = 0; i < nsketches; ++i) {
     sketch_sptr_t sketch = std::make_shared<Sketch>(sketch_path);
     sketch->load_from_offset(sin, sketch_offsets[i]);
-    sketch->make_rho_partial();
 
     strstream sout;
     strstream samples_sout;
@@ -467,7 +477,16 @@ namespace {
   {
     uint64_t* fw;
     uint64_t* rc;
-    inline void operator()(uint64_t, uint32_t hd, bool is_rc) const { ++(is_rc ? rc[hd] : fw[hd]); }
+    uint64_t* u_fw;
+    uint64_t* u_rc;
+    uint32_t hdist_th;
+    inline void operator()(uint64_t, uint32_t hd, bool is_rc) const
+    {
+      if (hd <= hdist_th)
+        ++(is_rc ? rc[hd] : fw[hd]);
+      else
+        ++(is_rc ? *u_rc : *u_fw);
+    }
   };
 
 } // namespace
@@ -565,8 +584,8 @@ void DistSC::sample_sequences(const sketch_sptr_t& sketch,
   }
   for (auto& p : plans) {
     if (!p.big) continue;
-    p.hist_fw = std::make_unique<HDHist>(p.nbins, p.enmers, hdist_th, bin_shift, /*zero=*/false);
-    if (!canonical) p.hist_rc = std::make_unique<HDHist>(p.nbins, p.enmers, hdist_th, bin_shift, /*zero=*/false);
+    p.hist_fw = std::make_unique<HDHist>(p.nbins, hdist_th, bin_shift, /*zero=*/false);
+    if (!canonical) p.hist_rc = std::make_unique<HDHist>(p.nbins, hdist_th, bin_shift, /*zero=*/false);
   }
 
   const uint64_t u64m = std::numeric_limits<uint64_t>::max();
@@ -674,9 +693,9 @@ void DistSC::sample_sequences(const sketch_sptr_t& sketch,
         else
           scan_mers_range<true>(ctx, cseq, t.a, t.b, agg);
       } else if (t.kind == TASK_FUSED) {
-        HDHist hist_fw(p.nbins, p.enmers, hdist_th, bin_shift);
+        HDHist hist_fw(p.nbins, hdist_th, bin_shift);
         std::unique_ptr<HDHist> hist_rc;
-        if (!canonical) hist_rc = std::make_unique<HDHist>(p.nbins, p.enmers, hdist_th, bin_shift);
+        if (!canonical) hist_rc = std::make_unique<HDHist>(p.nbins, hdist_th, bin_shift);
         hist_agg_t agg{&hist_fw, hist_rc.get(), /*atomic=*/false};
         if (canonical)
           scan_mers_range<false>(ctx, cseq, 0, p.enmers, agg);
@@ -688,28 +707,23 @@ void DistSC::sample_sequences(const sketch_sptr_t& sketch,
       } else {
         uint64_t v_fw[hdist_bound + 1];
         uint64_t v_rc[hdist_bound + 1];
-        window_agg_t agg{v_fw, v_rc};
         for (uint64_t s = t.a; s < t.b; ++s) {
           const uint64_t a_bin = p.starts[s];
           const uint64_t j0 = a_bin << bin_shift;
           const uint64_t j1 = std::min(j0 + region_nmers, p.enmers);
           std::fill(v_fw, v_fw + hdist_bound + 1, 0);
           std::fill(v_rc, v_rc + hdist_bound + 1, 0);
+          uint64_t u_fw = 0, u_rc = 0;
+          window_agg_t agg{v_fw, v_rc, &u_fw, &u_rc, hdist_th};
           if (canonical)
             scan_mers_range<false>(ctx, cseq, j0, j1, agg);
           else
             scan_mers_range<true>(ctx, cseq, j0, j1, agg);
-          uint64_t t_fw = 0;
-          for (uint32_t d = 0; d <= hdist_th; ++d)
-            t_fw += v_fw[d];
-          const double d_fw = validate_distance(llhf.mle_at(v_fw, (j1 - j0) - t_fw));
+          const double d_fw = validate_distance(llhf.mle_at(v_fw, u_fw));
           double d = d_fw;
           char strand = '+';
           if (!canonical) {
-            uint64_t t_rc = 0;
-            for (uint32_t d = 0; d <= hdist_th; ++d)
-              t_rc += v_rc[d];
-            const double d_rc = validate_distance(llhf.mle_at(v_rc, (j1 - j0) - t_rc));
+            const double d_rc = validate_distance(llhf.mle_at(v_rc, u_rc));
             std::tie(d, strand) = select_strand_distance(d_fw, d_rc);
           }
           p.d_res[s] = d;

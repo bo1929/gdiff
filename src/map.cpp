@@ -201,6 +201,7 @@ DIM<T>::DIM(const params_t<T>& params, const llh_sptr_t<T>& llhf, uint64_t nbins
     // Note that aggregate_mer() accumulates into rows 1 to nbins.
     // At the end, compute_prefhistsum() converts in-place.
     hdisthist_v.assign((nbins + 1) * (params.hdist_th + 1), 0);
+    miss_v.assign(nbins + 1, 0);
     // First delta (HD threshold) + 1 values are zeros, same layout as fdps_v and sdps_v.
   } else {
     // Otherwise, just keep a global histogram for the query.
@@ -286,6 +287,7 @@ void DIM<T>::aggregate_mer(uint32_t hdist_min, uint64_t i)
     add_to(fdc_v[i], llhf->get_fdc(hdist_min));
   } else {
     u_q++;
+    if (keep_hist) miss_v[i + 1]++;
     add_to(sdc_v[i], llhf->get_sdc());
     add_to(fdc_v[i], llhf->get_fdc());
   }
@@ -612,6 +614,7 @@ void DIM<T>::compute_prefhistsum()
     for (uint32_t d = 0; d < W; ++d) {
       hdisthist_v[((i + 1) * W) + d] += hdisthist_v[(i * W) + d];
     }
+    miss_v[i + 1] += miss_v[i];
   }
 } // }}}
 
@@ -645,11 +648,8 @@ void DIM<T>::extract_histogram(uint64_t a, uint64_t b, vec<uint64_t>& v, uint64_
   const simde__m128i s4_rend = simde_mm256_extracti128_si256(s4, 1);
   const simde__m128i s2 = simde_mm_add_epi64(s4_lend, s4_rend);
   t = simde_mm_extract_epi64(s2, 0) + simde_mm_extract_epi64(s2, 1);
-  const uint64_t mers_b = std::min(b << params.bin_shift, nmers);
-  const uint64_t mers_a = std::min(a << params.bin_shift, nmers);
-  // The miss count (u) is based on all positions in [a,b), but search_mers() skips Ns.
-  u = (mers_b - mers_a) - t;
-  // A better solution is needed for Ns in this case, skipping does not work.
+  // Explicit misses only; Ns / frac-unsampled k-mers are unobserved (not in u).
+  u = miss_v[b] - miss_v[a];
 } // }}}
 
 template<typename T>
@@ -703,11 +703,11 @@ void QIE<T>::extract_ordered_intervals(DIM<T>& dim, bool is_rc, uint64_t tau_eff
     dim.expand_intervals(params.chisq, ix);
 
     const auto& iv_v = dim.get_intervals(ix);
+    const size_t n_prev = bp_v.size();
     for (const auto& iv : iv_v) {
       bp_v.push_back({iv.a, iv.b + 1, ix});
     }
-
-    sbprev = bp_v.size();
+    sbprev = n_prev;
   }
   merge_from(sbprev);
 

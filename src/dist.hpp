@@ -18,7 +18,7 @@ class HDHist
 public:
   // With zero=false the backing store is left uninitialized; the caller must
   // zero it (e.g. zero_range, possibly from multiple threads) before use.
-  explicit HDHist(uint64_t nbins, uint64_t nmers, uint32_t hdist_th, uint64_t bin_shift, bool zero = true);
+  explicit HDHist(uint64_t nbins, uint32_t hdist_th, uint64_t bin_shift, bool zero = true);
 
   void aggregate_mer(uint32_t hdist_min, uint64_t i);
   void aggregate_mer_atomic(uint32_t hdist_min, uint64_t i);
@@ -30,14 +30,13 @@ public:
   void compute_prefhistsum_parallel(ThreadPool& pool, uint32_t nchunks);
   void extract_histogram(uint64_t a, uint64_t b, vec<uint64_t>& v, uint64_t& u, uint64_t& t) const;
   [[nodiscard]] uint64_t get_nbins() const { return nbins; }
-  [[nodiscard]] uint64_t get_nmers() const { return nmers; }
 
 private:
   uint64_t nbins;
-  uint64_t nmers;
   uint32_t hdist_th;
   uint64_t bin_shift;
   std::unique_ptr<uint64_t[]> hdisthist_v;
+  std::unique_ptr<uint64_t[]> miss_v;
 };
 
 struct dist_summary_t

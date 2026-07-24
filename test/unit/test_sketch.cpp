@@ -113,17 +113,12 @@ TEST_CASE("scan_bucket returns false for invalid offset") {
   std::filesystem::remove(path);
 }
 
-TEST_CASE("make_rho_partial adjusts rho") {
+TEST_CASE("loaded rho is used as-is") {
   auto path = write_tiny_sketch("test_rho");
   Sketch sketch(path);
   load_sketch_from_file(sketch, path);
 
-  double rho_before = sketch.get_rho();
-  sketch.make_rho_partial();
-  double rho_after = sketch.get_rho();
-
-  // Flat sketches: rho *= nrows / 2^(2h) = 4 / 2^22
-  CHECK(rho_after == doctest::Approx(rho_before * 4.0 / (1u << 22)));
+  CHECK(sketch.get_rho() == doctest::Approx(0.8));
 
   std::filesystem::remove(path);
 }

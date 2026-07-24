@@ -93,7 +93,6 @@ void RSeq::extract_mers(vvec<T>& table)
       continue;
     }
     cminimizer = *std::min_element(winenc_v.begin(), winenc_v.end(), [](hmer_t lhs, hmer_t rhs) { return lhs.z < rhs.z; });
-    c2.add(cminimizer.z);
     if (canonical) {
       uint64_t rcenc64_bp = revcomp_bp64(cminimizer.x, k);
       if (cminimizer.x < rcenc64_bp) {
@@ -103,6 +102,7 @@ void RSeq::extract_mers(vvec<T>& table)
     }
     rix = lshf->compute_hash(cminimizer.x);
     if (rix < off_thresh) {
+      c2.add(cminimizer.z);
       table[rix].push_back(lshf->drop_ppos_lr(cminimizer.y));
     }
   }

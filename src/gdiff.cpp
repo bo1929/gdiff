@@ -1,5 +1,6 @@
 #include "gdiff.hpp"
 #include "random.hpp"
+#include <limits>
 
 void BaseLSH::set_lshf() { lshf = std::make_shared<LSHF>(k, h); }
 
@@ -7,7 +8,7 @@ void BaseLSH::set_nrows()
 {
   // Flat sampling: keep the prefix [0, T) of the 2^(2h) LSH space.
   const uint64_t hash_size = uint64_t(1) << (2 * h);
-  const uint64_t t = static_cast<uint64_t>(hash_size * rate + 0.5);
+  const uint64_t t = static_cast<uint64_t>(hash_size * frac + 0.5);
   nrows = static_cast<uint32_t>(std::max<uint64_t>(1, std::min(t, hash_size)));
 }
 
@@ -98,7 +99,6 @@ void MapSC::map()
       sketch_sptr_t sketch = std::make_shared<Sketch>(sketch_path);
       sketch->load_from_offset(sketch_stream, sketch_offsets[i]);
       sketch_stream.close();
-      sketch->make_rho_partial();
       bool canonical = sketch->is_canonical();
 
       strstream sout;
@@ -143,9 +143,9 @@ void MapSC::map()
 bool SketchSC::validate_configuration()
 {
   bool is_invalid = false;
-  if (rate <= 0.0 || rate > 1.0) {
+  if (frac <= 0.0 || frac > 1.0) {
     is_invalid = true;
-    cerr_msg("--rate must be in (0, 1]; got ", rate);
+    cerr_msg("--frac must be in (0, 1]; got ", frac);
   }
   if (w < k) {
     is_invalid = true;
@@ -174,21 +174,68 @@ bool SketchSC::validate_configuration()
   return !is_invalid;
 }
 
-void SketchSC::create()
+void SketchSC::process()
 {
-  rseq_sptr_t rs = std::make_shared<RSeq>(input_path, lshf, w, nrows, canonical);
-  sdhm_sptr_t sdhm = std::make_shared<SDHM>();
-  sdhm->fill_table(nrows, rs);
-  sketch_sfhm = std::make_shared<SFHM>(sdhm);
-  rho = rs->get_rho();
+  if (input_paths.empty()) error_exit("No input files provided!");
 
-  cerr_msg("Total number of k-mers included in the sketch: ", sdhm->get_nmers());
-  cerr_msg("Subsampling rate (rho) is: ", rho);
+  const uint32_t nsketches = static_cast<uint32_t>(input_paths.size());
+  const uint32_t nthreads = std::max(1u, std::min(num_threads, nsketches));
+  cerr_msg("Preparing to sketch ", nsketches, " file(s) w/ ", nthreads, " thread(s)");
+
+  std::ofstream sketch_stream(sketch_path, std::ofstream::binary);
+  sketch_stream.write(reinterpret_cast<const char*>(&nsketches), sizeof(uint32_t));
+  rho_v.assign(nsketches, 0.0);
+
+  std::atomic<uint32_t> next_idx{0};
+  std::atomic<uint32_t> count_p{0};
+  std::mutex write_mtx;
+  std::mutex cerr_mtx;
+
+  auto worker = [&](const uint32_t tseed) {
+    init_thread_rng(tseed);
+    uint32_t i;
+    while ((i = next_idx.fetch_add(1, std::memory_order_relaxed)) < nsketches) {
+      const str& input_path = input_paths[i];
+      rseq_sptr_t rs = std::make_shared<RSeq>(input_path, lshf, w, nrows, canonical);
+      sdhm_sptr_t sdhm = std::make_shared<SDHM>();
+      sdhm->fill_table(nrows, rs);
+      sfhm_sptr_t sketch_sfhm = std::make_shared<SFHM>(sdhm);
+      rho_v[i] = rs->get_rho();
+
+      {
+        std::lock_guard<std::mutex> lock(write_mtx);
+        write_header(sketch_stream, i);
+        write_config(sketch_stream, i);
+        sketch_sfhm->save(sketch_stream);
+      }
+
+      const uint32_t num_p = count_p.fetch_add(1, std::memory_order_relaxed) + 1;
+      {
+        std::lock_guard<std::mutex> lock(cerr_mtx);
+        std::cerr << "\rCreated a sketch for [" << num_p << "/" << nsketches << "] "
+                  << "..." << std::flush;
+        if (num_p == nsketches) std::cerr << std::endl;
+      }
+    }
+  };
+
+  std::vector<std::thread> threads;
+  threads.reserve(nthreads);
+  for (uint32_t t = 0; t < nthreads; ++t) {
+    threads.emplace_back([&, t]() { worker(t + 1); });
+  }
+  for (auto& t : threads) {
+    t.join();
+  }
+
+  check_fstream(sketch_stream, std::string("Failed to write the sketch!"), sketch_path.string());
+  sketch_stream.close();
+  cerr_msg("Sketch file saved to ", sketch_path.string(), " with ", nsketches, " sketch(es)");
 }
 
-void SketchSC::write_header(std::ofstream& sout)
+void SketchSC::write_header(std::ofstream& sout, uint32_t i)
 {
-  const str& rid = sketch_path.filename();
+  const str rid = std::filesystem::path(input_paths[i]).filename().string();
   uint64_t timestamp =
     std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
   uint64_t rid_len = rid.length();
@@ -197,9 +244,9 @@ void SketchSC::write_header(std::ofstream& sout)
   sout.write(reinterpret_cast<char*>(&timestamp), sizeof(uint64_t));
 }
 
-void SketchSC::write_config(std::ofstream& sout)
+void SketchSC::write_config(std::ofstream& sout, uint32_t i)
 {
-  // The sketch keeps a k-mer iff LSH(x) < nrows (flat threshold sampling).
+  // Keeps a minimizer iff LSH(x) < nrows; rho already includes that keep rate.
   sout.write(reinterpret_cast<const char*>(&k), sizeof(uint8_t));
   sout.write(reinterpret_cast<const char*>(&w), sizeof(uint8_t));
   sout.write(reinterpret_cast<const char*>(&h), sizeof(uint8_t));
@@ -207,37 +254,23 @@ void SketchSC::write_config(std::ofstream& sout)
   sout.write(reinterpret_cast<char*>(&nrows), sizeof(uint32_t));
   sout.write(reinterpret_cast<char*>(lshf->ppos_data()), h * sizeof(uint8_t));
   sout.write(reinterpret_cast<char*>(lshf->npos_data()), (k - h) * sizeof(uint8_t));
-  sout.write(reinterpret_cast<char*>(&rho), sizeof(double));
-}
-
-void SketchSC::save()
-{
-  std::ofstream sketch_stream(sketch_path, std::ofstream::binary);
-  uint32_t nsketches = 1;
-  sketch_stream.write(reinterpret_cast<char*>(&nsketches), sizeof(uint32_t));
-
-  write_header(sketch_stream);
-  write_config(sketch_stream);
-  sketch_sfhm->save(sketch_stream);
-
-  check_fstream(sketch_stream, std::string("Failed to write the sketch!"), sketch_path.string());
-  sketch_stream.close();
+  sout.write(reinterpret_cast<const char*>(&rho_v[i]), sizeof(double));
 }
 
 SketchSC::SketchSC(CLI::App& sc)
 {
   set_sketch_defaults();
-  sc.add_option("-i,--input-path", input_path, "Input FASTA/FASTQ file <path> (or URL) (gzip compatible)")
+  sc.add_option("-i,--input-path", input_paths, "Input FASTA/FASTQ file(s) <path> (or URL) (gzip compatible)")
     ->required()
     ->check(url_validator | CLI::ExistingFile);
   sc.add_option("-o,--output-path", sketch_path, "Path to store the resulting binary sketch file")->required();
   sc.add_option("-k,--mer-len", k, "Length of k-mers [27]")->check(CLI::Range(19, 31))->check(CLI::PositiveNumber);
   sc.add_option("-w,--win-len", w, "Length of the minimizer window (w>=k) [k+6]")->check(CLI::PositiveNumber);
   sc.add_option("-h,--num-positions", h, "Number of positions for the LSH [k-16]")->check(CLI::PositiveNumber);
-  sc.add_option("--rate", rate, "Keep a k-mer if LSH(x) < rate * 2^(2h); subsamples on top of minimizers [1.0]")
-    ->check(CLI::Range(0.0, 1.0));
+  sc.add_option("--frac", frac, "Keep a k-mer if LSH(x) < frac * 2^(2h); i.e., subsampling ratio [1.0]")
+    ->check(CLI::Range(std::numeric_limits<double>::min(), 1.0));
   sc.add_flag(
-    "--strand-agnostic,!--strand-aware", canonical, "Use a (default) strand-agnostic (canonical) or strand-aware sketch");
+    "--strand-agnostic,!--strand-aware", canonical, "A (canonical) strand-agnostic (default) or strand-aware sketch");
   sc.callback([&]() {
     if (!(sc.count("-w") + sc.count("--win-len"))) {
       w = k + 6;
@@ -372,7 +405,7 @@ void InfoSC::info()
     std::cout << "  h (LSH pos): " << static_cast<int>(h) << "\n";
     std::cout << "  canonical:   " << (canonical ? "true" : "false") << "\n";
     std::cout << "  nrows:       " << nrows << "\n";
-    std::cout << "  rate:        " << static_cast<double>(nrows) / static_cast<double>(uint64_t(1) << (2 * h)) << "\n";
+    std::cout << "  frac:        " << static_cast<double>(nrows) / static_cast<double>(uint64_t(1) << (2 * h)) << "\n";
     std::cout << "  rho:         " << rho << "\n";
     std::cout << "  k-mers:      " << nkmers << "\n";
   }
@@ -402,7 +435,7 @@ int main(int argc, char** argv)
   app.require_subcommand();
   app.add_option("--seed", seed, "Random seed for the LSH and other parts that require randomness [0]");
   app.callback([&]() { init_thread_rng(0); });
-  app.add_option("--num-threads", num_threads, "Number of threads for parallel sketch processing [1]");
+  app.add_option("--num-threads", num_threads, "Number of threads for parallel sketch/map/dist processing [1]");
 
   auto& sc_sketch = *app.add_subcommand("sketch", "Create sketches from FASTA/FASTQ files");
   auto& sc_map = *app.add_subcommand("map", "Map queries and extract distance-based patterns from sketches");
@@ -435,8 +468,7 @@ int main(int argc, char** argv)
     gdiff_sketch.set_nrows();
     gdiff_sketch.set_lshf();
     std::chrono::duration<float> es_b = std::chrono::system_clock::now() - tstart;
-    gdiff_sketch.create();
-    gdiff_sketch.save();
+    gdiff_sketch.process();
     std::chrono::duration<float> es_s = std::chrono::system_clock::now() - tstart - es_b;
     cerr_msg("Done sketching & saving, elapsed: ", es_s.count(), " sec");
   }
