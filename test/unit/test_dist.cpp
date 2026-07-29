@@ -98,6 +98,26 @@ TEST_CASE("file-wide reservoir sampling weights sequences by length")
   CHECK(slots.size() < 8000);
 }
 
+TEST_CASE("capped median excludes zero-hit windows")
+{
+  const vec<uint8_t> nomatch{0, 0, 0, 0, 0, 1, 1, 1};
+  const dist_summary_t summary =
+    summarize_distances({0.1, 0.2, 0.3, 0.4, 0.5, 0.84, 0.84, 0.84}, &nomatch);
+
+  CHECK(summary.n == 8);
+  CHECK(summary.n_nomatch == 3);
+  CHECK(summary.capped_median == doctest::Approx(0.3));
+
+  const dist_summary_t plain = summarize_distances({0.1, 0.2, 0.3});
+  CHECK(plain.n_nomatch == 0);
+  CHECK(std::isnan(plain.capped_median));
+
+  const vec<uint8_t> all_capped{1, 1};
+  const dist_summary_t none = summarize_distances({0.84, 0.84}, &all_capped);
+  CHECK(none.n_nomatch == 2);
+  CHECK(std::isnan(none.capped_median));
+}
+
 TEST_CASE("strand selection chooses the lower valid distance")
 {
   CHECK(select_strand_distance(0.2, 0.1).first == doctest::Approx(0.1));

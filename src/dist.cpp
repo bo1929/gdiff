@@ -273,10 +273,23 @@ void HDHist::extract_histogram(const uint64_t a, const uint64_t b, vec<uint64_t>
   u = miss_v[b] - miss_v[a];
 }
 
-dist_summary_t summarize_distances(vec<double> d_v)
+dist_summary_t summarize_distances(vec<double> d_v, const vec<uint8_t>* nomatch_v)
 {
   dist_summary_t summary;
-  d_v.erase(std::remove_if(d_v.begin(), d_v.end(), [](const double d) { return !std::isfinite(d); }), d_v.end());
+  assert(nomatch_v == nullptr || nomatch_v->size() == d_v.size());
+  vec<double> rel_v; // distances of matched (non-ceiling) windows
+  size_t wi = 0;
+  for (size_t i = 0; i < d_v.size(); ++i) {
+    if (!std::isfinite(d_v[i])) continue;
+    d_v[wi++] = d_v[i];
+    if (nomatch_v != nullptr) {
+      if ((*nomatch_v)[i])
+        ++summary.n_nomatch;
+      else
+        rel_v.push_back(d_v[i]);
+    }
+  }
+  d_v.resize(wi);
   if (d_v.empty()) {
     summary.quantiles.fill(nanx());
     return summary;
@@ -297,6 +310,10 @@ dist_summary_t summarize_distances(vec<double> d_v)
   constexpr arr<double, 7> probs{0.01, 0.05, 0.25, 0.50, 0.75, 0.95, 0.99};
   for (size_t i = 0; i < probs.size(); ++i)
     summary.quantiles[i] = linear_quantile(d_v, probs[i]);
+  if (nomatch_v != nullptr) {
+    std::sort(rel_v.begin(), rel_v.end());
+    summary.capped_median = linear_quantile(rel_v, 0.5); // NaN when all capped
+  }
   return summary;
 }
 
@@ -440,6 +457,7 @@ namespace {
     vec<uint64_t> starts;
     vec<double> d_res;
     vec<char> strand_res;
+    vec<uint64_t> hits_res; // matching k-mers (t) of the selected strand; 0 = ceiling
     std::unique_ptr<HDHist> hist_fw;
     std::unique_ptr<HDHist> hist_rc;
   };
@@ -525,7 +543,7 @@ void DistSC::sample_sequences(const sketch_sptr_t& sketch,
     write_tsv(sout, query_path, sketch->get_rid(), summary.n, summary.mean, summary.sd);
     for (const double q : summary.quantiles)
       sout << '\t' << q;
-    sout << '\n';
+    sout << '\t' << summary.capped_median << '\t' << summary.n_nomatch << '\n';
     return;
   }
 
@@ -570,6 +588,7 @@ void DistSC::sample_sequences(const sketch_sptr_t& sketch,
     p.starts = sample_region_starts(npos, n_for_seq, gen);
     p.d_res.assign(n_for_seq, nanx());
     p.strand_res.assign(n_for_seq, '+');
+    p.hits_res.assign(n_for_seq, 0);
     plans.push_back(std::move(p));
   }
   // Full-pass sequences become "big" (parallel chunked build) only when there
@@ -641,18 +660,22 @@ void DistSC::sample_sequences(const sketch_sptr_t& sketch,
       for (uint64_t s = s0; s < s1; ++s) {
         const uint64_t a_bin = p.starts[s];
         const uint64_t b_bin = a_bin + tau_bin;
-        uint64_t u = 0, t = 0;
-        hist_fw.extract_histogram(a_bin, b_bin, v_scratch, u, t);
-        const double d_fw = validate_distance(llhf.mle_at(v_scratch.data(), u));
+        uint64_t u_fw = 0, t_fw = 0;
+        hist_fw.extract_histogram(a_bin, b_bin, v_scratch, u_fw, t_fw);
+        const double d_fw = validate_distance(llhf.mle_at(v_scratch.data(), u_fw));
         double d = d_fw;
         char strand = '+';
+        uint64_t t_sel = t_fw;
         if (!canonical) {
-          hist_rc->extract_histogram(a_bin, b_bin, v_scratch, u, t);
-          const double d_rc = validate_distance(llhf.mle_at(v_scratch.data(), u));
+          uint64_t u_rc = 0, t_rc = 0;
+          hist_rc->extract_histogram(a_bin, b_bin, v_scratch, u_rc, t_rc);
+          const double d_rc = validate_distance(llhf.mle_at(v_scratch.data(), u_rc));
           std::tie(d, strand) = select_strand_distance(d_fw, d_rc);
+          t_sel = (strand == '-') ? t_rc : t_fw;
         }
         p.d_res[s] = d;
         p.strand_res[s] = strand;
+        p.hits_res[s] = t_sel;
       }
     };
 
@@ -719,15 +742,20 @@ void DistSC::sample_sequences(const sketch_sptr_t& sketch,
             scan_mers_range<false>(ctx, cseq, j0, j1, agg);
           else
             scan_mers_range<true>(ctx, cseq, j0, j1, agg);
+          const uint64_t t_fw = std::accumulate(v_fw, v_fw + hdist_bound + 1, uint64_t(0));
           const double d_fw = validate_distance(llhf.mle_at(v_fw, u_fw));
           double d = d_fw;
           char strand = '+';
+          uint64_t t_sel = t_fw;
           if (!canonical) {
+            const uint64_t t_rc = std::accumulate(v_rc, v_rc + hdist_bound + 1, uint64_t(0));
             const double d_rc = validate_distance(llhf.mle_at(v_rc, u_rc));
             std::tie(d, strand) = select_strand_distance(d_fw, d_rc);
+            t_sel = (strand == '-') ? t_rc : t_fw;
           }
           p.d_res[s] = d;
           p.strand_res[s] = strand;
+          p.hits_res[s] = t_sel;
         }
       }
     });
@@ -775,7 +803,9 @@ void DistSC::sample_sequences(const sketch_sptr_t& sketch,
   toc("phase3 eval", tp0);
   tp0 = clock::now();
   vec<double> d_v;
+  vec<uint8_t> nomatch_v;
   d_v.reserve(sample_size);
+  nomatch_v.reserve(sample_size);
   if (samples_sout) *samples_sout << std::setprecision(8);
   for (const auto& p : plans) {
     const str& qid = qid_batch[p.bix];
@@ -783,18 +813,20 @@ void DistSC::sample_sequences(const sketch_sptr_t& sketch,
       const double d = p.d_res[s];
       if (!std::isfinite(d)) continue;
       d_v.push_back(d);
+      nomatch_v.push_back(p.hits_res[s] == 0);
       if (samples_sout) {
         const uint64_t a = p.starts[s] << bin_shift;
-        write_tsv(*samples_sout, qid, p.enmers + k - 1, a + 1, a + tau, p.strand_res[s], sketch->get_rid(), d) << '\n';
+        write_tsv(*samples_sout, qid, p.enmers + k - 1, a + 1, a + tau, p.strand_res[s], sketch->get_rid(), d)
+          << '\t' << p.hits_res[s] << '\n';
       }
     }
   }
 
-  const dist_summary_t summary = summarize_distances(std::move(d_v));
+  const dist_summary_t summary = summarize_distances(std::move(d_v), &nomatch_v);
   toc("merge+summarize", tp0);
   sout << std::setprecision(8);
   write_tsv(sout, query_path, sketch->get_rid(), summary.n, summary.mean, summary.sd);
   for (const double q : summary.quantiles)
     sout << '\t' << q;
-  sout << '\n';
+  sout << '\t' << summary.capped_median << '\t' << summary.n_nomatch << '\n';
 }

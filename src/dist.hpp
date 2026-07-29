@@ -45,9 +45,15 @@ struct dist_summary_t
   double mean = nanx();
   double sd = nanx();
   arr<double, 7> quantiles{};
+  // Windows with no matching k-mer (t == 0 hits) sit at the MLE ceiling;
+  // capped_median is the median over the remaining (matched) windows and
+  // tracks ANIb-style ground truth far better than the raw mean/median.
+  uint64_t n_nomatch = 0;
+  double capped_median = nanx();
 };
 
-dist_summary_t summarize_distances(vec<double> d_v);
+// When nomatch_v is given it must be parallel to d_v (1 = zero-hit window).
+dist_summary_t summarize_distances(vec<double> d_v, const vec<uint8_t>* nomatch_v = nullptr);
 std::pair<double, char> select_strand_distance(double d_fw, double d_rc);
 
 // Draws n_samples uniform region starts in [0, npos) (with replacement).

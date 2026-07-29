@@ -165,15 +165,23 @@ Providing 8 distance thresholds runs all eight in one SIMD-wide pass.
 Summary rows contain:
 
 ```
-QUERY_FILE  REF_ID  N  MEAN  SD  Q01  Q05  Q25  Q50  Q75  Q95  Q99
+QUERY_FILE  REF_ID  N  MEAN  SD  Q01  Q05  Q25  Q50  Q75  Q95  Q99  CAPPED_MEDIAN  N_NOMATCH
 ```
 
 `N` is the number of valid MLE samples, `SD` is the sample standard deviation,
-and quantiles use linear interpolation. Sample detail rows contain:
+and quantiles use linear interpolation. Sampled windows with no matching
+k-mer (zero hits within `--hdist-th`) sit at the MLE ceiling and inflate the
+mean/median; `CAPPED_MEDIAN` is the median over the remaining (matched)
+windows (NaN when all windows are capped) and `N_NOMATCH` counts the capped
+windows, so `1 - N_NOMATCH/N` is a matched-fraction analogue of alignment
+coverage. Sample detail rows contain:
 
 ```
-QUERY_ID  SEQ_LEN  START  END  STRAND  REF_ID  DIST
+QUERY_ID  SEQ_LEN  START  END  STRAND  REF_ID  DIST  NMATCH
 ```
+
+`NMATCH` is the number of matching k-mers in the window on the selected
+strand; `NMATCH == 0` marks a capped (no-match) window.
 
 Coordinates are 1-based and inclusive. For strand-aware sketches, each sample
 uses the lower of the forward and reverse-complement MLE distances and reports
