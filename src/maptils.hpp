@@ -2,6 +2,7 @@
 #define _MAPTILS_HPP
 
 #include "types.hpp"
+#include <algorithm>
 #include <limits>
 #include <sstream>
 #include <utility>
@@ -46,6 +47,16 @@ inline double validate_distance(const double d)
   return d;
 }
 
+// Deviance score of a window/interval against a reference distance D_ref:
+// 2 * (NLL(D_ref) - NLL(d_mle)) >= 0, chi2(1)-like. Used with two references:
+// the background distance (whole-query d_q) and the plateau upper bound UB
+// (the no-homology end of the MLE search domain). Values below ~3.84 mean the
+// window is statistically indistinguishable from the reference at ~95%.
+inline double lr_deviance(const double nll_ref, const double nll_mle) noexcept
+{
+  return 2.0 * std::max(0.0, nll_ref - nll_mle);
+}
+
 // 1-based half-open interval convention: inclusive start, exclusive end.
 inline bool overlaps_half_open(const interval_t& lhs, const interval_t& rhs) { return lhs.a < rhs.b && rhs.a < lhs.b; }
 
@@ -81,11 +92,22 @@ struct record_t
   double fold = nanx();       // fold change: d / median(null samples)
   double percentile = nanx(); // two-sided percentile for the closer strand (reference), otherwise cdf
   double qvalue = nanx();     // Benjamini-Hochberg adjusted percentile
+  double lr_bg;               // deviance vs the background (whole-query) distance; see lr_deviance()
+  double lr_ub;               // deviance vs the plateau upper bound UB; see lr_deviance()
 
   bool is_intact() const { return seq_iv.a == 1 && seq_iv.b == L; }
   interval_t get_interval() const { return {bin_iv.a - 1, bin_iv.b - 1}; } // 0-based half-open bin-boundary
 
-  record_t(uint64_t bix, uint64_t L, interval_t seq_iv, interval_t bin_iv, bool is_rc, double d, double I, size_t th_ix)
+  record_t(uint64_t bix,
+           uint64_t L,
+           interval_t seq_iv,
+           interval_t bin_iv,
+           bool is_rc,
+           double d,
+           double I,
+           size_t th_ix,
+           double lr_bg = nanx(),
+           double lr_ub = nanx())
     : bix(bix)
     , L(L)
     , seq_iv(seq_iv)
@@ -95,6 +117,8 @@ struct record_t
     , d(d)
     , I(I)
     , th_ix(th_ix)
+    , lr_bg(lr_bg)
+    , lr_ub(lr_ub)
   {
   }
 };
@@ -108,10 +132,14 @@ struct bp_t
   size_t ix;
 };
 
-inline interval_t get_coordinates(const interval_t& bin_iv, uint64_t bin_shift, uint64_t enmers, uint32_t k, bool is_last)
+// 1-based inclusive bp coordinates of the bin range [bin_iv.a, bin_iv.b).
+// The end always covers the full span of the last k-mer: bins [a, b) cover mer
+// starts [(a-1)<<bin_shift, (b-1)<<bin_shift), so the last covered mer starts
+// at ((b-1)<<bin_shift)-1 and its k-mer ends at min((b-1)<<bin_shift, enmers)+k-1.
+inline interval_t get_coordinates(const interval_t& bin_iv, uint64_t bin_shift, uint64_t enmers, uint32_t k)
 {
   const uint64_t a = ((bin_iv.a - 1) << bin_shift) + 1;
-  const uint64_t b = is_last ? (enmers + k - 1) : std::min(((bin_iv.b - 1) << bin_shift) + 1, enmers + 1);
+  const uint64_t b = std::min((bin_iv.b - 1) << bin_shift, enmers) + k - 1;
   return {a, b};
 }
 

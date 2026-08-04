@@ -5,6 +5,7 @@
 #include "msg.hpp"
 #include "hm.hpp"
 #include "lshf.hpp"
+#include "CLI11.hpp"
 
 class Sketch
 {
@@ -22,8 +23,8 @@ public:
   void prefetch_offset_inc(uint32_t offset) const noexcept;
   void prefetch_offset_enc(uint32_t offset) const noexcept;
   bool scan_bucket(uint32_t offset, enc_t enc_lr, uint32_t& hdist_min) const noexcept;
-  sfhm_sptr_t get_sfhm_sptr();
-  lshf_sptr_t get_lshf();
+  sfhm_sptr_t get_sfhm_sptr() const { return sfhm; }
+  lshf_sptr_t get_lshf_sptr() const { return lshf; }
   void canonicalize();
   double get_rho() const;
   bool is_canonical() const { return canonical; }
@@ -42,6 +43,46 @@ private:
   uint64_t timestamp;
   str rid;
   std::filesystem::path sketch_path;
+};
+
+class BaseLSH
+{
+public:
+  void set_lshf();
+  void set_nrows();
+  void set_sketch_defaults()
+  {
+    k = 27;
+    w = k + 6;
+    h = 11;
+    frac = 1.0;
+    canonical = true;
+    nrows = uint32_t(1) << (2 * h); // recomputed by set_nrows()
+  }
+
+protected:
+  uint8_t w;
+  uint8_t k;
+  uint8_t h;
+  double frac = 1.0; // k-mer sampling fraction on top of minimizers: keep if LSH(x) < frac * 2^(2h)
+  bool canonical = true;
+  uint32_t nrows;
+  lshf_sptr_t lshf = nullptr;
+};
+
+class SketchSC : public BaseLSH
+{
+public:
+  SketchSC(CLI::App& sc);
+  void process();
+  bool validate_configuration();
+  void write_header(std::ofstream& stream, uint32_t i);
+  void write_config(std::ofstream& stream, uint32_t i);
+
+private:
+  std::vector<str> input_paths;
+  std::filesystem::path sketch_path;
+  std::vector<double> rho_v;
 };
 
 #endif

@@ -78,7 +78,7 @@ TEST_CASE("test_significance scores a single record") {
   uint64_t u, t;
   dim.extract_histogram(4, 8, v, u, t);
   const double d_obs = llhf->mle(v.data(), u);
-  const double I_obs = llhf->compute_fisher_info(d_obs);
+  const double I_obs = llhf->compute_fisher_info(v.data(), u, d_obs);
 
   record_t r(0, 32, interval_t{1, 20}, interval_t{5, 9}, false, d_obs, I_obs, 0);
   r.d_diff = -0.05;
@@ -110,7 +110,7 @@ TEST_CASE("benjamini_hochberg_correction assigns qvalues per strand") {
   uint64_t u, t;
   dim.extract_histogram(4, 8, v, u, t);
   const double d_obs = llhf->mle(v.data(), u);
-  const double I_obs = llhf->compute_fisher_info(d_obs);
+  const double I_obs = llhf->compute_fisher_info(v.data(), u, d_obs);
 
   vec<record_t> records;
   records.emplace_back(0, 32, interval_t{1, 20}, interval_t{5, 9}, false, d_obs, I_obs, 0);
@@ -149,7 +149,7 @@ TEST_CASE("overlapping null windows on same query are excluded from scoring") {
   uint64_t u, t;
   dim.extract_histogram(anchor.bin_iv.a - 1, anchor.bin_iv.b - 1, v, u, t);
   const double d_obs = llhf->mle(v.data(), u);
-  const double I_obs = llhf->compute_fisher_info(d_obs);
+  const double I_obs = llhf->compute_fisher_info(v.data(), u, d_obs);
 
   record_t r(anchor.bix, 20, interval_t{1, 20}, anchor.bin_iv, false, d_obs, I_obs, 0);
   r.d_diff = 0.1;
@@ -201,7 +201,7 @@ TEST_CASE("canonical records use one-sided test when d_diff is NaN") {
   uint64_t u, t;
   dim.extract_histogram(4, 8, v, u, t);
   const double d_obs = llhf->mle(v.data(), u);
-  const double I_obs = llhf->compute_fisher_info(d_obs);
+  const double I_obs = llhf->compute_fisher_info(v.data(), u, d_obs);
 
   record_t r(0, 32, interval_t{1, 20}, interval_t{5, 9}, false, d_obs, I_obs, 0);
   r.d_diff = nanx();
@@ -231,7 +231,7 @@ TEST_CASE("reference strand d_diff zero uses two-sided test") {
   uint64_t u, t;
   dim.extract_histogram(4, 8, v, u, t);
   const double d_obs = llhf->mle(v.data(), u);
-  const double I_obs = llhf->compute_fisher_info(d_obs);
+  const double I_obs = llhf->compute_fisher_info(v.data(), u, d_obs);
 
   record_t r(0, 32, interval_t{1, 20}, interval_t{5, 9}, false, d_obs, I_obs, 0);
   r.d_diff = 0.0;
@@ -258,7 +258,7 @@ TEST_CASE("query strand uses one-sided test") {
   uint64_t u, t;
   dim.extract_histogram(4, 8, v, u, t);
   const double d_obs = llhf->mle(v.data(), u);
-  const double I_obs = llhf->compute_fisher_info(d_obs);
+  const double I_obs = llhf->compute_fisher_info(v.data(), u, d_obs);
 
   record_t r(0, 32, interval_t{1, 20}, interval_t{5, 9}, true, d_obs, I_obs, 0);
   r.d_diff = -0.1;

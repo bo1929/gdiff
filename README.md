@@ -154,7 +154,7 @@ Providing 8 distance thresholds runs all eight in one SIMD-wide pass.
 |--------|--------|-------------|
 | `-q, --query-path` | (required) | Query FASTA/FASTQ file or URL (gzip compatible) |
 | `-i, --sketch-path` | (required) | Sketch file to query against |
-| `-l, --length` | (required) | Exact sampled region length in base pairs |
+| `-l, --length` | (required) | Sampled region length in k-mers |
 | `-b, --bin-shift` | `0` | Bin size = 2^b; groups consecutive k-mers |
 | `--sample-size` | `200` | Regions sampled across the whole query file per reference |
 | `--hdist-th` | `4` | Max Hamming distance for a k-mer hit (0-7) |
@@ -165,23 +165,24 @@ Providing 8 distance thresholds runs all eight in one SIMD-wide pass.
 Summary rows contain:
 
 ```
-QUERY_FILE  REF_ID  N  MEAN  SD  Q01  Q05  Q25  Q50  Q75  Q95  Q99  CAPPED_MEDIAN  N_NOMATCH
+QUERY_FILE  REF_ID  N  MEAN  SD  Q01  Q05  Q25  Q50  Q75  Q95  Q99
 ```
 
 `N` is the number of valid MLE samples, `SD` is the sample standard deviation,
 and quantiles use linear interpolation. Sampled windows with no matching
-k-mer (zero hits within `--hdist-th`) sit at the MLE ceiling and inflate the
-mean/median; `CAPPED_MEDIAN` is the median over the remaining (matched)
-windows (NaN when all windows are capped) and `N_NOMATCH` counts the capped
-windows, so `1 - N_NOMATCH/N` is a matched-fraction analogue of alignment
-coverage. Sample detail rows contain:
+k-mer (zero hits within `--hdist-th`) have an undefined distance: they are
+excluded from the summary and their count is reported on stderr. Sample
+detail rows contain one row per sampled window (unmapped windows carry NaN
+fields):
 
 ```
-QUERY_ID  SEQ_LEN  START  END  STRAND  REF_ID  DIST  NMATCH
+QUERY_ID  SEQ_LEN  START  END  STRAND  REF_ID  DIST  INFO  LR_BG  LR_UB
 ```
 
-`NMATCH` is the number of matching k-mers in the window on the selected
-strand; `NMATCH == 0` marks a capped (no-match) window.
+`INFO` is the observed Fisher information at the MLE, `LR_BG` the deviance
+against the query's median sampled distance, and `LR_UB` the deviance against
+the plateau upper bound (see `lr_deviance`); values below ~3.84 mean the
+window is statistically indistinguishable from the reference at ~95%.
 
 Coordinates are 1-based and inclusive. For strand-aware sketches, each sample
 uses the lower of the forward and reverse-complement MLE distances and reports

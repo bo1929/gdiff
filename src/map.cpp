@@ -1,5 +1,15 @@
 #include "map.hpp"
+#include "msg.hpp"
+#include "random.hpp"
+#include <algorithm>
+#include <atomic>
 #include <boost/math/tools/minima.hpp>
+#include <iomanip>
+#include <mutex>
+#include <numeric>
+#include <thread>
+
+extern uint32_t num_threads;
 
 namespace {
   struct pv_t
@@ -97,19 +107,19 @@ void QIE<T>::map_sequences(std::ostream& sout, const str& rid)
       vec<uint64_t> v_q;
       uint64_t u_q = 0, t_q = 0;
       dim.total_histogram(v_q, u_q, t_q);
+      // t_q == 0 (no k-mer hits at all): whole-query distance is undefined.
       d_q = llhf->mle(v_q.data(), u_q);
-      d_q = validate_distance(d_q);
 
       dim.set_query_distance(d_q);
       dim.extrema_scan();
 
       if (enum_only) {
-        extract_simple_intervals(dim, false, tau_eff);
+        extract_simple_intervals(dim, false, tau_eff, d_q);
         if (coordinates_only) continue; // skip MLE or significance
       }
 
       if (!skip_test) diststat->sample_null_pool(dim, tau_eff, bix);
-      if (!enum_only) extract_ordered_intervals(dim, false, tau_eff);
+      if (!enum_only) extract_ordered_intervals(dim, false, tau_eff, d_q);
 
       for (size_t ri = srprev; ri < records_v.size(); ++ri) {
         record_t& r = records_v[ri];
@@ -129,17 +139,14 @@ void QIE<T>::map_sequences(std::ostream& sout, const str& rid)
         if (!coordinates_only) dim->compute_prefhistsum();
       }
 
-      // Strand-wide MLE distances.
-      double d_q_fw = nanx(), d_q_rc = nanx(), d_diff = nanx();
+      // Strand-wide MLE distances (undefined for a strand with no k-mer hits).
       vec<uint64_t> v_q_fw, v_q_rc;
-      uint64_t u_q_fw = 0, u_q_rc = 0, t_q = 0;
-      dim_fw.total_histogram(v_q_fw, u_q_fw, t_q);
-      dim_rc.total_histogram(v_q_rc, u_q_rc, t_q);
-      d_q_fw = llhf->mle(v_q_fw.data(), u_q_fw);
-      d_q_rc = llhf->mle(v_q_rc.data(), u_q_rc);
-      d_diff = strand_diff(d_q_fw, d_q_rc);
-      d_q_fw = validate_distance(d_q_fw);
-      d_q_rc = validate_distance(d_q_rc);
+      uint64_t u_q_fw = 0, u_q_rc = 0, t_q_fw = 0, t_q_rc = 0;
+      dim_fw.total_histogram(v_q_fw, u_q_fw, t_q_fw);
+      dim_rc.total_histogram(v_q_rc, u_q_rc, t_q_rc);
+      const double d_q_fw = llhf->mle(v_q_fw.data(), u_q_fw);
+      const double d_q_rc = llhf->mle(v_q_rc.data(), u_q_rc);
+      const double d_diff = strand_diff(d_q_fw, d_q_rc);
 
       // Determine direction per threshold, then signed extrema for extraction.
       dim_fw.set_query_distance(d_q_fw);
@@ -150,8 +157,8 @@ void QIE<T>::map_sequences(std::ostream& sout, const str& rid)
       }
 
       if (enum_only) {
-        extract_simple_intervals(dim_fw, false, tau_eff);
-        extract_simple_intervals(dim_rc, true, tau_eff);
+        extract_simple_intervals(dim_fw, false, tau_eff, d_q_fw);
+        extract_simple_intervals(dim_rc, true, tau_eff, d_q_rc);
         if (coordinates_only) continue; // skip MLE or significance
       }
 
@@ -160,8 +167,8 @@ void QIE<T>::map_sequences(std::ostream& sout, const str& rid)
       if (!skip_test) diststat->sample_null_pool(is_rc ? dim_rc : dim_fw, tau_eff, bix);
 
       if (!enum_only) {
-        extract_ordered_intervals(dim_fw, false, tau_eff);
-        extract_ordered_intervals(dim_rc, true, tau_eff);
+        extract_ordered_intervals(dim_fw, false, tau_eff, d_q_fw);
+        extract_ordered_intervals(dim_rc, true, tau_eff, d_q_rc);
       }
 
       for (size_t ri = srprev; ri < records_v.size(); ++ri) {
@@ -174,7 +181,10 @@ void QIE<T>::map_sequences(std::ostream& sout, const str& rid)
     }
   }
 
-  if (keep_hist) d_acc = llhf->mle(v_acc.data(), u_acc);
+  if (keep_hist) {
+    // t_acc == 0 (no k-mer hits in the whole batch): accumulated distance is undefined.
+    d_acc = llhf->mle(v_acc.data(), u_acc);
+  }
   if (!skip_test) {
     for (auto& r : records_v)
       diststat->test_significance(r, params.sample_size, qid_batch[r.bix]);
@@ -653,25 +663,25 @@ void DIM<T>::extract_histogram(uint64_t a, uint64_t b, vec<uint64_t>& v, uint64_
 } // }}}
 
 template<typename T>
-void QIE<T>::extract_simple_intervals(DIM<T>& dim, bool is_rc, uint64_t tau_eff)
+void QIE<T>::extract_simple_intervals(DIM<T>& dim, bool is_rc, uint64_t tau_eff, double d_q_bg)
 { // {{{ ~OK
   if constexpr (std::is_same_v<T, double>) {
     dim.extract_intervals_mx(tau_eff, 1, nbins);
     dim.expand_intervals(params.chisq);
     for (const auto& iv : dim.get_intervals(0))
-      emit_record(dim, iv.a, iv.b + 1, 0, is_rc);
+      emit_record(dim, iv.a, iv.b + 1, 0, is_rc, d_q_bg);
   } else {
     for (size_t ix = 0; ix < WIDTH; ++ix) {
       dim.extract_intervals_mx(tau_eff, 1, nbins, ix);
       dim.expand_intervals(params.chisq, ix);
       for (const auto& iv : dim.get_intervals(ix))
-        emit_record(dim, iv.a, iv.b + 1, ix, is_rc);
+        emit_record(dim, iv.a, iv.b + 1, ix, is_rc, d_q_bg);
     }
   }
 } // }}}
 
 template<typename T>
-void QIE<T>::extract_ordered_intervals(DIM<T>& dim, bool is_rc, uint64_t tau_eff)
+void QIE<T>::extract_ordered_intervals(DIM<T>& dim, bool is_rc, uint64_t tau_eff, double d_q_bg)
 { // {{{ ~OK
   const uint64_t nbins = dim.get_nbins();
   bp_v.clear();
@@ -713,13 +723,13 @@ void QIE<T>::extract_ordered_intervals(DIM<T>& dim, bool is_rc, uint64_t tau_eff
 
   if (bp_v.empty()) {
     // No intervals extracted; report the full query.
-    emit_record(dim, 1, nbins + 1, size_t(-1), is_rc);
+    emit_record(dim, 1, nbins + 1, size_t(-1), is_rc, d_q_bg);
   } else {
     // uint64_t prev = 1;
     for (const auto& s : bp_v) {
       // TODO: Is full segmentation desired? Even when they are too short?
       // if (s.a_bin > prev) emit_record(dim, prev, s.a_bin, size_t(-1), is_rc);
-      emit_record(dim, s.a_bin, s.b_bin, s.ix, is_rc);
+      emit_record(dim, s.a_bin, s.b_bin, s.ix, is_rc, d_q_bg);
       // prev = s.b_bin;
     }
     //if (prev <= nbins) emit_record(dim, prev, nbins + 1, size_t(-1), is_rc);
@@ -727,27 +737,22 @@ void QIE<T>::extract_ordered_intervals(DIM<T>& dim, bool is_rc, uint64_t tau_eff
 } // }}}
 
 template<typename T>
-void QIE<T>::emit_record(DIM<T>& dim, uint64_t a_bin, uint64_t b_bin, size_t th_ix, bool is_rc)
+void QIE<T>::emit_record(DIM<T>& dim, uint64_t a_bin, uint64_t b_bin, size_t th_ix, bool is_rc, double d_q_bg)
 { // {{{ OK
   const uint64_t L = enmers + k - 1;
-  const bool is_last = (b_bin == dim.get_nbins() + 1);
 
-  double d = nanx();
-  double I = nanx();
+  window_score_t ws;
   if (!coordinates_only) {
     uint64_t u, t;
     dim.extract_histogram(a_bin - 1, b_bin - 1, v_scratch, u, t);
-    d = llhf->mle(v_scratch.data(), u);
-    I = llhf->compute_fisher_info(d);
-    // MLE at the upper boundary is unreliable - mark NA.
-    d = validate_distance(d);
+    ws = score_window(*llhf, v_scratch.data(), u, t, d_q_bg);
+    // t == 0 (no k-mer hits): distance is undefined, not a plateau MLE.
+    if (ws.unmapped) ++n_unmapped;
   }
 
   const interval_t bin_iv{a_bin, b_bin};
-  const interval_t seq_iv = get_coordinates(bin_iv, params.bin_shift, enmers, k, is_last);
-  // assert(seq_iv.a < seq_iv.b);
-
-  records_v.emplace_back(bix, L, seq_iv, bin_iv, is_rc, d, I, th_ix);
+  const interval_t seq_iv = get_coordinates(bin_iv, params.bin_shift, enmers, k);
+  records_v.emplace_back(bix, L, seq_iv, bin_iv, is_rc, ws.d, ws.info, th_ix, ws.lr_bg, ws.lr_ub);
 } // }}}
 
 template<typename T>
@@ -808,7 +813,10 @@ void QIE<T>::report_contiguous(std::ostream& sout, const str& rid) const
                 d_acc,
                 r.percentile,
                 r.fold,
-                r.qvalue)
+                r.qvalue,
+                r.I,
+                r.lr_bg,
+                r.lr_ub)
         << '\n';
     } else {
       write_tsv(sout,
@@ -827,7 +835,10 @@ void QIE<T>::report_contiguous(std::ostream& sout, const str& rid) const
                 d_acc,
                 r.percentile,
                 r.fold,
-                r.qvalue)
+                r.qvalue,
+                r.I,
+                r.lr_bg,
+                r.lr_ub)
         << '\n';
     }
   }
@@ -841,3 +852,172 @@ template class DIM<cm512_t>;
 
 template class LLH<double>;
 template class LLH<cm512_t>;
+
+bool MapSC::validate_configuration()
+{
+  bool is_invalid = false;
+  if (dist_th.size() != 1 && dist_th.size() != 8) {
+    is_invalid = true;
+    cerr_msg("--dist-th requires exactly 1 or 8 thresholds; got ", dist_th.size());
+  }
+  for (size_t i = 0; i < dist_th.size(); ++i) {
+    if (dist_th[i] <= 0.0) {
+      is_invalid = true;
+      cerr_msg("--dist-th[", i, "] must be positive: ", dist_th[i]);
+    }
+  }
+  {
+    auto sdist_th = dist_th;
+    std::sort(sdist_th.begin(), sdist_th.end());
+    if (const auto it = std::adjacent_find(sdist_th.begin(), sdist_th.end()); it != sdist_th.end()) {
+      is_invalid = true;
+      cerr_msg("--dist-th values must be unique; duplicate: ", *it);
+    }
+  }
+  if (hdist_th > hdist_bound) {
+    is_invalid = true;
+    cerr_msg("--hdist-th must be in [0, ", hdist_bound, "] with the current SIMD histogram layout; got ", hdist_th);
+  }
+  if (bin_shift >= 63) {
+    is_invalid = true;
+    cerr_msg("--bin-shift must be less than 63; got ", bin_shift);
+  }
+  const uint64_t bin_size = (bin_shift < 63) ? (uint64_t(1) << bin_shift) : 0;
+  if (bin_size > tau) {
+    is_invalid = true;
+    cerr_msg("--bin-shift gives bin_size=", bin_size, ", which exceeds --min-length=", tau);
+  }
+  const uint64_t tau_bin = (bin_size > 0) ? ((tau + bin_size - 1) >> bin_shift) : 0;
+  if (tau_bin < 2) {
+    is_invalid = true;
+    cerr_msg("--min-length must span at least two bins after binning ", "(tau=", tau, ", bin_size=", bin_size, ")");
+  }
+  return !is_invalid;
+}
+
+void MapSC::map()
+{
+  *(output_stream) << std::setprecision(5);
+
+  // Load all query sequences once? Might be inefficient
+  qseq_sptr_t qs = std::make_shared<QSeq>(query_path);
+
+  bool cont_reading;
+  while ((cont_reading = qs->read_next_batch())) {
+    total_qseq += qs->get_cbatch_size();
+  }
+  total_qseq += qs->get_cbatch_size();
+
+  std::ifstream sketch_stream(sketch_path, std::ifstream::binary);
+  check_fstream(sketch_stream, std::string("Cannot open sketch file: "), sketch_path.string());
+
+  uint32_t nsketches;
+  sketch_stream.read(reinterpret_cast<char*>(&nsketches), sizeof(uint32_t));
+  const uint32_t nthreads = std::max(1u, std::min(num_threads, nsketches));
+  cerr_msg("Processing ", nsketches, " sketches w/ ", nthreads, " thread(s)...");
+
+  std::vector<uint64_t> sketch_offsets(nsketches);
+  for (uint32_t i = 0; i < nsketches; ++i) {
+    sketch_offsets[i] = static_cast<uint64_t>(sketch_stream.tellg());
+    Sketch::seek_past(sketch_stream); // reads headers, seeks over data
+  }
+  sketch_stream.close();
+
+  size_t n = dist_th.size();
+
+  // Per-sketch result buffers
+  std::vector<strstream> results(nsketches);
+  std::vector<uint64_t> unmapped_iv_v(nsketches, 0);
+  std::vector<uint64_t> unmapped_null_v(nsketches, 0);
+  std::atomic<uint32_t> next_idx{0};
+  std::atomic<uint32_t> count_p{0};
+  std::mutex cerr_mtx;
+
+  auto worker = [&](const uint32_t tseed) {
+    init_thread_rng(tseed);
+    uint32_t i;
+    while ((i = next_idx.fetch_add(1, std::memory_order_relaxed)) < nsketches) {
+      // Each worker opens its own file handle so no stream sharing occurs
+      std::ifstream sketch_stream(sketch_path, std::ifstream::binary);
+      sketch_sptr_t sketch = std::make_shared<Sketch>(sketch_path);
+      sketch->load_from_offset(sketch_stream, sketch_offsets[i]);
+      sketch_stream.close();
+      bool canonical = sketch->is_canonical();
+
+      strstream sout;
+      sout << std::setprecision(5);
+      if (dist_th.size() == 1) {
+        params_t<double> params(n, dist_th.front(), hdist_th, tau, chisq, bin_shift, sample_size, canonical, enum_only);
+        QIE<double> qie(params, sketch, sketch->get_lshf_sptr(), qs->get_seq_batch(), qs->get_qid_batch());
+        qie.map_sequences(sout, sketch->get_rid());
+        unmapped_iv_v[i] = qie.get_n_unmapped();
+        unmapped_null_v[i] = qie.get_n_unmapped_samples();
+      } else {
+        params_t<cm512_t> params(n, {0}, hdist_th, tau, chisq, bin_shift, sample_size, canonical, enum_only);
+        std::copy(dist_th.begin(), dist_th.end(), params.dist_th.begin());
+        QIE<cm512_t> qie(params, sketch, sketch->get_lshf_sptr(), qs->get_seq_batch(), qs->get_qid_batch());
+        qie.map_sequences(sout, sketch->get_rid());
+        unmapped_iv_v[i] = qie.get_n_unmapped();
+        unmapped_null_v[i] = qie.get_n_unmapped_samples();
+      }
+
+      // Store result at its reserved slot (no aliasing between threads)
+      results[i] = std::move(sout);
+
+      uint32_t num_p = count_p.fetch_add(1, std::memory_order_relaxed) + 1;
+      {
+        std::lock_guard<std::mutex> lock(cerr_mtx);
+        std::cerr << "\rProcessed sketch " << num_p << "/" << nsketches << "..." << std::flush;
+        if (num_p == nsketches) std::cerr << std::endl;
+      }
+    }
+  };
+
+  std::vector<std::thread> threads;
+  threads.reserve(nthreads);
+  for (uint32_t t = 0; t < nthreads; ++t) {
+    threads.emplace_back([&, t]() { worker(t + 1); });
+  }
+  for (auto& t : threads) {
+    t.join();
+  }
+
+  const uint64_t total_unmapped_iv = std::accumulate(unmapped_iv_v.begin(), unmapped_iv_v.end(), uint64_t(0));
+  const uint64_t total_unmapped_null = std::accumulate(unmapped_null_v.begin(), unmapped_null_v.end(), uint64_t(0));
+  if (total_unmapped_iv > 0) {
+    cerr_msg("Unmapped intervals (no k-mer hits): ", total_unmapped_iv, " (distance reported as NA)");
+  }
+  if (total_unmapped_null > 0) {
+    cerr_msg("Unmapped null samples (no k-mer hits): ", total_unmapped_null, " (excluded from significance fits)");
+  }
+
+  for (uint32_t i = 0; i < nsketches; ++i) {
+    if (results[i].tellp() > 0) *(output_stream) << results[i].rdbuf();
+  }
+}
+
+MapSC::MapSC(CLI::App& sc)
+{
+  sc.add_option("-q,--query-path", query_path, "Query FASTA/FASTQ file <path> (or URL) (gzip compatible)")
+    ->required()
+    ->check(url_validator | CLI::ExistingFile);
+  sc.add_option("-i,--sketch-path", sketch_path, "Sketch file at <path> to query")->required()->check(CLI::ExistingFile);
+  sc.add_option("-o,--output-path", output_path, "Write output to a file at <path> [stdout]");
+  sc.add_option("--hdist-th", hdist_th, "Maximum Hamming distance for a k-mer to match [4]")
+    ->check(CLI::Range(0, static_cast<int>(hdist_bound)));
+  sc.add_option("--chisq", chisq, "Chi-square threshold [33.00051]")->check(CLI::NonNegativeNumber);
+  sc.add_option("-d,--dist-th", dist_th, "Distance threshold(s) - provide exactly 1 or 8 values")->required()->expected(1, 8);
+  sc.add_option("-l,--min-length", tau, "Minimum interval length in k-mers")->required()->check(CLI::PositiveNumber);
+  sc.add_option("-b,--bin-shift", bin_shift, "Group consecutive k-mers into bins of size 2^b [0]")->check(CLI::Range(0, 62));
+  sc.add_flag("--enum-only,!--no-enum-only", enum_only, "Enumerate intervals without MLE distance estimation [false]");
+  sc.add_option("--sample-size", sample_size, "Samples for significance test (0: skip) [200]")->check(CLI::NonNegativeNumber);
+  sc.callback([&]() {
+    if (!validate_configuration()) {
+      error_exit("Invalid configuration!");
+    }
+    if (!output_path.empty()) {
+      output_file.open(output_path);
+      output_stream = &output_file;
+    }
+  });
+}

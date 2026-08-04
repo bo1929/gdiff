@@ -10,170 +10,27 @@
 #include "enc.hpp"
 #include "msg.hpp"
 #include "random.hpp"
+#include "scan.hpp"
 
 extern uint32_t num_threads;
 
-namespace {
+double linear_quantile(const vec<double>& v, const double p)
+{
+  if (v.empty()) return nanx();
+  if (v.size() == 1) return v.front();
+  const double ix = p * static_cast<double>(v.size() - 1);
+  const size_t lo = static_cast<size_t>(std::floor(ix));
+  const size_t hi = static_cast<size_t>(std::ceil(ix));
+  return v[lo] + (ix - static_cast<double>(lo)) * (v[hi] - v[lo]);
+}
 
-  double linear_quantile(const vec<double>& v, const double p)
-  {
-    if (v.empty()) return nanx();
-    if (v.size() == 1) return v.front();
-    const double ix = p * static_cast<double>(v.size() - 1);
-    const size_t lo = static_cast<size_t>(std::floor(ix));
-    const size_t hi = static_cast<size_t>(std::ceil(ix));
-    return v[lo] + (ix - static_cast<double>(lo)) * (v[hi] - v[lo]);
-  }
-
-  // Branchless minimum Hamming distance of enc against a bucket; identical
-  // result to the early-exit scan but without data-dependent branches.
-  inline uint32_t bucket_hdist_min(const enc_t* ix1, const enc_t* ix2, const enc_t enc)
-  {
-    uint32_t hmin = std::numeric_limits<uint32_t>::max();
-    for (; ix1 < ix2; ++ix1) {
-      const uint32_t hd = popcount_lr32((*ix1) ^ enc);
-      hmin = hd < hmin ? hd : hmin;
-    }
-    return hmin;
-  }
-
-  struct scan_ctx_t
-  {
-    const Sketch* sketch;
-    const LSHF* lshf;
-    const SFHM* sfhm;
-    uint32_t k;
-    uint64_t mask_bp;
-    uint64_t mask_lr;
-    uint64_t bin_shift;
-    uint32_t hdist_th;
-  };
-
-  // Block size of the software pipeline: hashes/offsets for scan_blk mers are
-  // resolved first while their prefetches are in flight, hiding memory latency.
-  constexpr size_t scan_blk = 64;
-
-  // Scans mers whose start position j lies in [j0, j1) (j1 <= enmers).
-  // agg(bin_j, hdist, is_rc) is invoked for every observed k-mer (valid LSH bucket).
-  // STRAND_AWARE: query both strands; otherwise query only the canonical one.
-  template<bool STRAND_AWARE, typename Agg>
-  inline void scan_mers_range(const scan_ctx_t& ctx, const char* cseq, const uint64_t j0, const uint64_t j1, Agg&& agg)
-  {
-    const uint32_t k = ctx.k;
-    const uint64_t i1 = j1 + k - 1;
-    const LSHF* lshf = ctx.lshf;
-    const Sketch* sketch = ctx.sketch;
-    const SFHM* sfhm = ctx.sfhm;
-    uint64_t l = 0;
-    uint64_t enc_lr = 0, enc_bp = 0;
-    size_t n = 0;
-    uint64_t b_bin[scan_blk];
-    uint32_t b_off[2][scan_blk];
-    enc_t b_enc[2][scan_blk];
-
-    auto flush = [&]() {
-      // Phase A: prefetch the bucket-boundary lines for the whole block.
-      for (size_t s = 0; s < n; ++s) {
-        if (b_off[0][s] != Sketch::OFF_INVALID) sfhm->prefetch_inc(b_off[0][s]);
-        if constexpr (STRAND_AWARE) {
-          if (b_off[1][s] != Sketch::OFF_INVALID) sfhm->prefetch_inc(b_off[1][s]);
-        }
-      }
-      // Phase B: resolve bucket bounds (now cache-warm) and prefetch enc lines.
-      const enc_t* beg[2][scan_blk];
-      const enc_t* end[2][scan_blk];
-      for (size_t s = 0; s < n; ++s) {
-        const uint32_t off0 = b_off[0][s];
-        if (off0 == Sketch::OFF_INVALID) {
-          beg[0][s] = end[0][s] = nullptr;
-        } else {
-          beg[0][s] = sfhm->bucket_ptr_start(off0);
-          end[0][s] = sfhm->bucket_ptr_next(off0);
-          if (beg[0][s] < end[0][s]) __builtin_prefetch(beg[0][s], 0, 0);
-        }
-        if constexpr (STRAND_AWARE) {
-          const uint32_t off1 = b_off[1][s];
-          if (off1 == Sketch::OFF_INVALID) {
-            beg[1][s] = end[1][s] = nullptr;
-          } else {
-            beg[1][s] = sfhm->bucket_ptr_start(off1);
-            end[1][s] = sfhm->bucket_ptr_next(off1);
-            if (beg[1][s] < end[1][s]) __builtin_prefetch(beg[1][s], 0, 0);
-          }
-        }
-      }
-      // Phase C: scan buckets and aggregate observed k-mers (hits and misses).
-      for (size_t s = 0; s < n; ++s) {
-        if (beg[0][s] != nullptr) {
-          const uint32_t hd = bucket_hdist_min(beg[0][s], end[0][s], b_enc[0][s]);
-          agg(b_bin[s], hd, false);
-        }
-        if constexpr (STRAND_AWARE) {
-          if (beg[1][s] != nullptr) {
-            const uint32_t hd = bucket_hdist_min(beg[1][s], end[1][s], b_enc[1][s]);
-            agg(b_bin[s], hd, true);
-          }
-        }
-      }
-      n = 0;
-    };
-
-    for (uint64_t i = j0; i < i1; ++i) {
-      if (__builtin_expect(SEQ_NT4_TABLE[static_cast<uint8_t>(cseq[i])] >= 4, 0)) {
-        l = 0;
-        continue;
-      }
-      ++l;
-      if (l < k) continue;
-      const uint64_t j = i - k + 1;
-      if (l == k) {
-        compute_encoding(cseq + j, cseq + i + 1, enc_lr, enc_bp);
-      } else {
-        update_encoding(cseq + i, enc_lr, enc_bp);
-      }
-      enc_bp &= ctx.mask_bp;
-      enc_lr &= ctx.mask_lr;
-      if (__builtin_expect(j >= j1, 0)) break;
-      const uint64_t rc_bp = revcomp_bp64(enc_bp, k);
-      if constexpr (STRAND_AWARE) {
-        b_off[0][n] = sketch->partial_offset(lshf->compute_hash(enc_bp));
-        b_off[1][n] = sketch->partial_offset(lshf->compute_hash(rc_bp));
-        b_enc[0][n] = lshf->drop_ppos_lr(enc_lr);
-        b_enc[1][n] = lshf->drop_ppos_lr(bp64_to_lr64(rc_bp));
-      } else {
-        if (rc_bp < enc_bp) {
-          b_off[0][n] = sketch->partial_offset(lshf->compute_hash(enc_bp));
-          b_enc[0][n] = lshf->drop_ppos_lr(enc_lr);
-        } else {
-          b_off[0][n] = sketch->partial_offset(lshf->compute_hash(rc_bp));
-          b_enc[0][n] = lshf->drop_ppos_lr(bp64_to_lr64(rc_bp));
-        }
-      }
-      b_bin[n] = j >> ctx.bin_shift;
-      if (++n == scan_blk) flush();
-    }
-    if (n) flush();
-  }
-
-} // namespace
-
-HDHist::HDHist(const uint64_t nbins, const uint32_t hdist_th, const uint64_t bin_shift, bool zero)
+HDHist::HDHist(const uint64_t nbins, const uint32_t hdist_th, const uint64_t bin_shift)
   : nbins(nbins)
   , hdist_th(hdist_th)
   , bin_shift(bin_shift)
-  , hdisthist_v(new uint64_t[(nbins + 1) * (hdist_th + 1)])
-  , miss_v(new uint64_t[nbins + 1])
+  , hdisthist_v((nbins + 1) * (hdist_th + 1), 0)
+  , miss_v(nbins + 1, 0)
 {
-  if (zero) {
-    std::fill_n(hdisthist_v.get(), (nbins + 1) * (hdist_th + 1), uint64_t(0));
-    std::fill_n(miss_v.get(), nbins + 1, uint64_t(0));
-  }
-}
-
-void HDHist::zero_range(const uint64_t r0, const uint64_t r1)
-{
-  std::fill_n(hdisthist_v.get() + r0 * (hdist_th + 1), (r1 - r0) * (hdist_th + 1), uint64_t(0));
-  std::fill_n(miss_v.get() + r0, r1 - r0, uint64_t(0));
 }
 
 void HDHist::aggregate_mer(const uint32_t hdist_min, const uint64_t i)
@@ -221,7 +78,7 @@ void HDHist::compute_prefhistsum_parallel(ThreadPool& pool, uint32_t nchunks)
     return;
   }
   const uint64_t rows_per = (n_rows + nchunks - 1) / nchunks;
-  uint64_t* h = hdisthist_v.get();
+  uint64_t* h = hdisthist_v.data();
   // Phase A: exclusive-local prefix sums inside each chunk.
   pool.parallel_for(nchunks, 1, [&](uint64_t c) {
     const uint64_t c0 = c * rows_per;
@@ -273,21 +130,13 @@ void HDHist::extract_histogram(const uint64_t a, const uint64_t b, vec<uint64_t>
   u = miss_v[b] - miss_v[a];
 }
 
-dist_summary_t summarize_distances(vec<double> d_v, const vec<uint8_t>* nomatch_v)
+dist_summary_t summarize_distances(vec<double> d_v)
 {
   dist_summary_t summary;
-  assert(nomatch_v == nullptr || nomatch_v->size() == d_v.size());
-  vec<double> rel_v; // distances of matched (non-ceiling) windows
   size_t wi = 0;
   for (size_t i = 0; i < d_v.size(); ++i) {
     if (!std::isfinite(d_v[i])) continue;
     d_v[wi++] = d_v[i];
-    if (nomatch_v != nullptr) {
-      if ((*nomatch_v)[i])
-        ++summary.n_nomatch;
-      else
-        rel_v.push_back(d_v[i]);
-    }
   }
   d_v.resize(wi);
   if (d_v.empty()) {
@@ -310,10 +159,6 @@ dist_summary_t summarize_distances(vec<double> d_v, const vec<uint8_t>* nomatch_
   constexpr arr<double, 7> probs{0.01, 0.05, 0.25, 0.50, 0.75, 0.95, 0.99};
   for (size_t i = 0; i < probs.size(); ++i)
     summary.quantiles[i] = linear_quantile(d_v, probs[i]);
-  if (nomatch_v != nullptr) {
-    std::sort(rel_v.begin(), rel_v.end());
-    summary.capped_median = linear_quantile(rel_v, 0.5); // NaN when all capped
-  }
   return summary;
 }
 
@@ -337,26 +182,13 @@ vec<uint64_t> sample_region_starts(const uint64_t npos, const uint64_t n_samples
   return starts;
 }
 
-vec<size_t> select_reservoir_slots(const uint64_t offset, const uint64_t size, const uint64_t total, std::mt19937& rng)
-{
-  vec<size_t> slots;
-  if (size == 0 || total == 0) return slots;
-  const uint64_t cum = offset + size;
-  slots.reserve((total * size) / cum + 1);
-  std::uniform_real_distribution<double> runif(0.0, 1.0);
-  for (size_t i = 0; i < total; ++i) {
-    if (runif(rng) * static_cast<double>(cum) < static_cast<double>(size)) slots.push_back(i);
-  }
-  return slots;
-}
-
 DistSC::DistSC(CLI::App& sc)
 {
   sc.add_option("-q,--query-path", query_path, "Query FASTA/FASTQ file <path> (or URL) (gzip compatible)")
     ->required()
     ->check(url_validator | CLI::ExistingFile);
   sc.add_option("-i,--sketch-path", sketch_path, "Sketch file at <path> to query")->required()->check(CLI::ExistingFile);
-  sc.add_option("-l,--length", tau, "Length of sampled query regions")->required()->check(CLI::PositiveNumber);
+  sc.add_option("-l,--length", tau, "Length of sampled query regions in k-mers")->required()->check(CLI::PositiveNumber);
   sc.add_option("-b,--bin-shift", bin_shift, "Group consecutive k-mers into bins of size 2^b [0]")->check(CLI::Range(0, 62));
   sc.add_option("--sample-size", sample_size, "Regions sampled across the query file per reference [200]")
     ->check(CLI::PositiveNumber);
@@ -457,9 +289,14 @@ namespace {
     vec<uint64_t> starts;
     vec<double> d_res;
     vec<char> strand_res;
-    vec<uint64_t> hits_res; // matching k-mers (t) of the selected strand; 0 = ceiling
-    std::unique_ptr<HDHist> hist_fw;
-    std::unique_ptr<HDHist> hist_rc;
+    // Winner-strand counts per sample, kept only when samples output is
+    // requested (needed for the info/lr score columns). Rows are written
+    // only for mapped samples and only those rows are read back.
+    bool keep_counts = false;
+    vec<uint64_t> v_res; // n_samples * (hdist_bound + 1), row-major
+    vec<uint64_t> u_res;
+    HDHist hist_fw; // allocated only for "big" full-pass plans
+    HDHist hist_rc;
   };
 
   enum task_kind_t : uint8_t
@@ -478,32 +315,16 @@ namespace {
 
   struct hist_agg_t
   {
-    HDHist* fw;
-    HDHist* rc;
+    HDHist& fw;
+    HDHist* rc; // null in canonical mode
     bool atomic;
     inline void operator()(uint64_t bin, uint32_t hd, bool is_rc) const
     {
-      HDHist* h = is_rc ? rc : fw;
+      HDHist& h = is_rc ? *rc : fw;
       if (atomic)
-        h->aggregate_mer_atomic(hd, bin);
+        h.aggregate_mer_atomic(hd, bin);
       else
-        h->aggregate_mer(hd, bin);
-    }
-  };
-
-  struct window_agg_t
-  {
-    uint64_t* fw;
-    uint64_t* rc;
-    uint64_t* u_fw;
-    uint64_t* u_rc;
-    uint32_t hdist_th;
-    inline void operator()(uint64_t, uint32_t hd, bool is_rc) const
-    {
-      if (hd <= hdist_th)
-        ++(is_rc ? rc[hd] : fw[hd]);
-      else
-        ++(is_rc ? *u_rc : *u_fw);
+        h.aggregate_mer(hd, bin);
     }
   };
 
@@ -516,24 +337,22 @@ void DistSC::sample_sequences(const sketch_sptr_t& sketch,
                               strstream* samples_sout,
                               ThreadPool& pool)
 {
-  const lshf_sptr_t lshf = sketch->get_lshf();
+  const lshf_sptr_t lshf = sketch->get_lshf_sptr();
   const uint32_t k = lshf->get_k();
-  if (tau < k) {
-    error_exit(concat_msg("--length must be at least the sketch k-mer length (length=", tau, ", k=", k, ")"));
-  }
   const uint64_t bin_size = uint64_t(1) << bin_shift;
   if (bin_size > tau) {
     error_exit(concat_msg("--bin-shift gives bin_size=", bin_size, ", which exceeds --length=", tau));
   }
-  const uint64_t region_nmers = tau - k + 1;
-  const uint64_t tau_bin = std::max<uint64_t>(1, (region_nmers + bin_size - 1) >> bin_shift);
+  // tau counts k-mers (map/detect convention); a window spans tau_bin bins.
+  const uint64_t tau_bin = std::max<uint64_t>(1, (tau + bin_size - 1) >> bin_shift);
+  const uint64_t win_mers = tau_bin << bin_shift; // window span in mer starts (last bin may be partial)
   const bool canonical = sketch->is_canonical();
   const uint32_t nworkers = pool.size();
 
   uint64_t total_len = 0;
   vec<uint64_t> cum_lens(seq_batch.size());
   for (size_t bix = 0; bix < seq_batch.size(); ++bix) {
-    if (seq_batch[bix].size() >= tau) total_len += seq_batch[bix].size();
+    if (seq_batch[bix].size() >= tau + k - 1) total_len += seq_batch[bix].size();
     cum_lens[bix] = total_len;
   }
 
@@ -543,7 +362,7 @@ void DistSC::sample_sequences(const sketch_sptr_t& sketch,
     write_tsv(sout, query_path, sketch->get_rid(), summary.n, summary.mean, summary.sd);
     for (const double q : summary.quantiles)
       sout << '\t' << q;
-    sout << '\t' << summary.capped_median << '\t' << summary.n_nomatch << '\n';
+    sout << '\n';
     return;
   }
 
@@ -566,7 +385,7 @@ void DistSC::sample_sequences(const sketch_sptr_t& sketch,
   uint32_t n_fullpass = 0;
   for (size_t bix = 0; bix < seq_batch.size() && pidx < positions.size(); ++bix) {
     const uint64_t L = seq_batch[bix].size();
-    if (L < tau) continue;
+    if (L < tau + k - 1) continue;
     const uint64_t seq_end = cum_lens[bix];
     uint64_t n_for_seq = 0;
     while (pidx < positions.size() && positions[pidx] < seq_end) {
@@ -576,19 +395,23 @@ void DistSC::sample_sequences(const sketch_sptr_t& sketch,
     if (n_for_seq == 0) continue;
     const uint64_t enmers = L - k + 1;
     const uint64_t nbins = (enmers + bin_size - 1) >> bin_shift;
-    if (nbins < tau_bin) continue; // defensive; cannot happen when L >= tau
+    if (nbins < tau_bin) continue; // defensive; cannot happen when L >= tau + k - 1
     seq_plan_t p;
     p.bix = bix;
     p.n_samples = n_for_seq;
     p.enmers = enmers;
     p.nbins = nbins;
-    p.full_pass = n_for_seq * region_nmers >= enmers;
+    p.full_pass = n_for_seq * win_mers >= enmers;
     n_fullpass += p.full_pass;
     const uint64_t npos = nbins - tau_bin + 1;
     p.starts = sample_region_starts(npos, n_for_seq, gen);
     p.d_res.assign(n_for_seq, nanx());
     p.strand_res.assign(n_for_seq, '+');
-    p.hits_res.assign(n_for_seq, 0);
+    if (samples_sout) {
+      p.keep_counts = true;
+      p.v_res.resize(n_for_seq * (hdist_bound + 1));
+      p.u_res.resize(n_for_seq);
+    }
     plans.push_back(std::move(p));
   }
   // Full-pass sequences become "big" (parallel chunked build) only when there
@@ -603,19 +426,11 @@ void DistSC::sample_sequences(const sketch_sptr_t& sketch,
   }
   for (auto& p : plans) {
     if (!p.big) continue;
-    p.hist_fw = std::make_unique<HDHist>(p.nbins, hdist_th, bin_shift, /*zero=*/false);
-    if (!canonical) p.hist_rc = std::make_unique<HDHist>(p.nbins, hdist_th, bin_shift, /*zero=*/false);
+    p.hist_fw = HDHist(p.nbins, hdist_th, bin_shift);
+    if (!canonical) p.hist_rc = HDHist(p.nbins, hdist_th, bin_shift);
   }
 
-  const uint64_t u64m = std::numeric_limits<uint64_t>::max();
-  const scan_ctx_t ctx{sketch.get(),
-                       lshf.get(),
-                       sketch->get_sfhm_sptr().get(),
-                       k,
-                       u64m >> ((32 - k) * 2),
-                       ((u64m >> (64 - k)) << 32) + ((u64m << 32) >> (64 - k)),
-                       bin_shift,
-                       hdist_th};
+  const scan_ctx_t ctx = make_scan_ctx(*sketch, bin_shift, hdist_th);
   const LLH<double> llhf(k, lshf->get_h(), sketch->get_rho(), hdist_th, 0.0, false);
 
   using clock = std::chrono::steady_clock;
@@ -623,59 +438,47 @@ void DistSC::sample_sequences(const sketch_sptr_t& sketch,
     if (prof) std::cerr << "    [" << name << "] " << std::chrono::duration<double>(clock::now() - t0).count() << " s\n";
   };
   if (prof) std::cerr << "    [plan+alloc] " << std::chrono::duration<double>(clock::now() - t0).count() << " s\n";
-  auto tpz = clock::now();
-
-  // Zero the big histogram backing stores in parallel (page faults and memsets
-  // are spread across workers).
-  if (n_big > 0) {
-    struct zero_task_t
-    {
-      uint32_t plan;
-      uint64_t r0, r1;
-    };
-    vec<zero_task_t> zero_tasks;
-    for (uint32_t pi = 0; pi < plans.size(); ++pi) {
-      const seq_plan_t& p = plans[pi];
-      if (!p.big) continue;
-      const uint64_t rows = p.hist_fw->storage_rows();
-      const uint64_t step = std::max<uint64_t>(rows / (nworkers * 4) + 1, 1u << 16);
-      for (uint64_t r0 = 0; r0 < rows; r0 += step)
-        zero_tasks.push_back({pi, r0, std::min(r0 + step, rows)});
-    }
-    pool.parallel_for(zero_tasks.size(), 1, [&](const uint64_t ti) {
-      const zero_task_t& z = zero_tasks[ti];
-      seq_plan_t& p = plans[z.plan];
-      p.hist_fw->zero_range(z.r0, z.r1);
-      if (p.hist_rc) p.hist_rc->zero_range(z.r0, z.r1);
-    });
-  }
-  if (prof) toc("zero hists", tpz);
   auto tp0 = clock::now();
+
+  // Keeps the winner-strand counts of a mapped sample for the samples output
+  // (info/lr score columns); rows of unmapped samples are never read back.
+  auto save_counts = [&](seq_plan_t& p,
+                         const uint64_t s,
+                         const char strand,
+                         const uint64_t* v_fw,
+                         const uint64_t u_fw,
+                         const uint64_t* v_rc,
+                         const uint64_t u_rc) {
+    if (!p.keep_counts) return;
+    const uint64_t* vw = (strand == '-') ? v_rc : v_fw;
+    const uint64_t uw = (strand == '-') ? u_rc : u_fw;
+    std::copy(vw, vw + hdist_bound + 1, p.v_res.data() + s * (hdist_bound + 1));
+    p.u_res[s] = uw;
+  };
 
   // Per-sample evaluation helper for full-pass histograms (used by fused tasks
   // and by phase 3 for big plans).
   auto eval_fullpass =
     [&](seq_plan_t& p, const HDHist& hist_fw, const HDHist* hist_rc, const uint64_t s0, const uint64_t s1) {
-      vec<uint64_t> v_scratch(hdist_bound + 1, 0);
+      vec<uint64_t> v_fw(hdist_bound + 1, 0);
+      vec<uint64_t> v_rc(hdist_bound + 1, 0);
       for (uint64_t s = s0; s < s1; ++s) {
         const uint64_t a_bin = p.starts[s];
         const uint64_t b_bin = a_bin + tau_bin;
-        uint64_t u_fw = 0, t_fw = 0;
-        hist_fw.extract_histogram(a_bin, b_bin, v_scratch, u_fw, t_fw);
-        const double d_fw = validate_distance(llhf.mle_at(v_scratch.data(), u_fw));
+        uint64_t u_fw = 0, u_rc = 0, t = 0;
+        hist_fw.extract_histogram(a_bin, b_bin, v_fw, u_fw, t);
+        // t == 0 (no k-mer hits): mle is undefined (NaN), not a plateau MLE.
+        const double d_fw = llhf.mle(v_fw.data(), u_fw);
         double d = d_fw;
         char strand = '+';
-        uint64_t t_sel = t_fw;
         if (!canonical) {
-          uint64_t u_rc = 0, t_rc = 0;
-          hist_rc->extract_histogram(a_bin, b_bin, v_scratch, u_rc, t_rc);
-          const double d_rc = validate_distance(llhf.mle_at(v_scratch.data(), u_rc));
+          hist_rc->extract_histogram(a_bin, b_bin, v_rc, u_rc, t);
+          const double d_rc = llhf.mle(v_rc.data(), u_rc);
           std::tie(d, strand) = select_strand_distance(d_fw, d_rc);
-          t_sel = (strand == '-') ? t_rc : t_fw;
         }
         p.d_res[s] = d;
         p.strand_res[s] = strand;
-        p.hits_res[s] = t_sel;
+        if (std::isfinite(d)) save_counts(p, s, strand, v_fw.data(), u_fw, v_rc.data(), u_rc);
       }
     };
 
@@ -710,52 +513,49 @@ void DistSC::sample_sequences(const sketch_sptr_t& sketch,
       seq_plan_t& p = plans[t.plan];
       const char* cseq = seq_batch[p.bix].data();
       if (t.kind == TASK_HIST_CHUNK) {
-        hist_agg_t agg{p.hist_fw.get(), p.hist_rc.get(), /*atomic=*/true};
+        hist_agg_t agg{p.hist_fw, canonical ? nullptr : &p.hist_rc, /*atomic=*/true};
         if (canonical)
           scan_mers_range<false>(ctx, cseq, t.a, t.b, agg);
         else
           scan_mers_range<true>(ctx, cseq, t.a, t.b, agg);
       } else if (t.kind == TASK_FUSED) {
         HDHist hist_fw(p.nbins, hdist_th, bin_shift);
-        std::unique_ptr<HDHist> hist_rc;
-        if (!canonical) hist_rc = std::make_unique<HDHist>(p.nbins, hdist_th, bin_shift);
-        hist_agg_t agg{&hist_fw, hist_rc.get(), /*atomic=*/false};
+        HDHist hist_rc;
+        if (!canonical) hist_rc = HDHist(p.nbins, hdist_th, bin_shift);
+        hist_agg_t agg{hist_fw, canonical ? nullptr : &hist_rc, /*atomic=*/false};
         if (canonical)
           scan_mers_range<false>(ctx, cseq, 0, p.enmers, agg);
         else
           scan_mers_range<true>(ctx, cseq, 0, p.enmers, agg);
         hist_fw.compute_prefhistsum();
-        if (hist_rc) hist_rc->compute_prefhistsum();
-        eval_fullpass(p, hist_fw, hist_rc.get(), 0, p.n_samples);
+        if (!canonical) hist_rc.compute_prefhistsum();
+        eval_fullpass(p, hist_fw, canonical ? nullptr : &hist_rc, 0, p.n_samples);
       } else {
         uint64_t v_fw[hdist_bound + 1];
         uint64_t v_rc[hdist_bound + 1];
         for (uint64_t s = t.a; s < t.b; ++s) {
           const uint64_t a_bin = p.starts[s];
           const uint64_t j0 = a_bin << bin_shift;
-          const uint64_t j1 = std::min(j0 + region_nmers, p.enmers);
+          const uint64_t j1 = std::min(j0 + win_mers, p.enmers);
           std::fill(v_fw, v_fw + hdist_bound + 1, 0);
           std::fill(v_rc, v_rc + hdist_bound + 1, 0);
           uint64_t u_fw = 0, u_rc = 0;
-          window_agg_t agg{v_fw, v_rc, &u_fw, &u_rc, hdist_th};
+          window_agg_t agg{v_fw, v_rc, u_fw, u_rc, hdist_th};
           if (canonical)
             scan_mers_range<false>(ctx, cseq, j0, j1, agg);
           else
             scan_mers_range<true>(ctx, cseq, j0, j1, agg);
-          const uint64_t t_fw = std::accumulate(v_fw, v_fw + hdist_bound + 1, uint64_t(0));
-          const double d_fw = validate_distance(llhf.mle_at(v_fw, u_fw));
+          // t == 0 (no k-mer hits): mle is undefined (NaN), not a plateau MLE.
+          const double d_fw = llhf.mle(v_fw, u_fw);
           double d = d_fw;
           char strand = '+';
-          uint64_t t_sel = t_fw;
           if (!canonical) {
-            const uint64_t t_rc = std::accumulate(v_rc, v_rc + hdist_bound + 1, uint64_t(0));
-            const double d_rc = validate_distance(llhf.mle_at(v_rc, u_rc));
+            const double d_rc = llhf.mle(v_rc, u_rc);
             std::tie(d, strand) = select_strand_distance(d_fw, d_rc);
-            t_sel = (strand == '-') ? t_rc : t_fw;
           }
           p.d_res[s] = d;
           p.strand_res[s] = strand;
-          p.hits_res[s] = t_sel;
+          if (std::isfinite(d)) save_counts(p, s, strand, v_fw, u_fw, v_rc, u_rc);
         }
       }
     });
@@ -768,15 +568,15 @@ void DistSC::sample_sequences(const sketch_sptr_t& sketch,
     vec<HDHist*> big_hists;
     for (auto& p : plans) {
       if (!p.big) continue;
-      big_hists.push_back(p.hist_fw.get());
-      if (p.hist_rc) big_hists.push_back(p.hist_rc.get());
+      big_hists.push_back(&p.hist_fw);
+      if (!canonical) big_hists.push_back(&p.hist_rc);
     }
     pool.parallel_for(big_hists.size(), 1, [&](uint64_t j) { big_hists[j]->compute_prefhistsum(); });
   } else {
     for (auto& p : plans) {
       if (!p.big) continue;
-      p.hist_fw->compute_prefhistsum_parallel(pool, nworkers);
-      if (p.hist_rc) p.hist_rc->compute_prefhistsum_parallel(pool, nworkers);
+      p.hist_fw.compute_prefhistsum_parallel(pool, nworkers);
+      if (!canonical) p.hist_rc.compute_prefhistsum_parallel(pool, nworkers);
     }
   }
   toc("phase2 prefix", tp0);
@@ -795,7 +595,7 @@ void DistSC::sample_sequences(const sketch_sptr_t& sketch,
     pool.parallel_for(tasks.size(), 1, [&](const uint64_t ti) {
       const task_t& t = tasks[ti];
       seq_plan_t& p = plans[t.plan];
-      eval_fullpass(p, *p.hist_fw, p.hist_rc.get(), t.a, t.b);
+      eval_fullpass(p, p.hist_fw, canonical ? nullptr : &p.hist_rc, t.a, t.b);
     });
   }
 
@@ -803,30 +603,56 @@ void DistSC::sample_sequences(const sketch_sptr_t& sketch,
   toc("phase3 eval", tp0);
   tp0 = clock::now();
   vec<double> d_v;
-  vec<uint8_t> nomatch_v;
   d_v.reserve(sample_size);
-  nomatch_v.reserve(sample_size);
+  uint64_t n_unmapped = 0;
   if (samples_sout) *samples_sout << std::setprecision(8);
   for (const auto& p : plans) {
     const str& qid = qid_batch[p.bix];
+    // Background distance for the lr_bg score: median of this sequence's
+    // mapped samples (robust per-query typical distance).
+    double d_med = nanx();
+    if (samples_sout) {
+      vec<double> d_fin;
+      for (uint64_t s = 0; s < p.n_samples; ++s)
+        if (std::isfinite(p.d_res[s])) d_fin.push_back(p.d_res[s]);
+      d_med = summarize_distances(std::move(d_fin)).quantiles[3];
+    }
     for (uint64_t s = 0; s < p.n_samples; ++s) {
       const double d = p.d_res[s];
-      if (!std::isfinite(d)) continue;
-      d_v.push_back(d);
-      nomatch_v.push_back(p.hits_res[s] == 0);
       if (samples_sout) {
-        const uint64_t a = p.starts[s] << bin_shift;
-        write_tsv(*samples_sout, qid, p.enmers + k - 1, a + 1, a + tau, p.strand_res[s], sketch->get_rid(), d)
-          << '\t' << p.hits_res[s] << '\n';
+        // Every sampled window gets a row; unmapped windows carry nan fields.
+        double info = nanx(), lr_bg = nanx(), lr_ub = nanx();
+        if (std::isfinite(d)) {
+          const uint64_t* vw = p.v_res.data() + s * (hdist_bound + 1);
+          const uint64_t uw = p.u_res[s];
+          const window_score_t ws = score_window_at(llhf, vw, uw, d, d_med);
+          info = ws.info;
+          lr_bg = ws.lr_bg;
+          lr_ub = ws.lr_ub;
+        }
+        const uint64_t j0 = p.starts[s] << bin_shift;
+        const uint64_t j1 = std::min(j0 + win_mers, p.enmers);
+        write_tsv(*samples_sout, qid, p.enmers + k - 1, j0 + 1, j1 + k - 1, p.strand_res[s], sketch->get_rid(), d,
+                  info, lr_bg, lr_ub)
+          << '\n';
       }
+      if (!std::isfinite(d)) {
+        ++n_unmapped;
+        continue;
+      }
+      d_v.push_back(d);
     }
   }
 
-  const dist_summary_t summary = summarize_distances(std::move(d_v), &nomatch_v);
+  const dist_summary_t summary = summarize_distances(std::move(d_v));
   toc("merge+summarize", tp0);
+  if (n_unmapped > 0) {
+    cerr_msg(
+      "[", sketch->get_rid(), "] unmapped sampled windows (no k-mer hits): ", n_unmapped, " (excluded from the summary)");
+  }
   sout << std::setprecision(8);
   write_tsv(sout, query_path, sketch->get_rid(), summary.n, summary.mean, summary.sd);
   for (const double q : summary.quantiles)
     sout << '\t' << q;
-  sout << '\t' << summary.capped_median << '\t' << summary.n_nomatch << '\n';
+  sout << '\n';
 }

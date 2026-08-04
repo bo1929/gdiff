@@ -3,6 +3,21 @@
 #include <algorithm>
 #include <cmath>
 
+namespace {
+  // Applies a fitted null to one record: the cdf at the observed distance
+  // (two-sided for the reference strand), and the fold change vs the latent
+  // median. Returns false when the cdf is not finite.
+  bool apply_null_score(record_t& r, double d_obs, const GammaModel::params_t& gp, double median)
+  {
+    const double prob = GammaModel::cdf(d_obs, gp.shape, gp.scale);
+    if (!std::isfinite(prob)) return false;
+    const bool two_sided = !std::isnan(r.d_diff) && (r.is_rc == (r.d_diff > 0.0));
+    r.percentile = two_sided ? (2.0 * std::min(prob, 1.0 - prob)) : prob;
+    if (median > eps) r.fold = r.d / median;
+    return true;
+  }
+} // namespace
+
 template<typename T>
 DistanceStat<T>::DistanceStat(const params_t<T>& params, const llh_sptr_t<T>& llhf)
   : params(params)
@@ -24,114 +39,59 @@ void DistanceStat<T>::sample_null_pool(const DIM<T>& dim, uint64_t tau_eff, uint
   const uint64_t win_len = tau_eff + 1; // minimum window length in bins
   if (nbins_q < win_len) return;
 
-  const uint64_t max_nconcat = 10;
-  const uint64_t max_len = std::min<uint64_t>(max_nconcat * win_len, nbins_q);
   const uint64_t max_nwindows = nbins_q / win_len;
-  const uint64_t nsamples = std::min<uint64_t>(params.sample_size, max_nwindows);
+  const uint64_t target = std::min<uint64_t>(params.sample_size, max_nwindows);
 
   std::uniform_int_distribution<uint64_t> rvstart(0, nbins_q - win_len);
   vec<uint64_t> v(hdist_bound + 1);
 
-  for (uint64_t s = 0; s < nsamples; ++s) {
+  // Fixed-size random windows, same procedure as dist/detect. Windows with no
+  // k-mer hits (t == 0) are unmapped: skipped and counted, never fitted. To
+  // keep the pool at the target size despite unmapped windows, draws continue
+  // past the target, up to a bounded budget; if the hit rate is too low to
+  // build a reliable null within that budget, the pool stays short and
+  // test_significance reports the fit as unreliable.
+  const uint64_t max_attempts = std::max<uint64_t>(target * 8, 64);
+  uint64_t n_usable = 0;
+  for (uint64_t attempt = 0; attempt < max_attempts && n_usable < target; ++attempt) {
     const uint64_t x = rvstart(gen);
-    uint64_t a_bin = x + 1;
-    uint64_t b_bin = x + win_len + 1;
+    const uint64_t a_bin = x + 1;
+    const uint64_t b_bin = x + win_len + 1;
 
     uint64_t u, t;
     dim.extract_histogram(a_bin - 1, b_bin - 1, v, u, t);
-
-    bool right = true;
-    while (t == 0 && (b_bin - a_bin) < max_len) {
-      const uint64_t exlen = std::min(win_len, max_len - (b_bin - a_bin));
-      if (exlen == 0) break;
-      bool concat = false;
-      if (right && b_bin + exlen <= nbins_q + 1) {
-        b_bin += exlen; // extend right
-        concat = true;
-      } else if (a_bin > exlen) {
-        a_bin -= exlen; // else extend left
-        concat = true;
-      } else if (b_bin + exlen <= nbins_q + 1) {
-        b_bin += exlen; // if blocked, try right regardless
-        concat = true;
-      }
-      if (!concat) break; // hit a boundary
-
-      dim.extract_histogram(a_bin - 1, b_bin - 1, v, u, t);
-      right = !right; // alternate sides so growth remains symmetric
+    if (t == 0) {
+      ++n_unmapped;
+      continue;
     }
-    if (t == 0) continue;
 
-    double d = llhf->mle(v.data(), u);
-    double I = llhf->compute_fisher_info(d);
-    d = validate_distance(d);
-    if (std::isfinite(d) && std::isfinite(I)) samples_v.push_back({d, I, bix, {a_bin, b_bin}});
+    const double d = llhf->mle(v.data(), u);
+    if (!std::isfinite(d)) continue;
+    const double I = llhf->compute_fisher_info(v.data(), u, d);
+    if (!std::isfinite(I) || I <= 0.0) continue;
+    samples_v.push_back({d, I, bix, {a_bin, b_bin}});
+    ++n_usable;
   }
 }
 
 template<typename T>
-double DistanceStat<T>::sample_box_muller(std::mt19937& rng)
+bool DistanceStat<T>::filter_sample(const record_t& r, vec<p_t>& p_v, uint64_t sample_size) const
 {
-  std::uniform_real_distribution<double> U(0.0, 1.0);
-  const double u1 = U(rng);
-  const double u2 = U(rng);
-  const double r = std::sqrt(-2.0 * std::log(u1));
-  const double phi = 2.0 * M_PI * u2;
-  return r * std::cos(phi);
-}
-
-template<typename T>
-bool DistanceStat<T>::sample_metropolis_hastings(const p_t& init, vec<p_t>& p_v)
-{
-  // Metropolis-Hastings posterior draws kept (S) and burn-in iterations (B) per null window.
-  bool is_valid = true;
-  auto f = [&](const double& D) { return (*llhf)(D); };
-  double d = init.d;
-  const double step = init.I;
-  double nll = f(d);
-
-  std::uniform_real_distribution<double> ruv(0, 1);
-
-  p_v.reserve(p_v.size() + S);
-
-  for (uint64_t iter = 0; iter < B + S; ++iter) {
-    double d_i = d + step * sample_box_muller(gen);
-    if (d_i <= 0.0) d_i = -d_i;
-    if (d_i >= d_ub) d_i = 2.0 * d_ub - d_i;
-    d_i = std::clamp(d_i, eps, d_ub - eps);
-
-    const double nll_i = f(d_i);
-    const double log_alpha = nll - nll_i;
-    if (std::log(ruv(gen)) < log_alpha) {
-      d = d_i;
-      nll = nll_i;
-    }
-    if (iter >= B) {
-      const double I = llhf->compute_fisher_info(d);
-      if ((std::isfinite(I) && std::isfinite(d)) && (d > 0.0 && I > 0.0)) {
-        p_v.push_back({d, I});
-      } else {
-        is_valid = false;
-      }
-    }
-  }
-  return is_valid;
-}
-
-template<typename T>
-void DistanceStat<T>::filter_sample(const record_t& r, vec<p_t>& p_v, uint64_t sample_size) const
-{
+  bool excluded = false;
   p_v.clear();
   p_v.reserve(samples_v.size());
   for (const auto& s : samples_v) {
-    if (s.bix == r.bix && overlaps_half_open(s.bin_iv, r.bin_iv)) continue;
+    if (s.bix == r.bix && overlaps_half_open(s.bin_iv, r.bin_iv)) {
+      excluded = true;
+      continue;
+    }
     if (!std::isfinite(s.I)) continue;
     const double d = validate_distance(s.d);
     if (!std::isfinite(d)) continue;
     p_v.push_back({d, s.I});
   }
 
-  if (p_v.size() <= sample_size) return;
+  if (p_v.size() <= sample_size) return excluded;
 
   size_t w = 0;
   for (size_t i = 0; i < p_v.size(); ++i) {
@@ -143,38 +103,55 @@ void DistanceStat<T>::filter_sample(const record_t& r, vec<p_t>& p_v, uint64_t s
     }
   }
   p_v.resize(static_cast<size_t>(sample_size));
+  return excluded;
 }
 
 template<typename T>
 bool DistanceStat<T>::test_significance(record_t& r, uint64_t sample_size, const str& qid)
 {
+  const double d_obs = validate_distance(r.d);
+  if (!std::isfinite(d_obs)) return false; // unmapped interval (no k-mer hits): no significance
+
   vec<p_t> p_v;
-  filter_sample(r, p_v, sample_size);
+  const bool excluded = filter_sample(r, p_v, sample_size);
 
   if (p_v.size() < GammaModel::min_nsamples) {
     warn_pmsg(qid, "not enough null samples; skipping significance test");
     return false;
   }
 
-  const double d_obs = validate_distance(r.d);
-  vec<double> d_v;
-  d_v.reserve(p_v.size());
-  for (const auto& est : p_v) {
-    if (const double d = validate_distance(est.d); std::isfinite(d)) {
-      d_v.push_back(d);
+  // The gamma fit and latent median depend only on the filtered null set.
+  // Records of one query are contiguous and share that set unless an overlap
+  // exclusion applied, so the Nelder-Mead fit is computed once per query.
+  if (excluded || r.bix != fit_cache_bix) {
+    vec<double> d_v;
+    d_v.reserve(p_v.size());
+    for (const auto& est : p_v) {
+      if (const double d = validate_distance(est.d); std::isfinite(d)) {
+        d_v.push_back(d);
+      }
     }
+    const GammaModel::params_t gp = GammaModel::fit_from_samples(d_v);
+    const bool ok = GammaModel::validate_params(gp);
+    const double median = ok ? GammaModel::median_from_params(gp, d_eps, d_ub - d_eps) : nanx();
+    if (!excluded) {
+      fit_cache_bix = r.bix;
+      fit_cache_params = gp;
+      fit_cache_ok = ok;
+      fit_cache_median = median;
+    }
+    if (!ok) {
+      warn_pmsg(qid, "gamma fit failed; skipping significance test");
+      return false;
+    }
+    return apply_null_score(r, d_obs, gp, median);
   }
-  auto [prob, median] = GammaModel::score_from_samples(d_obs, d_v, d_eps, d_ub - d_eps);
-  if (std::isfinite(median)) median = validate_distance(median);
 
-  if (!std::isfinite(prob) || !std::isfinite(median)) {
+  if (!fit_cache_ok) {
     warn_pmsg(qid, "gamma fit failed; skipping significance test");
     return false;
   }
-  const bool two_sided = !std::isnan(r.d_diff) && (r.is_rc == (r.d_diff > 0.0));
-  r.percentile = two_sided ? (2.0 * std::min(prob, 1.0 - prob)) : prob;
-  if (std::isfinite(r.d) && median > eps) r.fold = r.d / median;
-  return true;
+  return apply_null_score(r, d_obs, fit_cache_params, fit_cache_median);
 }
 
 template<typename T>

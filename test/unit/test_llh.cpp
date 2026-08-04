@@ -88,12 +88,10 @@ TEST_CASE("negative log-likelihood is minimized near true distance") {
   }
   uint64_t misses = static_cast<uint64_t>(N * llh.prob_miss(D_true));
 
-  llh.set_counts(counts.data(), misses);
-
   // NLL at true distance should be less than at significantly different distances
-  double nll_true = llh(D_true);
-  double nll_low  = llh(0.001);
-  double nll_high = llh(0.3);
+  double nll_true = llh.nll(D_true, counts.data(), misses);
+  double nll_low  = llh.nll(0.001, counts.data(), misses);
+  double nll_high = llh.nll(0.3, counts.data(), misses);
 
   CHECK(nll_true < nll_low);
   CHECK(nll_true < nll_high);

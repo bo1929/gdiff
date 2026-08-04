@@ -1,312 +1,4 @@
 #include "gdiff.hpp"
-#include "random.hpp"
-#include <limits>
-
-void BaseLSH::set_lshf() { lshf = std::make_shared<LSHF>(k, h); }
-
-void BaseLSH::set_nrows()
-{
-  // Flat sampling: keep the prefix [0, T) of the 2^(2h) LSH space.
-  const uint64_t hash_size = uint64_t(1) << (2 * h);
-  const uint64_t t = static_cast<uint64_t>(hash_size * frac + 0.5);
-  nrows = static_cast<uint32_t>(std::max<uint64_t>(1, std::min(t, hash_size)));
-}
-
-bool MapSC::validate_configuration()
-{
-  bool is_invalid = false;
-  if (dist_th.size() != 1 && dist_th.size() != 8) {
-    is_invalid = true;
-    cerr_msg("--dist-th requires exactly 1 or 8 thresholds; got ", dist_th.size());
-  }
-  for (size_t i = 0; i < dist_th.size(); ++i) {
-    if (dist_th[i] <= 0.0) {
-      is_invalid = true;
-      cerr_msg("--dist-th[", i, "] must be positive: ", dist_th[i]);
-    }
-  }
-  {
-    auto sdist_th = dist_th;
-    std::sort(sdist_th.begin(), sdist_th.end());
-    if (const auto it = std::adjacent_find(sdist_th.begin(), sdist_th.end()); it != sdist_th.end()) {
-      is_invalid = true;
-      cerr_msg("--dist-th values must be unique; duplicate: ", *it);
-    }
-  }
-  if (hdist_th > hdist_bound) {
-    is_invalid = true;
-    cerr_msg("--hdist-th must be in [0, ", hdist_bound, "] with the current SIMD histogram layout; got ", hdist_th);
-  }
-  if (bin_shift >= 63) {
-    is_invalid = true;
-    cerr_msg("--bin-shift must be less than 63; got ", bin_shift);
-  }
-  const uint64_t bin_size = (bin_shift < 63) ? (uint64_t(1) << bin_shift) : 0;
-  if (bin_size > tau) {
-    is_invalid = true;
-    cerr_msg("--bin-shift gives bin_size=", bin_size, ", which exceeds --min-length=", tau);
-  }
-  const uint64_t tau_bin = (bin_size > 0) ? ((tau + bin_size - 1) >> bin_shift) : 0;
-  if (tau_bin < 2) {
-    is_invalid = true;
-    cerr_msg("--min-length must span at least two bins after binning ", "(tau=", tau, ", bin_size=", bin_size, ")");
-  }
-  return !is_invalid;
-}
-
-void MapSC::map()
-{
-  *(output_stream) << std::setprecision(5);
-
-  // Load all query sequences once? Might be inefficient
-  qseq_sptr_t qs = std::make_shared<QSeq>(query_path);
-
-  bool cont_reading;
-  while ((cont_reading = qs->read_next_batch())) {
-    total_qseq += qs->get_cbatch_size();
-  }
-  total_qseq += qs->get_cbatch_size();
-
-  std::ifstream sketch_stream(sketch_path, std::ifstream::binary);
-  check_fstream(sketch_stream, std::string("Cannot open sketch file: "), sketch_path.string());
-
-  uint32_t nsketches;
-  sketch_stream.read(reinterpret_cast<char*>(&nsketches), sizeof(uint32_t));
-  const uint32_t nthreads = std::max(1u, std::min(num_threads, nsketches));
-  cerr_msg("Processing ", nsketches, " sketches w/ ", nthreads, " thread(s)...");
-
-  std::vector<uint64_t> sketch_offsets(nsketches);
-  for (uint32_t i = 0; i < nsketches; ++i) {
-    sketch_offsets[i] = static_cast<uint64_t>(sketch_stream.tellg());
-    Sketch::seek_past(sketch_stream); // reads headers, seeks over data
-  }
-  sketch_stream.close();
-
-  size_t n = dist_th.size();
-
-  // Per-sketch result buffers
-  std::vector<strstream> results(nsketches);
-  std::atomic<uint32_t> next_idx{0};
-  std::atomic<uint32_t> count_p{0};
-  std::mutex cerr_mtx;
-
-  auto worker = [&](const uint32_t tseed) {
-    init_thread_rng(tseed);
-    uint32_t i;
-    while ((i = next_idx.fetch_add(1, std::memory_order_relaxed)) < nsketches) {
-      // Each worker opens its own file handle so no stream sharing occurs
-      std::ifstream sketch_stream(sketch_path, std::ifstream::binary);
-      sketch_sptr_t sketch = std::make_shared<Sketch>(sketch_path);
-      sketch->load_from_offset(sketch_stream, sketch_offsets[i]);
-      sketch_stream.close();
-      bool canonical = sketch->is_canonical();
-
-      strstream sout;
-      sout << std::setprecision(5);
-      if (dist_th.size() == 1) {
-        params_t<double> params(n, dist_th.front(), hdist_th, tau, chisq, bin_shift, sample_size, canonical, enum_only);
-        QIE<double> qie(params, sketch, sketch->get_lshf(), qs->get_seq_batch(), qs->get_qid_batch());
-        qie.map_sequences(sout, sketch->get_rid());
-      } else {
-        params_t<cm512_t> params(n, {0}, hdist_th, tau, chisq, bin_shift, sample_size, canonical, enum_only);
-        std::copy(dist_th.begin(), dist_th.end(), params.dist_th.begin());
-        QIE<cm512_t> qie(params, sketch, sketch->get_lshf(), qs->get_seq_batch(), qs->get_qid_batch());
-        qie.map_sequences(sout, sketch->get_rid());
-      }
-
-      // Store result at its reserved slot (no aliasing between threads)
-      results[i] = std::move(sout);
-
-      uint32_t num_p = count_p.fetch_add(1, std::memory_order_relaxed) + 1;
-      {
-        std::lock_guard<std::mutex> lock(cerr_mtx);
-        std::cerr << "\rProcessed sketch " << num_p << "/" << nsketches << "..." << std::flush;
-        if (num_p == nsketches) std::cerr << std::endl;
-      }
-    }
-  };
-
-  std::vector<std::thread> threads;
-  threads.reserve(nthreads);
-  for (uint32_t t = 0; t < nthreads; ++t) {
-    threads.emplace_back([&, t]() { worker(t + 1); });
-  }
-  for (auto& t : threads) {
-    t.join();
-  }
-
-  for (uint32_t i = 0; i < nsketches; ++i) {
-    if (results[i].tellp() > 0) *(output_stream) << results[i].rdbuf();
-  }
-}
-
-bool SketchSC::validate_configuration()
-{
-  bool is_invalid = false;
-  if (frac <= 0.0 || frac > 1.0) {
-    is_invalid = true;
-    cerr_msg("--frac must be in (0, 1]; got ", frac);
-  }
-  if (w < k) {
-    is_invalid = true;
-    cerr_msg("The minimum minimizer window size (-w) is k (-k)!");
-  }
-  if (h < 3) {
-    is_invalid = true;
-    cerr_msg("The minimum number of LSH positions (-h) is 3!");
-  }
-  if (h > 15) {
-    is_invalid = true;
-    cerr_msg("The maximum number of LSH positions (-h) is 15!");
-  }
-  if (k > 31) {
-    is_invalid = true;
-    cerr_msg("The maximum allowed k-mer length (-k) is 31!");
-  }
-  if (k < 19) {
-    is_invalid = true;
-    cerr_msg("The minimum allowed k-mer length (-k) is 19!");
-  }
-  if ((k - h) > 16) {
-    is_invalid = true;
-    cerr_msg("For compact k-mer encodings, h must be >= k-16!");
-  }
-  return !is_invalid;
-}
-
-void SketchSC::process()
-{
-  if (input_paths.empty()) error_exit("No input files provided!");
-
-  const uint32_t nsketches = static_cast<uint32_t>(input_paths.size());
-  const uint32_t nthreads = std::max(1u, std::min(num_threads, nsketches));
-  cerr_msg("Preparing to sketch ", nsketches, " file(s) w/ ", nthreads, " thread(s)");
-
-  std::ofstream sketch_stream(sketch_path, std::ofstream::binary);
-  sketch_stream.write(reinterpret_cast<const char*>(&nsketches), sizeof(uint32_t));
-  rho_v.assign(nsketches, 0.0);
-
-  std::atomic<uint32_t> next_idx{0};
-  std::atomic<uint32_t> count_p{0};
-  std::mutex write_mtx;
-  std::mutex cerr_mtx;
-
-  auto worker = [&](const uint32_t tseed) {
-    init_thread_rng(tseed);
-    uint32_t i;
-    while ((i = next_idx.fetch_add(1, std::memory_order_relaxed)) < nsketches) {
-      const str& input_path = input_paths[i];
-      rseq_sptr_t rs = std::make_shared<RSeq>(input_path, lshf, w, nrows, canonical);
-      sdhm_sptr_t sdhm = std::make_shared<SDHM>();
-      sdhm->fill_table(nrows, rs);
-      sfhm_sptr_t sketch_sfhm = std::make_shared<SFHM>(sdhm);
-      rho_v[i] = rs->get_rho();
-
-      {
-        std::lock_guard<std::mutex> lock(write_mtx);
-        write_header(sketch_stream, i);
-        write_config(sketch_stream, i);
-        sketch_sfhm->save(sketch_stream);
-      }
-
-      const uint32_t num_p = count_p.fetch_add(1, std::memory_order_relaxed) + 1;
-      {
-        std::lock_guard<std::mutex> lock(cerr_mtx);
-        std::cerr << "\rCreated a sketch for [" << num_p << "/" << nsketches << "] "
-                  << "..." << std::flush;
-        if (num_p == nsketches) std::cerr << std::endl;
-      }
-    }
-  };
-
-  std::vector<std::thread> threads;
-  threads.reserve(nthreads);
-  for (uint32_t t = 0; t < nthreads; ++t) {
-    threads.emplace_back([&, t]() { worker(t + 1); });
-  }
-  for (auto& t : threads) {
-    t.join();
-  }
-
-  check_fstream(sketch_stream, std::string("Failed to write the sketch!"), sketch_path.string());
-  sketch_stream.close();
-  cerr_msg("Sketch file saved to ", sketch_path.string(), " with ", nsketches, " sketch(es)");
-}
-
-void SketchSC::write_header(std::ofstream& sout, uint32_t i)
-{
-  const str rid = std::filesystem::path(input_paths[i]).filename().string();
-  uint64_t timestamp =
-    std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-  uint64_t rid_len = rid.length();
-  sout.write(reinterpret_cast<char*>(&rid_len), sizeof(uint64_t));
-  sout.write(rid.c_str(), rid_len);
-  sout.write(reinterpret_cast<char*>(&timestamp), sizeof(uint64_t));
-}
-
-void SketchSC::write_config(std::ofstream& sout, uint32_t i)
-{
-  // Keeps a minimizer iff LSH(x) < nrows; rho already includes that keep rate.
-  sout.write(reinterpret_cast<const char*>(&k), sizeof(uint8_t));
-  sout.write(reinterpret_cast<const char*>(&w), sizeof(uint8_t));
-  sout.write(reinterpret_cast<const char*>(&h), sizeof(uint8_t));
-  sout.write(reinterpret_cast<char*>(&canonical), sizeof(bool));
-  sout.write(reinterpret_cast<char*>(&nrows), sizeof(uint32_t));
-  sout.write(reinterpret_cast<char*>(lshf->ppos_data()), h * sizeof(uint8_t));
-  sout.write(reinterpret_cast<char*>(lshf->npos_data()), (k - h) * sizeof(uint8_t));
-  sout.write(reinterpret_cast<const char*>(&rho_v[i]), sizeof(double));
-}
-
-SketchSC::SketchSC(CLI::App& sc)
-{
-  set_sketch_defaults();
-  sc.add_option("-i,--input-path", input_paths, "Input FASTA/FASTQ file(s) <path> (or URL) (gzip compatible)")
-    ->required()
-    ->check(url_validator | CLI::ExistingFile);
-  sc.add_option("-o,--output-path", sketch_path, "Path to store the resulting binary sketch file")->required();
-  sc.add_option("-k,--mer-len", k, "Length of k-mers [27]")->check(CLI::Range(19, 31))->check(CLI::PositiveNumber);
-  sc.add_option("-w,--win-len", w, "Length of the minimizer window (w>=k) [k+6]")->check(CLI::PositiveNumber);
-  sc.add_option("-h,--num-positions", h, "Number of positions for the LSH [k-16]")->check(CLI::PositiveNumber);
-  sc.add_option("--frac", frac, "Keep a k-mer if LSH(x) < frac * 2^(2h); i.e., subsampling ratio [1.0]")
-    ->check(CLI::Range(std::numeric_limits<double>::min(), 1.0));
-  sc.add_flag(
-    "--strand-agnostic,!--strand-aware", canonical, "A (canonical) strand-agnostic (default) or strand-aware sketch");
-  sc.callback([&]() {
-    if (!(sc.count("-w") + sc.count("--win-len"))) {
-      w = k + 6;
-      h = k - 16;
-    }
-    if (!validate_configuration()) {
-      error_exit("Invalid configuration!");
-    }
-  });
-}
-
-MapSC::MapSC(CLI::App& sc)
-{
-  sc.add_option("-q,--query-path", query_path, "Query FASTA/FASTQ file <path> (or URL) (gzip compatible)")
-    ->required()
-    ->check(url_validator | CLI::ExistingFile);
-  sc.add_option("-i,--sketch-path", sketch_path, "Sketch file at <path> to query")->required()->check(CLI::ExistingFile);
-  sc.add_option("-o,--output-path", output_path, "Write output to a file at <path> [stdout]");
-  sc.add_option("--hdist-th", hdist_th, "Maximum Hamming distance for a k-mer to match [4]")
-    ->check(CLI::Range(0, static_cast<int>(hdist_bound)));
-  sc.add_option("--chisq", chisq, "Chi-square threshold [33.00051]")->check(CLI::NonNegativeNumber);
-  sc.add_option("-d,--dist-th", dist_th, "Distance threshold(s) - provide exactly 1 or 8 values")->required()->expected(1, 8);
-  sc.add_option("-l,--min-length", tau, "Minimum interval length")->required()->check(CLI::PositiveNumber);
-  sc.add_option("-b,--bin-shift", bin_shift, "Group consecutive k-mers into bins of size 2^b [0]")->check(CLI::Range(0, 62));
-  sc.add_flag("--enum-only,!--no-enum-only", enum_only, "Enumerate intervals without MLE distance estimation [false]");
-  sc.add_option("--sample-size", sample_size, "Samples for significance test (0: skip) [200]")->check(CLI::NonNegativeNumber);
-  sc.callback([&]() {
-    if (!validate_configuration()) {
-      error_exit("Invalid configuration!");
-    }
-    if (!output_path.empty()) {
-      output_file.open(output_path);
-      output_stream = &output_file;
-    }
-  });
-}
 
 void MergeSC::merge()
 {
@@ -440,12 +132,14 @@ int main(int argc, char** argv)
   auto& sc_sketch = *app.add_subcommand("sketch", "Create sketches from FASTA/FASTQ files");
   auto& sc_map = *app.add_subcommand("map", "Map queries and extract distance-based patterns from sketches");
   auto& sc_dist = *app.add_subcommand("dist", "Sample query regions and summarize MLE distances");
+  auto& sc_detect = *app.add_subcommand("detect", "Fit a null distance distribution and detect outlier regions");
   auto& sc_merge = *app.add_subcommand("merge", "Merge multiple sketches into a single sketch file");
   auto& sc_info = *app.add_subcommand("info", "Show metadata for all sketches in a sketch file");
 
   SketchSC gdiff_sketch(sc_sketch);
   MapSC gdiff_map(sc_map);
   DistSC gdiff_dist(sc_dist);
+  DetectSC gdiff_detect(sc_detect);
   MergeSC gdiff_merge(sc_merge);
   InfoSC gdiff_info(sc_info);
 
@@ -463,40 +157,40 @@ int main(int argc, char** argv)
   std::cerr << invocation_str;
   std::cerr << std::ctime(&tstart_f);
 
+  auto run_timed = [&](const char* done_msg, auto&& work) {
+    const auto t0 = std::chrono::system_clock::now();
+    work();
+    std::chrono::duration<float> es = std::chrono::system_clock::now() - t0;
+    cerr_msg(done_msg, es.count(), " sec");
+  };
+
   if (sc_sketch.parsed()) {
     cerr_msg("Initializing the sketch...");
     gdiff_sketch.set_nrows();
     gdiff_sketch.set_lshf();
-    std::chrono::duration<float> es_b = std::chrono::system_clock::now() - tstart;
-    gdiff_sketch.process();
-    std::chrono::duration<float> es_s = std::chrono::system_clock::now() - tstart - es_b;
-    cerr_msg("Done sketching & saving, elapsed: ", es_s.count(), " sec");
+    run_timed("Done sketching & saving, elapsed: ", [&]() { gdiff_sketch.process(); });
   }
 
   if (sc_merge.parsed()) {
     cerr_msg("Merging sketches...");
-    std::chrono::duration<float> es_b = std::chrono::system_clock::now() - tstart;
-    gdiff_merge.merge();
-    std::chrono::duration<float> es_s = std::chrono::system_clock::now() - tstart - es_b;
-    cerr_msg("Done merging sketches, elapsed: ", es_s.count(), " sec");
+    run_timed("Done merging sketches, elapsed: ", [&]() { gdiff_merge.merge(); });
   }
 
   if (sc_map.parsed()) {
     cerr_msg("Loading the sketch...");
     cerr_msg("Seeking query sequences in the sketch...");
-    std::chrono::duration<float> es_b = std::chrono::system_clock::now() - tstart;
-    gdiff_map.map();
-    std::chrono::duration<float> es_s = std::chrono::system_clock::now() - tstart - es_b;
-    cerr_msg("Done mapping sequences, elapsed: ", es_s.count(), " sec");
+    run_timed("Done mapping sequences, elapsed: ", [&]() { gdiff_map.map(); });
     cerr_msg("Total number of sequences queried: ", gdiff_map.get_total_qseq());
   }
 
   if (sc_dist.parsed()) {
     cerr_msg("Sampling query regions and calculating distances...");
-    std::chrono::duration<float> es_b = std::chrono::system_clock::now() - tstart;
-    gdiff_dist.dist();
-    std::chrono::duration<float> es_s = std::chrono::system_clock::now() - tstart - es_b;
-    cerr_msg("Done calculating distances, elapsed: ", es_s.count(), " sec");
+    run_timed("Done calculating distances, elapsed: ", [&]() { gdiff_dist.dist(); });
+  }
+
+  if (sc_detect.parsed()) {
+    cerr_msg("Sampling distances and detecting outlier regions...");
+    run_timed("Done detecting outlier regions, elapsed: ", [&]() { gdiff_detect.detect(); });
   }
 
   if (sc_info.parsed()) {

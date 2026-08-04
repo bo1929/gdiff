@@ -37,7 +37,7 @@ xy_t slice_mle_fisher(DIM<T>& dim, const llh_sptr_t<T>& llhf, uint64_t a1, uint6
   uint64_t u, t;
   dim.extract_histogram(a1 - 1, b1 - 1, v, u, t);
   const double d = llhf->mle(v.data(), u);
-  const double I = llhf->compute_fisher_info(d);
+  const double I = llhf->compute_fisher_info(v.data(), u, d);
   return {d, I};
 }
 

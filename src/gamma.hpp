@@ -64,6 +64,18 @@ public:
     return boost::math::cdf(boost::math::gamma_distribution<double, hpolicy>(shape, scale), x);
   }
 
+  // Inverse CDF. NaN for invalid parameters or p outside [0, 1].
+  [[nodiscard]] static double quantile(double p, double shape, double scale)
+  {
+    if (!(shape > 0.0) || !(scale > 0.0)) return NaN;
+    if (!(p >= 0.0) || !(p <= 1.0)) return NaN;
+    return boost::math::quantile(boost::math::gamma_distribution<double, hpolicy>(shape, scale), p);
+  }
+
+  // Moment-based estimate (mean^2/var, var/mean); used as a fallback when the
+  // Nelder-Mead fit fails.
+  [[nodiscard]] static params_t moments_estimate(const std::vector<double>& x_v) { return init_from_moments(x_v); }
+
   // Fit Gamma directly to draws via quantile matching.
   [[nodiscard]] static params_t fit_from_samples(const std::vector<double>& x_v)
   {
@@ -71,7 +83,9 @@ public:
     return fit_from_samples(x_v, cfg);
   }
 
-  [[nodiscard]] static params_t fit_from_samples(const std::vector<double>& x_v, const Config& cfg)
+  // Optional diagnostics: final objective value and Nelder-Mead iterations used.
+  [[nodiscard]] static params_t
+  fit_from_samples(const std::vector<double>& x_v, const Config& cfg, double* obj_out = nullptr, int* niter_out = nullptr)
   {
     if (x_v.empty()) return {1.0, 1.0};
     const params_t p0 = init_from_moments(x_v);
@@ -87,7 +101,29 @@ public:
         }
         return L;
       },
-      cfg);
+      cfg,
+      obj_out,
+      niter_out);
+  }
+
+  // Median of the latent Gamma distribution in (lower, upper) by binary
+  // search; NaN when the median is above upper or degenerate.
+  [[nodiscard]] static double median_from_params(const params_t& gp, double lower, double upper)
+  {
+    if (!validate_params(gp) || !(upper > lower)) return NaN;
+    auto F = [&](double t) { return cdf(t, gp.shape, gp.scale); };
+    if (F(upper) < 0.5) return NaN;
+    double lo = lower;
+    double hi = upper;
+    for (int it = 0; it < 40; ++it) {
+      const double mid = 0.5 * (lo + hi);
+      if (F(mid) < 0.5)
+        lo = mid;
+      else
+        hi = mid;
+    }
+    const double median = 0.5 * (lo + hi);
+    return (median > eps && std::isfinite(median)) ? median : NaN;
   }
 
   [[nodiscard]] static std::pair<double, double>
@@ -101,25 +137,10 @@ public:
 
     const double prob = cdf(x, gp.shape, gp.scale);
     if (!std::isfinite(prob)) return {NaN, NaN};
-    // std::cout << x << " " << gp.shape << " " << gp.scale << " " << prob << std::endl;
 
-    auto F = [&](double t) { return cdf(t, gp.shape, gp.scale); };
-    if (!(upper > lower) || F(upper) < 0.5) return {prob, NaN};
-
-    // Median of the latent Gamma distribution by binary search.
-    double lo = lower;
-    double hi = upper;
-    for (int it = 0; it < 40; ++it) {
-      const double mid = 0.5 * (lo + hi);
-      if (F(mid) < 0.5)
-        lo = mid;
-      else
-        hi = mid;
-    }
-    const double median = 0.5 * (lo + hi);
-    if (!(median > eps) || !std::isfinite(median)) return {prob, NaN};
-    return {prob, median};
     // Returns {cdf(x), latent median} or NaN components on failure.
+    const double median = median_from_params(gp, lower, upper);
+    return {prob, median};
   }
 
 private:
@@ -189,7 +210,8 @@ private:
   // Stops when both objective spread and simplex diameter fall below tolerance.
   // The diameter check catches flat-likelihood drift that the objective only misses.
   template<typename Obj>
-  [[nodiscard]] static params_t bivariate_nelder_mead(params_t p0, Obj&& obj, const Config& cfg)
+  [[nodiscard]] static params_t
+  bivariate_nelder_mead(params_t p0, Obj&& obj, const Config& cfg, double* obj_out = nullptr, int* niter_out = nullptr)
   {
     auto eval = [&](const coord_t& p) { return obj(std::exp(p.x), std::exp(p.y)); };
 
@@ -199,7 +221,8 @@ private:
     std::array<double, 3> F = {eval(S[0]), eval(S[1]), eval(S[2])};
     sort3(S, F);
 
-    for (int iter = 0; iter < cfg.max_niter; ++iter) {
+    int iter = 0;
+    for (; iter < cfg.max_niter; ++iter) {
       const bool converged =
         (F[2] - F[0]) < cfg.tol && std::abs(S[2].x - S[0].x) < cfg.tol && std::abs(S[2].y - S[0].y) < cfg.tol;
       if (converged && iter > 5) break;
@@ -239,6 +262,8 @@ private:
       sort3(S, F);
     }
 
+    if (obj_out) *obj_out = F[0];
+    if (niter_out) *niter_out = iter;
     // S[0] is always the best vertex after sort3.
     return {std::exp(S[0].x), std::exp(S[0].y)};
   }

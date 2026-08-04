@@ -177,15 +177,15 @@ TEST_CASE("coordinate helpers preserve output conventions") {
   const uint64_t enmers = 10;
   const uint32_t k = 5;
 
-  auto row = get_coordinates({1, 2}, 2, enmers, k, false);
+  auto row = get_coordinates({1, 2}, 2, enmers, k);
   CHECK(row.a == 1);
-  CHECK(row.b == 5);
+  CHECK(row.b == 8); // full bp coverage: (2-1)<<2 + k - 1
 
-  row = get_coordinates({2, 4}, 2, enmers, k, true);
+  row = get_coordinates({2, 4}, 2, enmers, k);
   CHECK(row.a == 5);
   CHECK(row.b == enmers + k - 1);
 
-  row = get_coordinates({1, 3}, 0, 2, k, true);
+  row = get_coordinates({1, 3}, 0, 2, k);
   CHECK(row.a == 1);
   CHECK(row.b == k + 1);
 }

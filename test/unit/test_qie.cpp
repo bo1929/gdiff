@@ -14,9 +14,9 @@ static const std::string GENOMES_DIR = TEST_DIR + "genomes/";
 static const std::string SKETCHES_DIR_A = TEST_DIR + "sketches/";  // strand-aware
 static const std::string SKETCHES_DIR_B = TEST_DIR + "sketches2/"; // strand-agnostic
 
-// Strand-aware output: 16 columns (15 tabs)
-static constexpr int k_sa_cols = 16;
-static constexpr int k_sa_tabs = 15;
+// Strand-aware output: 19 columns (18 tabs); trailing three are info/lr_bg/lr_ub
+static constexpr int k_sa_cols = 19;
+static constexpr int k_sa_tabs = 18;
 static constexpr int k_sa_seq_len = 1;
 static constexpr int k_sa_interval_start = 2;
 static constexpr int k_sa_interval_end = 3;
@@ -24,13 +24,16 @@ static constexpr int k_sa_strand = 4;
 static constexpr int k_sa_is_rc = 5;
 static constexpr int k_sa_dist = 7;
 static constexpr int k_sa_mask = 8;
-static constexpr int k_sa_strand_diff = 12;
+static constexpr int k_sa_strand_diff = 11;
 static constexpr int k_sa_percentile = 13;
 static constexpr int k_sa_qvalue = 15;
+static constexpr int k_sa_info = 16;
+static constexpr int k_sa_lr_bg = 17;
+static constexpr int k_sa_lr_ub = 18;
 
-// Strand-agnostic output: 13 columns (12 tabs)
-static constexpr int k_ag_cols = 13;
-static constexpr int k_ag_tabs = 12;
+// Strand-agnostic output: 16 columns (15 tabs); trailing three are info/lr_bg/lr_ub
+static constexpr int k_ag_cols = 16;
+static constexpr int k_ag_tabs = 15;
 static constexpr int k_ag_dist = 5;
 static constexpr int k_ag_mask = 6;
 static constexpr int k_ag_percentile = 10;
@@ -124,7 +127,7 @@ struct qie_fixture_t
 static std::string run_qie(const qie_fixture_t& fx, params_t<double> params)
 {
   params.canonical = fx.sketch->is_canonical();
-  QIE<double> qie(params, fx.sketch, fx.sketch->get_lshf(), fx.qs->get_seq_batch(), fx.qs->get_qid_batch());
+  QIE<double> qie(params, fx.sketch, fx.sketch->get_lshf_sptr(), fx.qs->get_seq_batch(), fx.qs->get_qid_batch());
   std::ostringstream sout;
   qie.map_sequences(sout, fx.sketch->get_rid());
   return sout.str();
@@ -213,7 +216,7 @@ static bool has_background_gap_ag(const std::string& s)
   return false;
 }
 
-static void check_ag_column_contract(const std::string& output)
+static void check_ag_column_contract(const std::string& output, const std::string& ref_name)
 {
   std::istringstream iss(output);
   std::string line;
@@ -222,7 +225,7 @@ static void check_ag_column_contract(const std::string& output)
     const auto fields = split_tsv(line);
     REQUIRE(static_cast<int>(fields.size()) == k_ag_cols);
     // AG format: no strand / is_rc / d_diff columns; ref id is at index 4.
-    CHECK(fields[4].find(".skc") != std::string::npos);
+    CHECK(fields[4].find(ref_name) != std::string::npos);
   }
 }
 
@@ -369,6 +372,9 @@ TEST_CASE("known pair: three operating modes, strand-aware" * doctest::skip(!tes
   CHECK(any_finite_col(out_cont, k_sa_qvalue));
   CHECK(any_finite_col(out_enum, k_sa_strand_diff));
   CHECK(any_finite_col(out_cont, k_sa_strand_diff));
+  CHECK(any_finite_col(out_cont, k_sa_info));
+  CHECK(any_finite_col(out_cont, k_sa_lr_bg));
+  CHECK(any_finite_col(out_cont, k_sa_lr_ub));
 
   // Continuous mode only emits interval records (no background gaps).
   CHECK_FALSE(has_background_gap(out_cont));
@@ -400,8 +406,8 @@ TEST_CASE("known pair: three operating modes, strand-agnostic" * doctest::skip(!
   check_output_shape(out_lite, false);
   check_output_shape(out_enum, false);
   check_output_shape(out_cont, false);
-  check_ag_column_contract(out_cont);
-  check_ag_column_contract(out_enum);
+  check_ag_column_contract(out_cont, "G000341695");
+  check_ag_column_contract(out_enum, "G000341695");
 
   CHECK(all_dist_nan(out_lite, k_ag_dist, k_ag_cols));
   CHECK(any_finite_col(out_enum, k_ag_dist, k_ag_cols));
@@ -477,7 +483,7 @@ TEST_CASE("QIE with multiple thresholds (cm512_t), strand-aware" * doctest::skip
 
   params_t<cm512_t> params(8, dths, 4, 9900, 10000.0, 0, 200, true, true);
   params.canonical = fx.sketch->is_canonical();
-  QIE<cm512_t> qie(params, fx.sketch, fx.sketch->get_lshf(), fx.qs->get_seq_batch(), fx.qs->get_qid_batch());
+  QIE<cm512_t> qie(params, fx.sketch, fx.sketch->get_lshf_sptr(), fx.qs->get_seq_batch(), fx.qs->get_qid_batch());
 
   std::ostringstream sout;
   qie.map_sequences(sout, fx.sketch->get_rid());
@@ -498,7 +504,7 @@ TEST_CASE("QIE with multiple thresholds (cm512_t), strand-agnostic" * doctest::s
 
   params_t<cm512_t> params(8, dths, 4, 9900, 10000.0, 0, 200, true, true);
   params.canonical = fx.sketch->is_canonical();
-  QIE<cm512_t> qie(params, fx.sketch, fx.sketch->get_lshf(), fx.qs->get_seq_batch(), fx.qs->get_qid_batch());
+  QIE<cm512_t> qie(params, fx.sketch, fx.sketch->get_lshf_sptr(), fx.qs->get_seq_batch(), fx.qs->get_qid_batch());
 
   std::ostringstream sout;
   qie.map_sequences(sout, fx.sketch->get_rid());
