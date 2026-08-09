@@ -10,20 +10,6 @@ make test            # build & run all tests
 
 The test binary `build/test_gdiff` links against all project objects except `gdiff.o` (main).
 
-### Test files
-
-| File | Covers |
-|------|--------|
-| `test_main.cpp` | doctest entry point |
-| `test_types.cpp` | `params_t`, `write_tsv` |
-| `test_enc.cpp` | encoding, reverse complement, Hamming distance |
-| `test_llh.cpp` | log-likelihood (scalar & SIMD) |
-| `test_gamma.cpp` | `GammaModel::fit` |
-| `test_lshf.cpp` | LSH forest hashing |
-| `test_dim.cpp` | `DIM` interval extraction, histograms |
-| `test_sketch.cpp` | sketch I/O round-trip |
-| `test_qie.cpp` | QIE integration tests (real genomes) |
-
 ## Regression tests
 
 ```

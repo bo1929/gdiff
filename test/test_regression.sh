@@ -32,8 +32,8 @@ wait
 
 first_name="$(head -n 1 genome_names.txt)"
 if "$GDIFF" map --hdist-th 8 -d 0.10 -l 9900 \
-  -i "sketches/${first_name}.skc" \
-  -q "genomes/${first_name}.fna.gz" >/dev/null 2>&1; then
+  "genomes/${first_name}.fna.gz" \
+  "sketches/${first_name}.skc" >/dev/null 2>&1; then
   echo "FAIL: map accepted unsupported --hdist-th 8"
   exit 1
 fi
@@ -45,8 +45,8 @@ echo "=== Phase 1: enum-only regression ==="
 ENUM_OPTS="-d 0.10 -l 9900 --chisq 10000 --enum-only"
 while IFS=$'\t' read -r query ref; do
   "$GDIFF" map $ENUM_OPTS \
-    -i "sketches/${ref}.skc" \
-    -q "genomes/${query}.fna.gz" \
+    "genomes/${query}.fna.gz" \
+    "sketches/${ref}.skc" \
     -o "est/query_${query}-ref_${ref}.enum.txt" 2>/dev/null &
   while [ "$(jobs -rp | wc -l)" -ge "$NPROC" ]; do wait -n 2>/dev/null || true; done
 done < genome_pairs.txt
@@ -90,8 +90,8 @@ echo "=== Phase 2: continuous regression ==="
 CONT_OPTS="-d 0.10 -l 9900 --chisq 33.00051"
 while IFS=$'\t' read -r query ref; do
   "$GDIFF" map $CONT_OPTS \
-    -i "sketches/${ref}.skc" \
-    -q "genomes/${query}.fna.gz" \
+    "genomes/${query}.fna.gz" \
+    "sketches/${ref}.skc" \
     -o "est/query_${query}-ref_${ref}.cont.txt" 2>/dev/null &
   while [ "$(jobs -rp | wc -l)" -ge "$NPROC" ]; do wait -n 2>/dev/null || true; done
 done < genome_pairs.txt

@@ -4,7 +4,6 @@
 #include <fstream>
 #include "msg.hpp"
 #include "types.hpp"
-#include "rqseq.hpp"
 
 class SDHM
 {

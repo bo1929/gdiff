@@ -127,9 +127,9 @@ struct qie_fixture_t
 static std::string run_qie(const qie_fixture_t& fx, params_t<double> params)
 {
   params.canonical = fx.sketch->is_canonical();
-  QIE<double> qie(params, fx.sketch, fx.sketch->get_lshf_sptr(), fx.qs->get_seq_batch(), fx.qs->get_qid_batch());
+  QIE<double> qie(params, fx.sketch, fx.sketch->get_lshf_sptr(), fx.qs->get_batch_v());
   std::ostringstream sout;
-  qie.map_sequences(sout, fx.sketch->get_rid());
+  qie.map_sequences(sout, fx.sketch->get_rname());
   return sout.str();
 }
 
@@ -235,14 +235,14 @@ TEST_CASE("end-to-end with real sketch and query" * doctest::skip(!test_data_ava
   SUBCASE("strand-aware") {
     const auto fx = qie_fixture_t::load("G000018865", "G000016665", true);
     REQUIRE(!fx.qs->is_empty());
-    params_t<double> params(1, 0.1, 4, 9900, 33.0, 0, 200, true, false);
+    params_t<double> params(0.1, 4, 9900, 33.0, 0, 200, true, false);
     const std::string output = run_qie(fx, params);
     if (!output.empty()) check_output_shape(output, true);
   }
   SUBCASE("strand-agnostic") {
     const auto fx = qie_fixture_t::load("G000018865", "G000016665", false);
     REQUIRE(!fx.qs->is_empty());
-    params_t<double> params(1, 0.1, 4, 9900, 33.0, 0, 200, true, false);
+    params_t<double> params(0.1, 4, 9900, 33.0, 0, 200, true, false);
     const std::string output = run_qie(fx, params);
     if (!output.empty()) check_output_shape(output, false);
   }
@@ -252,9 +252,9 @@ TEST_CASE("known pair: three operating modes, strand-aware" * doctest::skip(!tes
   const auto fx = qie_fixture_t::load("G000341695", "G000025025", true);
   REQUIRE(!fx.qs->is_empty());
 
-  const params_t<double> p_lite(1, 0.1, 4, 9900, 10000.0, 0, 0, true, true);
-  const params_t<double> p_enum_test(1, 0.1, 4, 9900, 10000.0, 0, 200, true, true);
-  const params_t<double> p_cont(1, 0.1, 4, 9900, 33.0, 0, 200, true, false);
+  const params_t<double> p_lite(0.1, 4, 9900, 10000.0, 0, 0, true, true);
+  const params_t<double> p_enum_test(0.1, 4, 9900, 10000.0, 0, 200, true, true);
+  const params_t<double> p_cont(0.1, 4, 9900, 33.0, 0, 200, true, false);
 
   const std::string out_lite = run_qie(fx, p_lite);
   const std::string out_enum = run_qie(fx, p_enum_test);
@@ -391,9 +391,9 @@ TEST_CASE("known pair: three operating modes, strand-agnostic" * doctest::skip(!
   REQUIRE(!fx.qs->is_empty());
   REQUIRE(fx.sketch->is_canonical());
 
-  const params_t<double> p_lite(1, 0.1, 4, 9900, 10000.0, 0, 0, true, true);
-  const params_t<double> p_enum_test(1, 0.1, 4, 9900, 10000.0, 0, 200, true, true);
-  const params_t<double> p_cont(1, 0.1, 4, 9900, 33.0, 0, 200, true, false);
+  const params_t<double> p_lite(0.1, 4, 9900, 10000.0, 0, 0, true, true);
+  const params_t<double> p_enum_test(0.1, 4, 9900, 10000.0, 0, 200, true, true);
+  const params_t<double> p_cont(0.1, 4, 9900, 33.0, 0, 200, true, false);
 
   const std::string out_lite = run_qie(fx, p_lite);
   const std::string out_enum = run_qie(fx, p_enum_test);
@@ -430,8 +430,8 @@ TEST_CASE("strand-agnostic mode shape and significance" * doctest::skip(!test_da
   REQUIRE(!fx.qs->is_empty());
   REQUIRE(fx.sketch->is_canonical());
 
-  const params_t<double> p_cont(1, 0.1, 4, 9900, 33.0, 0, 200, true, false);
-  const params_t<double> p_enum(1, 0.1, 4, 9900, 10000.0, 0, 200, true, true);
+  const params_t<double> p_cont(0.1, 4, 9900, 33.0, 0, 200, true, false);
+  const params_t<double> p_enum(0.1, 4, 9900, 10000.0, 0, 200, true, true);
   const std::string out_cont = run_qie(fx, p_cont);
   const std::string out_enum = run_qie(fx, p_enum);
 
@@ -463,7 +463,7 @@ TEST_CASE("SA vs AG same pair both produce output" * doctest::skip(!test_data_av
   REQUIRE(!fx_sa.qs->is_empty());
   REQUIRE(!fx_ag.qs->is_empty());
 
-  const params_t<double> p(1, 0.1, 4, 9900, 10000.0, 0, 0, true, true);
+  const params_t<double> p(0.1, 4, 9900, 10000.0, 0, 0, true, true);
   const std::string out_sa = run_qie(fx_sa, p);
   const std::string out_ag = run_qie(fx_ag, p);
 
@@ -481,12 +481,12 @@ TEST_CASE("QIE with multiple thresholds (cm512_t), strand-aware" * doctest::skip
   dths[0] = 0.05; dths[1] = 0.10; dths[2] = 0.15; dths[3] = 0.20;
   dths[4] = 0.25; dths[5] = 0.30; dths[6] = 0.35; dths[7] = 0.40;
 
-  params_t<cm512_t> params(8, dths, 4, 9900, 10000.0, 0, 200, true, true);
+  params_t<cm512_t> params(dths, 4, 9900, 10000.0, 0, 200, true, true);
   params.canonical = fx.sketch->is_canonical();
-  QIE<cm512_t> qie(params, fx.sketch, fx.sketch->get_lshf_sptr(), fx.qs->get_seq_batch(), fx.qs->get_qid_batch());
+  QIE<cm512_t> qie(params, fx.sketch, fx.sketch->get_lshf_sptr(), fx.qs->get_batch_v());
 
   std::ostringstream sout;
-  qie.map_sequences(sout, fx.sketch->get_rid());
+  qie.map_sequences(sout, fx.sketch->get_rname());
   const std::string output = sout.str();
 
   CHECK(!output.empty());
@@ -502,12 +502,12 @@ TEST_CASE("QIE with multiple thresholds (cm512_t), strand-agnostic" * doctest::s
   dths[0] = 0.05; dths[1] = 0.10; dths[2] = 0.15; dths[3] = 0.20;
   dths[4] = 0.25; dths[5] = 0.30; dths[6] = 0.35; dths[7] = 0.40;
 
-  params_t<cm512_t> params(8, dths, 4, 9900, 10000.0, 0, 200, true, true);
+  params_t<cm512_t> params(dths, 4, 9900, 10000.0, 0, 200, true, true);
   params.canonical = fx.sketch->is_canonical();
-  QIE<cm512_t> qie(params, fx.sketch, fx.sketch->get_lshf_sptr(), fx.qs->get_seq_batch(), fx.qs->get_qid_batch());
+  QIE<cm512_t> qie(params, fx.sketch, fx.sketch->get_lshf_sptr(), fx.qs->get_batch_v());
 
   std::ostringstream sout;
-  qie.map_sequences(sout, fx.sketch->get_rid());
+  qie.map_sequences(sout, fx.sketch->get_rname());
   const std::string output = sout.str();
 
   CHECK(!output.empty());

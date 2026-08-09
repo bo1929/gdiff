@@ -11,12 +11,12 @@
 
 // Minimal persistent thread pool for coarse-grained parallel-for sections.
 //
-// parallel_for(n, chunk, fn) is synchronous: it invokes fn(i) exactly once for
-// each i in [0, n) using dynamic block scheduling, and returns only after all
-// invocations have completed (and no worker still references the task). The
-// calling (coordinator) thread participates in the work. Not re-entrant: fn
-// must not itself call parallel_for, and parallel_for must be driven from a
-// single coordinator thread.
+// Implementation of parallel_for(n, chunk, fn) is synchronous:
+// It invokes fn(i) exactly once for each i in [0, n) using dynamic block scheduling.
+// The return happens only after all invocations have completed.
+// Hence, the invocation is finished when no worker still references the task.
+// The calling (coordinator) thread participates in the work.
+// Not re-entrant: fn must not call parallel_for and must be driven froma coordinator thread.
 class ThreadPool
 {
 public:

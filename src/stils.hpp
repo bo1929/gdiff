@@ -7,13 +7,13 @@
 #include <sstream>
 #include <utility>
 
-static constexpr uint32_t hdist_bound = 7; // Hamming distance bound for the SIMD alignment
+static constexpr uint32_t hdist_bound = 7;
 
 static constexpr double d_ub = 1.0;
 static constexpr double d_lb = 0.0;
 static constexpr double d_eps = 0.00001;
 
-static constexpr double eps = 1e-7; // Tolerance for floating-point comparisons
+static constexpr double eps = 1e-7;
 
 inline double nanx() noexcept { return std::numeric_limits<double>::quiet_NaN(); }
 inline double pinf() noexcept { return std::numeric_limits<double>::infinity(); }

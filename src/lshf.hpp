@@ -1,22 +1,16 @@
 #ifndef _LSHF_HPP
 #define _LSHF_HPP
 
-#include <algorithm>
 #include "enc.hpp"
-#include "msg.hpp"
 #include "types.hpp"
-#include "random.hpp"
 #if defined(__BMI2__)
   #include <immintrin.h>
 #endif
 
-// Branchless bit compaction via a precomputed delta-swap network (Hacker's
-// Delight "compress", generalized to 64 bits). Applies the same transformation
-// as PEXT/extract_bits for a fixed mask: gathers the bits selected by the mask
-// into the low bits, order preserved. The six stage masks are precomputed once
-// per mask at setup; each stage then costs 3 ops with no data-dependent
-// branching, unlike the bit-loop fallbacks.
-inline uint64_t compress_staged(uint64_t x, const arr<uint64_t, 6>& mv)
+// Branchless bit compaction via a precomputed delta-swap network.
+// (Hacker's Delight "compress", generalized to 64 bits).
+// Applies the same transformation as PEXT for a fixed mask.
+inline uint64_t compress_mv(uint64_t x, const arr<uint64_t, 6>& mv)
 {
   uint64_t t;
   t = x & mv[0];
@@ -42,21 +36,21 @@ public:
   void get_random_positions();
   void set_lshf();
 #if defined(__BMI2__)
-  uint32_t compute_hash(uint64_t enc64_bp) const { return static_cast<uint32_t>(_pext_u64(enc64_bp, mask_hash_bp)); }
+  uint32_t compute_hash_bp(uint64_t enc64_bp) const { return static_cast<uint32_t>(_pext_u64(enc64_bp, mask_hash_bp)); }
   uint32_t drop_ppos_lr(uint64_t enc64_lr) const { return static_cast<uint32_t>(_pext_u64(enc64_lr, mask_drop_lr)); }
   uint32_t drop_ppos_bp(uint64_t enc64_bp) const { return static_cast<uint32_t>(_pext_u64(enc64_bp, mask_drop_bp)); }
 #else
-  uint32_t compute_hash(uint64_t enc64_bp) const
+  uint32_t compute_hash_bp(uint64_t enc64_bp) const
   {
-    return static_cast<uint32_t>(compress_staged(enc64_bp & mask_hash_bp, mv_hash));
+    return static_cast<uint32_t>(compress_mv(enc64_bp & mask_hash_bp, mv_hash_bp));
   }
   uint32_t drop_ppos_lr(uint64_t enc64_lr) const
   {
-    return static_cast<uint32_t>(compress_staged(enc64_lr & mask_drop_lr, mv_drop_lr));
+    return static_cast<uint32_t>(compress_mv(enc64_lr & mask_drop_lr, mv_drop_lr));
   }
   uint32_t drop_ppos_bp(uint64_t enc64_bp) const
   {
-    return static_cast<uint32_t>(compress_staged(enc64_bp & mask_drop_bp, mv_drop_bp));
+    return static_cast<uint32_t>(compress_mv(enc64_bp & mask_drop_bp, mv_drop_bp));
   }
 #endif
   uint64_t inv_ppos_bp(uint32_t bp);
@@ -79,7 +73,7 @@ private:
   uint64_t mask_drop_bp = 0;
   uint64_t mask_hash_lr = 0;
   uint64_t mask_hash_bp = 0;
-  arr<uint64_t, 6> mv_hash{};
+  arr<uint64_t, 6> mv_hash_bp{};
   arr<uint64_t, 6> mv_drop_lr{};
   arr<uint64_t, 6> mv_drop_bp{};
 };

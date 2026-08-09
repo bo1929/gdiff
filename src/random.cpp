@@ -1,4 +1,5 @@
 #include "random.hpp"
+#include "types.hpp"
 
 uint32_t seed = 0;
 uint32_t num_threads = 1;

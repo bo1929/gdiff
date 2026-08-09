@@ -25,10 +25,10 @@ void Sketch::load_from_offset(std::ifstream& stream, uint64_t offset)
     check_fstream(stream, "Failed to seek in the sketch file", sketch_path);
   }
 
-  uint64_t rid_len;
-  stream.read(reinterpret_cast<char*>(&rid_len), sizeof(uint64_t));
-  rid.resize(rid_len);
-  stream.read(&rid[0], rid_len);
+  uint64_t len_rname;
+  stream.read(reinterpret_cast<char*>(&len_rname), sizeof(uint64_t));
+  rname.resize(len_rname);
+  stream.read(&rname[0], len_rname);
   stream.read(reinterpret_cast<char*>(&timestamp), sizeof(uint64_t));
 
   stream.read(reinterpret_cast<char*>(&k), sizeof(uint8_t));
@@ -53,10 +53,10 @@ void Sketch::load_from_offset(std::ifstream& stream, uint64_t offset)
 
 void Sketch::seek_past(std::ifstream& stream)
 {
-  uint64_t rid_len;
-  stream.read(reinterpret_cast<char*>(&rid_len), sizeof(uint64_t));
-  // Skip rid (rid_len bytes) + timestamp (8 bytes)
-  stream.seekg(static_cast<std::streamoff>(rid_len) + static_cast<std::streamoff>(sizeof(uint64_t)), std::ios::cur);
+  uint64_t len_rname;
+  stream.read(reinterpret_cast<char*>(&len_rname), sizeof(uint64_t));
+  // Skip rname (len_rname bytes) + timestamp (8 bytes)
+  stream.seekg(static_cast<std::streamoff>(len_rname) + static_cast<std::streamoff>(sizeof(uint64_t)), std::ios::cur);
 
   uint8_t k, h;
   stream.read(reinterpret_cast<char*>(&k), sizeof(uint8_t));
@@ -80,32 +80,49 @@ void Sketch::seek_past(std::ifstream& stream)
 
 double Sketch::get_rho() const { return rho; }
 
-void Sketch::prefetch_offset_inc(uint32_t offset) const noexcept
+// Reads the sketch-file header and returns the byte offset of each sketch.
+vec<uint64_t> read_sketch_offsets(const std::filesystem::path& sketch_path)
 {
-  if (offset != OFF_INVALID) {
-    sfhm->prefetch_inc(offset);
+  std::ifstream sketch_stream(sketch_path, std::ifstream::binary);
+  check_fstream(sketch_stream, "Cannot open sketch file", sketch_path.string());
+
+  uint32_t nsketches = 0;
+  sketch_stream.read(reinterpret_cast<char*>(&nsketches), sizeof(uint32_t));
+
+  vec<uint64_t> sketch_offsets(nsketches);
+  for (uint32_t i = 0; i < nsketches; ++i) {
+    sketch_offsets[i] = static_cast<uint64_t>(sketch_stream.tellg());
+    Sketch::seek_past(sketch_stream);
+  }
+  return sketch_offsets;
+}
+
+void Sketch::prefetch_bucket_inc(uint32_t bix) const noexcept
+{
+  if (bix != INVALID_BIX) {
+    sfhm->prefetch_inc(bix);
   }
 }
 
-void Sketch::prefetch_offset_enc(uint32_t offset) const noexcept
+void Sketch::prefetch_bucket_enc(uint32_t bix) const noexcept
 {
   // inc_v must already be in cache for this to be effective
-  if (offset != OFF_INVALID) {
-    sfhm->prefetch_enc(offset);
+  if (bix != INVALID_BIX) {
+    sfhm->prefetch_enc(bix);
   }
 }
 
-bool Sketch::scan_bucket(uint32_t offset, enc_t enc_lr, uint32_t& hdist_min) const noexcept
+bool Sketch::scan_bucket(uint32_t bix, enc_t enc_lr, uint32_t& hdist_min) const noexcept
 {
-  if (offset == OFF_INVALID) return false;
-  const enc_t* ix1 = sfhm->bucket_ptr_start(offset);
-  const enc_t* ix2 = sfhm->bucket_ptr_next(offset);
-  uint32_t hmin = std::numeric_limits<uint32_t>::max();
+  if (bix == INVALID_BIX) return false;
+  const enc_t* ix1 = sfhm->bucket_ptr_start(bix);
+  const enc_t* ix2 = sfhm->bucket_ptr_next(bix);
+  uint32_t hdist_curr = std::numeric_limits<uint32_t>::max();
   for (; ix1 < ix2; ++ix1) {
-    const uint32_t hd = popcount_lr32((*ix1) ^ enc_lr);
-    hmin = hd < hmin ? hd : hmin;
+    const uint32_t hdist = popcount_lr32((*ix1) ^ enc_lr);
+    hdist_curr = hdist < hdist_curr ? hdist : hdist_curr;
   }
-  hdist_min = hmin;
+  hdist_min = hdist_curr;
   return true;
 }
 
@@ -126,7 +143,7 @@ void Sketch::canonicalize()
       const uint64_t fw_bp = (bp_ppos | bp_npos) & mask_bp;
       const uint64_t rc_bp = revcomp_bp64(fw_bp, k);
       const uint64_t can_bp = std::max(fw_bp, rc_bp);
-      const uint32_t rixn = lshf->compute_hash(can_bp);
+      const uint32_t rixn = lshf->compute_hash_bp(can_bp);
       if (rixn >= nrows) continue;
       const enc_t new_enc = lshf->drop_ppos_lr(bp64_to_lr64(can_bp));
       sdhm->enc_vvec[rixn].push_back(new_enc);
@@ -142,10 +159,10 @@ void BaseLSH::set_lshf() { lshf = std::make_shared<LSHF>(k, h); }
 
 void BaseLSH::set_nrows()
 {
-  // Flat sampling: keep the prefix [0, T) of the 2^(2h) LSH space.
-  const uint64_t hash_size = uint64_t(1) << (2 * h);
-  const uint64_t t = static_cast<uint64_t>(hash_size * frac + 0.5);
-  nrows = static_cast<uint32_t>(std::max<uint64_t>(1, std::min(t, hash_size)));
+  // Flat sampling: keep the prefix [0, T) of the H=2^(2h) LSH space.
+  const uint64_t H = uint64_t(1) << (2 * h);
+  const uint64_t t = static_cast<uint64_t>(H * frac + 0.5);
+  nrows = static_cast<uint32_t>(std::max<uint64_t>(1, std::min(t, H)));
 }
 
 bool SketchSC::validate_configuration()
@@ -184,9 +201,9 @@ bool SketchSC::validate_configuration()
 
 void SketchSC::process()
 {
-  if (input_paths.empty()) error_exit("No input files provided!");
+  if (paths_v.empty()) error_exit("No input files provided!");
 
-  const uint32_t nsketches = static_cast<uint32_t>(input_paths.size());
+  const uint32_t nsketches = static_cast<uint32_t>(paths_v.size());
   const uint32_t nthreads = std::max(1u, std::min(num_threads, nsketches));
   cerr_msg("Preparing to sketch ", nsketches, " file(s) w/ ", nthreads, " thread(s)");
 
@@ -203,7 +220,7 @@ void SketchSC::process()
     init_thread_rng(tseed);
     uint32_t i;
     while ((i = next_idx.fetch_add(1, std::memory_order_relaxed)) < nsketches) {
-      const str& input_path = input_paths[i];
+      const str& input_path = paths_v[i];
       rseq_sptr_t rs = std::make_shared<RSeq>(input_path, lshf, w, nrows, canonical);
       sdhm_sptr_t sdhm = std::make_shared<SDHM>();
       sdhm->fill_table(nrows, rs);
@@ -243,12 +260,12 @@ void SketchSC::process()
 
 void SketchSC::write_header(std::ofstream& sout, uint32_t i)
 {
-  const str rid = std::filesystem::path(input_paths[i]).filename().string();
+  const str rname = std::filesystem::path(paths_v[i]).filename().string();
   uint64_t timestamp =
     std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-  uint64_t rid_len = rid.length();
-  sout.write(reinterpret_cast<char*>(&rid_len), sizeof(uint64_t));
-  sout.write(rid.c_str(), rid_len);
+  uint64_t len_rname = rname.length();
+  sout.write(reinterpret_cast<char*>(&len_rname), sizeof(uint64_t));
+  sout.write(rname.c_str(), len_rname);
   sout.write(reinterpret_cast<char*>(&timestamp), sizeof(uint64_t));
 }
 
@@ -268,7 +285,7 @@ void SketchSC::write_config(std::ofstream& sout, uint32_t i)
 SketchSC::SketchSC(CLI::App& sc)
 {
   set_sketch_defaults();
-  sc.add_option("-i,--input-path", input_paths, "Input FASTA/FASTQ file(s) <path> (or URL) (gzip compatible)")
+  sc.add_option("-i,--input-path", paths_v, "Input FASTA/FASTQ file(s) <path> (or URL) (gzip compatible)")
     ->required()
     ->check(url_validator | CLI::ExistingFile);
   sc.add_option("-o,--output-path", sketch_path, "Path to store the resulting binary sketch file")->required();

@@ -1,29 +1,20 @@
 #ifndef _GDIFF_HPP
 #define _GDIFF_HPP
 
-#include <cmath>
-#include <limits>
-#include <atomic>
 #include <chrono>
 #include <ctime>
-#include <mutex>
-#include <thread>
+#include <filesystem>
 #include "msg.hpp"
-#include "common.hpp"
 #include "types.hpp"
 #include "random.hpp"
-#include "lshf.hpp"
-#include "rqseq.hpp"
 #include "map.hpp"
 #include "dist.hpp"
 #include "detect.hpp"
 #include "sketch.hpp"
-#include "hm.hpp"
 #include "CLI11.hpp"
 
-#define VERSION "v0.0.0"
-#define PRINT_VERSION std::cerr << "??? version: " << VERSION << std::endl;
-#define STRSTREAM_PRECISION 4
+#define VERSION "v0.0.1"
+#define PRINT_VERSION std::cerr << "gdiff version: " << VERSION << std::endl;
 
 extern uint32_t num_threads;
 extern str invocation;
@@ -35,8 +26,8 @@ public:
   void merge();
 
 private:
-  std::filesystem::path output_path;
-  std::vector<str> sketch_paths;
+  std::filesystem::path sketch_path;
+  std::vector<str> paths_v;
 };
 
 class InfoSC

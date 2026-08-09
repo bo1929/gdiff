@@ -73,105 +73,113 @@ static void load_sketch_from_file(Sketch& sketch, const std::filesystem::path& p
   stream.close();
 }
 
-TEST_SUITE("Sketch I/O") {
+TEST_SUITE("Sketch I/O")
+{
 
-TEST_CASE("load sketch and verify fields") {
-  auto path = write_tiny_sketch("test_load");
+  TEST_CASE("load sketch and verify fields")
+  {
+    auto path = write_tiny_sketch("test_load");
 
-  Sketch sketch(path);
-  load_sketch_from_file(sketch, path);
+    Sketch sketch(path);
+    load_sketch_from_file(sketch, path);
 
-  CHECK(sketch.get_rid() == "tiny.skc");
-  CHECK(sketch.get_timestamp() == 1234567890);
-  CHECK(sketch.get_rho() == doctest::Approx(0.8));
+    CHECK(sketch.get_rname() == "tiny.skc");
+    CHECK(sketch.get_timestamp() == 1234567890);
+    CHECK(sketch.get_rho() == doctest::Approx(0.8));
 
-  std::filesystem::remove(path);
-}
+    std::filesystem::remove(path);
+  }
 
-TEST_CASE("partial_offset is identity below the keep threshold") {
-  auto path = write_tiny_sketch("test_partial");
-  Sketch sketch(path);
-  load_sketch_from_file(sketch, path);
+  TEST_CASE("validate_bucket_ix is identity below the keep threshold")
+  {
+    auto path = write_tiny_sketch("test_partial");
+    Sketch sketch(path);
+    load_sketch_from_file(sketch, path);
 
-  // Flat sketches keep rix < nrows (= 4); the offset is the hash itself.
-  CHECK(sketch.partial_offset(0) == 0);
-  CHECK(sketch.partial_offset(3) == 3);
-  CHECK(sketch.partial_offset(4) == std::numeric_limits<uint32_t>::max());
+    // Flat sketches keep rix < nrows (= 4); the offset is the hash itself.
+    CHECK(sketch.validate_bucket_ix(0) == 0);
+    CHECK(sketch.validate_bucket_ix(3) == 3);
+    CHECK(sketch.validate_bucket_ix(4) == std::numeric_limits<uint32_t>::max());
 
-  std::filesystem::remove(path);
-}
+    std::filesystem::remove(path);
+  }
 
-TEST_CASE("scan_bucket returns false for invalid offset") {
-  auto path = write_tiny_sketch("test_scan");
-  Sketch sketch(path);
-  load_sketch_from_file(sketch, path);
+  TEST_CASE("scan_bucket returns false for invalid offset")
+  {
+    auto path = write_tiny_sketch("test_scan");
+    Sketch sketch(path);
+    load_sketch_from_file(sketch, path);
 
-  uint32_t hdist_min;
-  bool found = sketch.scan_bucket(std::numeric_limits<uint32_t>::max(), 0, hdist_min);
-  CHECK(found == false);
+    uint32_t hdist_min;
+    bool found = sketch.scan_bucket(std::numeric_limits<uint32_t>::max(), 0, hdist_min);
+    CHECK(found == false);
 
-  std::filesystem::remove(path);
-}
+    std::filesystem::remove(path);
+  }
 
-TEST_CASE("loaded rho is used as-is") {
-  auto path = write_tiny_sketch("test_rho");
-  Sketch sketch(path);
-  load_sketch_from_file(sketch, path);
+  TEST_CASE("loaded rho is used as-is")
+  {
+    auto path = write_tiny_sketch("test_rho");
+    Sketch sketch(path);
+    load_sketch_from_file(sketch, path);
 
-  CHECK(sketch.get_rho() == doctest::Approx(0.8));
+    CHECK(sketch.get_rho() == doctest::Approx(0.8));
 
-  std::filesystem::remove(path);
-}
+    std::filesystem::remove(path);
+  }
 
-TEST_CASE("seek_past correctly advances stream position") {
-  auto path = write_tiny_sketch("test_seek");
+  TEST_CASE("seek_past correctly advances stream position")
+  {
+    auto path = write_tiny_sketch("test_seek");
 
-  std::ifstream stream(path, std::ifstream::binary);
-  uint32_t ns;
-  stream.read(reinterpret_cast<char*>(&ns), sizeof(uint32_t));
+    std::ifstream stream(path, std::ifstream::binary);
+    uint32_t ns;
+    stream.read(reinterpret_cast<char*>(&ns), sizeof(uint32_t));
 
-  auto pos_before = stream.tellg();
-  Sketch::seek_past(stream);
-  auto pos_after = stream.tellg();
+    auto pos_before = stream.tellg();
+    Sketch::seek_past(stream);
+    auto pos_after = stream.tellg();
 
-  // After seeking past one sketch, we should be at the end of file
-  CHECK(pos_after > pos_before);
-  // Try reading one more byte -- should fail (EOF)
-  char c;
-  stream.read(&c, 1);
-  CHECK(stream.eof());
+    // After seeking past one sketch, we should be at the end of file
+    CHECK(pos_after > pos_before);
+    // Try reading one more byte -- should fail (EOF)
+    char c;
+    stream.read(&c, 1);
+    CHECK(stream.eof());
 
-  stream.close();
-  std::filesystem::remove(path);
-}
+    stream.close();
+    std::filesystem::remove(path);
+  }
 
-TEST_CASE("is_canonical reflects sketch header") {
-  auto path_can = write_tiny_sketch("test_canonical", true);
-  auto path_sa = write_tiny_sketch("test_strand_aware", false);
+  TEST_CASE("is_canonical reflects sketch header")
+  {
+    auto path_can = write_tiny_sketch("test_canonical", true);
+    auto path_sa = write_tiny_sketch("test_strand_aware", false);
 
-  Sketch sketch_can(path_can);
-  load_sketch_from_file(sketch_can, path_can);
-  Sketch sketch_sa(path_sa);
-  load_sketch_from_file(sketch_sa, path_sa);
+    Sketch sketch_can(path_can);
+    load_sketch_from_file(sketch_can, path_can);
+    Sketch sketch_sa(path_sa);
+    load_sketch_from_file(sketch_sa, path_sa);
 
-  CHECK(sketch_can.is_canonical());
-  CHECK_FALSE(sketch_sa.is_canonical());
+    CHECK(sketch_can.is_canonical());
+    CHECK_FALSE(sketch_sa.is_canonical());
 
-  std::filesystem::remove(path_can);
-  std::filesystem::remove(path_sa);
-}
+    std::filesystem::remove(path_can);
+    std::filesystem::remove(path_sa);
+  }
 
-TEST_CASE("canonicalize on already-canonical sketch is no-op") {
-  auto path = write_tiny_sketch("test_noop", true);
-  Sketch sketch(path);
-  load_sketch_from_file(sketch, path);
+  TEST_CASE("canonicalize on already-canonical sketch is no-op")
+  {
+    auto path = write_tiny_sketch("test_noop", true);
+    Sketch sketch(path);
+    load_sketch_from_file(sketch, path);
 
-  const uint64_t nkmers = sketch.get_sfhm_sptr()->get_nkmers();
-  sketch.canonicalize();
-  CHECK(sketch.is_canonical());
-  CHECK(sketch.get_sfhm_sptr()->get_nkmers() == nkmers);
+    const uint64_t nkmers = sketch.get_sfhm_sptr()->get_nkmers();
+    sketch.canonicalize();
+    CHECK(sketch.is_canonical());
+    CHECK(sketch.get_sfhm_sptr()->get_nkmers() == nkmers);
 
-  std::filesystem::remove(path);
-}
+    std::filesystem::remove(path);
+  }
 
 } // TEST_SUITE

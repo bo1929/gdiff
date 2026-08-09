@@ -1,8 +1,8 @@
 #include "rqseq.hpp"
 
-RSeq::RSeq(const str& input, const lshf_sptr_t& lshf, uint8_t w, uint32_t off_thresh, bool canonical)
+RSeq::RSeq(const str& input, const lshf_sptr_t& lshf, uint8_t w, uint32_t frac_th, bool canonical)
   : w(w)
-  , off_thresh(off_thresh)
+  , frac_th(frac_th)
   , canonical(canonical)
   , lshf(lshf)
 {
@@ -100,8 +100,8 @@ void RSeq::extract_mers(vvec<T>& table)
         cminimizer.y = bp64_to_lr64(rcenc64_bp);
       }
     }
-    rix = lshf->compute_hash(cminimizer.x);
-    if (rix < off_thresh) {
+    rix = lshf->compute_hash_bp(cminimizer.x);
+    if (rix < frac_th) {
       c2.add(cminimizer.z);
       table[rix].push_back(lshf->drop_ppos_lr(cminimizer.y));
     }
@@ -140,8 +140,7 @@ bool QSeq::read_next_batch()
   bool cont_reading = false;
   uint64_t ix = 0;
   while ((ix < rbatch_size) && (cont_reading = (kseq_read(kseq) >= 0))) {
-    seq_batch.emplace_back(kseq->seq.s);
-    qid_batch.emplace_back(kseq->name.s);
+    batch_v.push_back({kseq->name.s, kseq->seq.s});
     ix++;
   }
   cbatch_size = ix;
@@ -150,14 +149,12 @@ bool QSeq::read_next_batch()
 
 bool QSeq::is_empty()
 {
-  assert(seq_batch.size() == qid_batch.size());
-  return seq_batch.empty() && qid_batch.empty();
+  return batch_v.empty();
 }
 
 void QSeq::clear()
 {
-  seq_batch.clear();
-  qid_batch.clear();
+  batch_v.clear();
 }
 
 template void RSeq::extract_mers(vvec<enc_t>& table);

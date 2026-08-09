@@ -1,5 +1,9 @@
 #include "lshf.hpp"
 
+#include <algorithm>
+#include <cassert>
+#include "random.hpp"
+
 LSHF::LSHF(uint8_t k, uint8_t h)
   : k(k)
   , h(h)
@@ -42,8 +46,6 @@ void LSHF::get_random_positions()
   std::sort(ppos_v.begin(), ppos_v.end(), std::greater<uint8_t>());
 }
 
-// Precompute the delta-swap stage masks implementing compress for a fixed
-// selection mask (see compress_staged in lshf.hpp).
 static void gen_compress_mv(uint64_t m, arr<uint64_t, 6>& mv)
 {
   uint64_t mk = ~m << 1;
@@ -76,7 +78,7 @@ void LSHF::set_lshf()
   for (uint32_t i = (2 * h) + 1; i < 32; ++i) {
     mask_hash_lr += (0x0000000000000001ull << i);
   }
-  gen_compress_mv(mask_hash_bp, mv_hash);
+  gen_compress_mv(mask_hash_bp, mv_hash_bp);
   gen_compress_mv(mask_drop_lr, mv_drop_lr);
   gen_compress_mv(mask_drop_bp, mv_drop_bp);
 }

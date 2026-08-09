@@ -127,7 +127,7 @@ vec<contig_slice_t> contiguous_slices_from_dim(DIM<T>& dim, const llh_sptr_t<T>&
 static std::pair<std::shared_ptr<LLH<double>>, params_t<double>>
 make_test_params(double dist_th = 0.1, uint32_t hdist_th = 4, uint64_t tau = 2, uint64_t bin_shift = 0)
 {
-  auto params = params_t<double>(1, dist_th, hdist_th, tau, 33.0, bin_shift, 1000, true, false);
+  auto params = params_t<double>(dist_th, hdist_th, tau, 33.0, bin_shift, 1000, true, false);
   auto llhf = std::make_shared<LLH<double>>(27, 11, 0.5, hdist_th, dist_th);
   return {llhf, params};
 }
@@ -267,7 +267,7 @@ TEST_CASE("randomized patterns: double, various tau") {
     const double D = rdist(rng);
     const uint64_t nbins = rnbins(rng);
 
-    auto params = params_t<double>(1, D, 4, 2, 33.0, 0, 1000, true, false);
+    auto params = params_t<double>(D, 4, 2, 33.0, 0, 1000, true, false);
     auto llhf = std::make_shared<LLH<double>>(27, 11, 0.5, 4, D);
 
     DIM<double> dim_mx(params, llhf, nbins, nbins);
@@ -307,7 +307,7 @@ TEST_CASE("randomized patterns: cm512_t, all lanes independent") {
 
     cm512_t dths{};
     for (size_t i = 0; i < RWIDTH; ++i) dths[i] = rdist(rng);
-    auto params = params_t<cm512_t>(RWIDTH, dths, 4, 2, 33.0, 0, 1000, true, false);
+    auto params = params_t<cm512_t>(dths, 4, 2, 33.0, 0, 1000, true, false);
     auto llhf = std::make_shared<LLH<cm512_t>>(27, 11, 0.5, 4, dths);
 
     DIM<cm512_t> dim_mx(params, llhf, nbins, nbins);
@@ -469,7 +469,7 @@ TEST_SUITE("DIM<double>::extract_histogram") {
 
 TEST_CASE("extract_histogram returns correct counts for enum_only=false") {
   // Need enum_only=false for hdisthist_v to be allocated
-  auto params = params_t<double>(1, 0.1, 4, 2, 33.0, 0, 1000, true, false);
+  auto params = params_t<double>(0.1, 4, 2, 33.0, 0, 1000, true, false);
   auto llhf = std::make_shared<LLH<double>>(27, 11, 0.5, 4, 0.1);
   const uint64_t nbins = 10;
   const uint64_t nmers = 100;
@@ -495,7 +495,7 @@ TEST_CASE("extract_histogram returns correct counts for enum_only=false") {
 }
 
 TEST_CASE("extract_histogram counts explicit misses only") {
-  auto params = params_t<double>(1, 0.1, 4, 2, 33.0, 0, 1000, true, false);
+  auto params = params_t<double>(0.1, 4, 2, 33.0, 0, 1000, true, false);
   auto llhf = std::make_shared<LLH<double>>(27, 11, 0.5, 4, 0.1);
   DIM<double> dim(params, llhf, 8, 100);
 
@@ -520,7 +520,7 @@ TEST_CASE("extract_histogram counts explicit misses only") {
 }
 
 TEST_CASE("extract_histogram full range matches partial sums") {
-  auto params = params_t<double>(1, 0.1, 4, 2, 33.0, 0, 1000, true, false);
+  auto params = params_t<double>(0.1, 4, 2, 33.0, 0, 1000, true, false);
   auto llhf = std::make_shared<LLH<double>>(27, 11, 0.5, 4, 0.1);
   const uint64_t nbins = 8;
   const uint64_t nmers = 1000;
@@ -558,7 +558,7 @@ TEST_CASE("extract_histogram full range matches partial sums") {
 }
 
 TEST_CASE("extract_histogram split additivity with bin_shift > 0") {
-  auto params = params_t<double>(1, 0.1, 4, 2, 33.0, 2, 1000, true, false);
+  auto params = params_t<double>(0.1, 4, 2, 33.0, 2, 1000, true, false);
   auto llhf = std::make_shared<LLH<double>>(27, 11, 0.5, 4, 0.1);
   const uint64_t nbins = 8;
   const uint64_t nmers = 1000;
@@ -589,7 +589,7 @@ TEST_CASE("extract_histogram split additivity with bin_shift > 0") {
 }
 
 TEST_CASE("extract_histogram supports the maximum fixed SIMD hdist threshold") {
-  auto params = params_t<double>(1, 0.1, hdist_bound, 2, 33.0, 0, 1000, true, false);
+  auto params = params_t<double>(0.1, hdist_bound, 2, 33.0, 0, 1000, true, false);
   auto llhf = std::make_shared<LLH<double>>(27, 11, 0.5, hdist_bound, 0.1);
   const uint64_t nbins = 4;
   DIM<double> dim(params, llhf, nbins, nbins);
@@ -609,7 +609,7 @@ TEST_CASE("extract_histogram supports the maximum fixed SIMD hdist threshold") {
 }
 
 TEST_CASE("total_histogram matches extract_histogram on full range when keep_hist") {
-  auto params = params_t<double>(1, 0.1, 4, 2, 33.0, 0, 1000, true, false);
+  auto params = params_t<double>(0.1, 4, 2, 33.0, 0, 1000, true, false);
   auto llhf = std::make_shared<LLH<double>>(27, 11, 0.5, 4, 0.1);
   DIM<double> dim(params, llhf, 5, 50);
 
@@ -629,7 +629,7 @@ TEST_CASE("total_histogram matches extract_histogram on full range when keep_his
 }
 
 TEST_CASE("total_histogram exposes global hit counts and explicit misses") {
-  auto params = params_t<double>(1, 0.1, 4, 2, 33.0, 0, 0, true, true); // enum_only: no per-bin hist
+  auto params = params_t<double>(0.1, 4, 2, 33.0, 0, 0, true, true); // enum_only: no per-bin hist
   auto llhf = std::make_shared<LLH<double>>(27, 11, 0.5, 4, 0.1);
   DIM<double> dim(params, llhf, 5, 50);
 
@@ -654,7 +654,7 @@ TEST_SUITE("DIM<cm512_t>") {
 TEST_CASE("SIMD DIM produces valid intervals") {
   cm512_t dths{};
   for (int i = 0; i < 8; ++i) dths[i] = 0.05 * (i + 1);
-  auto params = params_t<cm512_t>(8, dths, 4, 2, 33.0, 0, 1000, true, false);
+  auto params = params_t<cm512_t>(dths, 4, 2, 33.0, 0, 1000, true, false);
   auto llhf = std::make_shared<LLH<cm512_t>>(27, 11, 0.5, 4, dths);
   const uint64_t nbins = 15;
   DIM<cm512_t> dim(params, llhf, nbins, nbins);
@@ -712,7 +712,7 @@ static vec<contig_slice_t> run_pipeline(DIM<T>& dim, const llh_sptr_t<T>& llhf, 
 }
 
 TEST_CASE("th_bv=0 returns no segments") {
-  auto params = params_t<double>(1, 0.1, 4, 2, 33.0, 0, 1000, true, false);
+  auto params = params_t<double>(0.1, 4, 2, 33.0, 0, 1000, true, false);
   auto llhf = std::make_shared<LLH<double>>(27, 11, 0.5, 4, 0.1);
   DIM<double> dim(params, llhf, 10, 100);
   auto segs = contiguous_slices_from_dim(dim, llhf, 0, nanx());
@@ -720,7 +720,7 @@ TEST_CASE("th_bv=0 returns no segments") {
 }
 
 TEST_CASE("low threshold below d_q: matched interval brackets (prev, t]") {
-  auto params = params_t<double>(1, 0.01, 4, 2, 33.0, 0, 1000, true, false);
+  auto params = params_t<double>(0.01, 4, 2, 33.0, 0, 1000, true, false);
   auto llhf = std::make_shared<LLH<double>>(27, 11, 0.5, 4, 0.01);
   const uint64_t nbins = 10;
   DIM<double> dim(params, llhf, nbins, nbins);
@@ -758,7 +758,7 @@ TEST_CASE("low threshold below d_q: matched interval brackets (prev, t]") {
 }
 
 TEST_CASE("high threshold above d_q: matched interval brackets (t, next]") {
-  auto params = params_t<double>(1, 0.5, 4, 2, 33.0, 0, 1000, true, false);
+  auto params = params_t<double>(0.5, 4, 2, 33.0, 0, 1000, true, false);
   auto llhf = std::make_shared<LLH<double>>(27, 11, 0.5, 4, 0.5);
   const uint64_t nbins = 10;
   DIM<double> dim(params, llhf, nbins, nbins);
@@ -788,7 +788,7 @@ TEST_CASE("high threshold above d_q: matched interval brackets (t, next]") {
 }
 
 TEST_CASE("segments cover [1, nbins+1) when interval spans full range") {
-  auto params = params_t<double>(1, 0.1, 4, 2, 33.0, 0, 1000, true, false);
+  auto params = params_t<double>(0.1, 4, 2, 33.0, 0, 1000, true, false);
   auto llhf = std::make_shared<LLH<double>>(27, 11, 0.5, 4, 0.1);
   const uint64_t nbins = 10;
   DIM<double> dim(params, llhf, nbins, nbins);
@@ -820,7 +820,7 @@ TEST_CASE("cm512_t thresholds ranked relative to d_q") {
   dths[2] = 0.20;
   dths[3] = 0.30;
 
-  auto params = params_t<cm512_t>(4, dths, 4, 2, 33.0, 0, 1000, true, false);
+  auto params = params_t<cm512_t>(dths, 4, 2, 33.0, 0, 1000, true, false);
   auto llhf = std::make_shared<LLH<cm512_t>>(27, 11, 0.5, 4, dths);
   const uint64_t nbins = 10;
   DIM<cm512_t> dim(params, llhf, nbins, nbins);
@@ -860,7 +860,7 @@ TEST_CASE("cm512_t thresholds ranked relative to d_q") {
 }
 
 TEST_CASE("no intervals -> one intact segment (endpoints only)") {
-  auto params = params_t<double>(1, 0.1, 4, 2, 33.0, 0, 1000, true, false);
+  auto params = params_t<double>(0.1, 4, 2, 33.0, 0, 1000, true, false);
   auto llhf = std::make_shared<LLH<double>>(27, 11, 0.5, 4, 0.1);
   const uint64_t nbins = 8;
   DIM<double> dim(params, llhf, nbins, nbins);
@@ -876,7 +876,7 @@ TEST_CASE("no intervals -> one intact segment (endpoints only)") {
 }
 
 TEST_CASE("full-span merged interval [1, nbins] still yields one segment") {
-  auto params = params_t<double>(1, 0.1, 4, 2, 33.0, 0, 1000, true, false);
+  auto params = params_t<double>(0.1, 4, 2, 33.0, 0, 1000, true, false);
   auto llhf = std::make_shared<LLH<double>>(27, 11, 0.5, 4, 0.1);
   const uint64_t nbins = 10;
   DIM<double> dim(params, llhf, nbins, nbins);
@@ -892,7 +892,7 @@ TEST_CASE("full-span merged interval [1, nbins] still yields one segment") {
 }
 
 TEST_CASE("map_contiguous segments partition histogram hit counts") {
-  auto params = params_t<double>(1, 0.1, 4, 2, 33.0, 0, 1000, true, false);
+  auto params = params_t<double>(0.1, 4, 2, 33.0, 0, 1000, true, false);
   auto llhf = std::make_shared<LLH<double>>(27, 11, 0.5, 4, 0.1);
   const uint64_t nbins = 10;
   DIM<double> dim(params, llhf, nbins, nbins);
@@ -937,7 +937,7 @@ TEST_CASE("map_contiguous segments partition histogram hit counts") {
 }
 
 TEST_CASE("segment MLE matches Brent+Fisher reference on same bin range") {
-  auto params = params_t<double>(1, 0.1, 4, 2, 33.0, 0, 1000, true, false);
+  auto params = params_t<double>(0.1, 4, 2, 33.0, 0, 1000, true, false);
   auto llhf = std::make_shared<LLH<double>>(27, 11, 0.5, 4, 0.1);
   const uint64_t nbins = 12;
   DIM<double> dim(params, llhf, nbins, nbins);
@@ -991,7 +991,7 @@ TEST_CASE("cm512_t: thrank_v orders thresholds relative to d_q") {
   dths[6] = 0.50;
   dths[7] = 0.45;
 
-  auto params = params_t<cm512_t>(8, dths, 4, 2, 33.0, 0, 1000, true, false);
+  auto params = params_t<cm512_t>(dths, 4, 2, 33.0, 0, 1000, true, false);
   auto llhf = std::make_shared<LLH<cm512_t>>(27, 11, 0.5, 4, dths);
   DIM<cm512_t> dim(params, llhf, 8, 80);
 
@@ -1022,7 +1022,7 @@ TEST_CASE("cm512_t: non-flipped lanes before flipped at d_q=0.088094") {
   dths[6] = 0.2;
   dths[7] = 0.25;
 
-  auto params = params_t<cm512_t>(RWIDTH, dths, 4, 2, 33.0, 0, 1000, true, false);
+  auto params = params_t<cm512_t>(dths, 4, 2, 33.0, 0, 1000, true, false);
   auto llhf = std::make_shared<LLH<cm512_t>>(27, 11, 0.5, 4, dths);
   DIM<cm512_t> dim(params, llhf, 4, 40);
 
@@ -1050,7 +1050,7 @@ TEST_CASE("cm512_t: NaN d_q sorts thrank_v by ascending threshold") {
   dths[6] = 0.35;
   dths[7] = 0.45;
 
-  auto params = params_t<cm512_t>(RWIDTH, dths, 4, 2, 33.0, 0, 1000, true, false);
+  auto params = params_t<cm512_t>(dths, 4, 2, 33.0, 0, 1000, true, false);
   auto llhf = std::make_shared<LLH<cm512_t>>(27, 11, 0.5, 4, dths);
   DIM<cm512_t> dim(params, llhf, 4, 40);
 
@@ -1068,7 +1068,7 @@ TEST_CASE("cm512_t: NaN d_q sorts thrank_v by ascending threshold") {
 }
 
 TEST_CASE("apply_threshold_signs: flip when t exceeds d_q changes intervals") {
-  auto params = params_t<double>(1, 0.1, 4, 2, 33.0, 0, 1000, true, false);
+  auto params = params_t<double>(0.1, 4, 2, 33.0, 0, 1000, true, false);
   auto llhf = std::make_shared<LLH<double>>(27, 11, 0.5, 4, 0.1);
   const uint64_t nbins = 10;
   const auto inject = [](DIM<double>& dim) { inject_up_down_up(dim); };
@@ -1082,7 +1082,7 @@ TEST_CASE("apply_threshold_signs: flip when t exceeds d_q changes intervals") {
 }
 
 TEST_CASE("set_query_distance must be called once per inclusive_scan") {
-  auto params = params_t<double>(1, 0.1, 4, 2, 33.0, 0, 1000, true, false);
+  auto params = params_t<double>(0.1, 4, 2, 33.0, 0, 1000, true, false);
   auto llhf = std::make_shared<LLH<double>>(27, 11, 0.5, 4, 0.1);
   const uint64_t nbins = 10;
 
@@ -1111,7 +1111,7 @@ TEST_CASE("cm512_t: per-lane flip depends on threshold vs d_q") {
   dths[0] = 0.05;
   dths[1] = 0.40;
 
-  auto params = params_t<cm512_t>(2, dths, 4, 2, 33.0, 0, 1000, true, false);
+  auto params = params_t<cm512_t>(dths, 4, 2, 33.0, 0, 1000, true, false);
   auto llhf = std::make_shared<LLH<cm512_t>>(27, 11, 0.5, 4, dths);
   const uint64_t nbins = 10;
 
@@ -1134,7 +1134,7 @@ TEST_CASE("cm512_t: per-lane flip depends on threshold vs d_q") {
 }
 
 TEST_CASE("skipping set_query_distance differs from production scan") {
-  auto params = params_t<double>(1, 0.1, 4, 2, 33.0, 0, 1000, true, false);
+  auto params = params_t<double>(0.1, 4, 2, 33.0, 0, 1000, true, false);
   auto llhf = std::make_shared<LLH<double>>(27, 11, 0.5, 4, 0.1);
   const uint64_t nbins = 10;
 
@@ -1185,6 +1185,78 @@ TEST_CASE("multi-gap extraction finds intervals in separated regions") {
     CHECK(iv.a <= iv.b);
     CHECK(iv.b <= nbins);
   }
+}
+
+} // TEST_SUITE
+
+TEST_SUITE("DIM<double> N-run skips") {
+
+TEST_CASE("skip_mer splits extraction at the flagged bin") {
+  auto [llhf, params] = make_test_params(0.1, 4, 2, 0);
+  const uint64_t nbins = 30;
+
+  auto inject = [&](DIM<double>& dim) {
+    for (uint64_t i = 0; i < 10; ++i) { dim.aggregate_mer(0, i); dim.aggregate_mer(0, i); }
+    for (uint64_t i = 12; i < 25; ++i) { dim.aggregate_mer(0, i); dim.aggregate_mer(0, i); }
+  };
+
+  // Baseline: no skips -> one interval spans the gap (1-based bin 11).
+  DIM<double> dim_ns(params, llhf, nbins, nbins);
+  inject(dim_ns);
+  finish_dim_scan(dim_ns, llhf, nanx());
+  dim_ns.extract_intervals_mx(0, 1, nbins);
+  dim_ns.expand_intervals(33.0);
+  bool covers_gap = false;
+  for (const auto& iv : dim_ns.get_intervals(0))
+    covers_gap = covers_gap || (iv.a <= 11 && 11 <= iv.b);
+  CHECK(covers_gap);
+
+  // Skip at 0-based bin 10 (1-based bin 11): no interval crosses it,
+  // both sides still yield intervals, and mx/sx agree.
+  for (bool use_sx : {false, true}) {
+    DIM<double> dim(params, llhf, nbins, nbins);
+    inject(dim);
+    dim.skip_mer(10);
+    CHECK(dim.get_has_skips());
+    CHECK(dim.is_skip(11));
+    finish_dim_scan(dim, llhf, nanx());
+    if (use_sx)
+      dim.extract_intervals_sx(0, 1, nbins);
+    else
+      dim.extract_intervals_mx(0, 1, nbins);
+    dim.expand_intervals(33.0);
+    const auto& iv_v = dim.get_intervals(0);
+    CHECK(iv_v.size() >= 2);
+    bool left = false, right = false;
+    for (const auto& iv : iv_v) {
+      CHECK(!(iv.a <= 11 && 11 <= iv.b));
+      left = left || (iv.b <= 10);
+      right = right || (iv.a >= 12);
+    }
+    CHECK(left);
+    CHECK(right);
+  }
+}
+
+TEST_CASE("no skip_mer calls: lazy state stays empty") {
+  auto [llhf, params] = make_test_params();
+  const uint64_t nbins = 8;
+  DIM<double> dim(params, llhf, nbins, nbins);
+  for (uint64_t i = 0; i < nbins; ++i)
+    dim.aggregate_mer(0, i);
+  finish_dim_scan(dim, llhf, nanx());
+  dim.extract_intervals_mx(0, 1, nbins);
+  dim.expand_intervals(33.0);
+  CHECK(!dim.get_has_skips());
+  CHECK(!dim.is_skip(1));
+}
+
+TEST_CASE("skip_mer ignores out-of-range bins") {
+  auto [llhf, params] = make_test_params();
+  DIM<double> dim(params, llhf, 8, 8);
+  dim.skip_mer(8);
+  dim.skip_mer(100);
+  CHECK(!dim.get_has_skips());
 }
 
 } // TEST_SUITE

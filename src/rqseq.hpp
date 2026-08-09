@@ -70,7 +70,7 @@ KSEQ_INIT(gzFile, gzread)
 class RSeq : public HandlerURL
 {
 public:
-  RSeq(const str& input, const lshf_sptr_t& lshf, uint8_t w, uint32_t off_thresh, bool canonical);
+  RSeq(const str& input, const lshf_sptr_t& lshf, uint8_t w, uint32_t frac_th, bool canonical);
   ~RSeq();
   bool set_curr_seq();
   bool read_next_seq();
@@ -85,7 +85,7 @@ private:
   bool is_url;
   uint8_t k;
   uint8_t w;
-  uint32_t off_thresh;
+  uint32_t frac_th;
   bool canonical;
   char* cseq;
   char* name;
@@ -97,6 +97,13 @@ private:
   double n2_est = 0; // HLL estimate of sketched k-mers
   double rho = 1.0;
   std::filesystem::path input_path;
+};
+
+// One query sequence with its ID (coupled: always same index, same lifetime).
+struct qseq_t
+{
+  str qid;
+  str seq;
 };
 
 class QSeq : public HandlerURL
@@ -111,15 +118,13 @@ public:
   void clear();
   bool is_empty();
   uint64_t get_cbatch_size() const { return cbatch_size; }
-  const vec<str>& get_seq_batch() const { return seq_batch; }
-  const vec<str>& get_qid_batch() const { return qid_batch; }
+  const vec<qseq_t>& get_batch_v() const { return batch_v; }
 
 private:
   gzFile gfile;
   kseq_t* kseq;
   bool is_url;
-  vec<str> seq_batch;
-  vec<str> qid_batch;
+  vec<qseq_t> batch_v;
   uint64_t cbatch_size = 0;
   uint64_t rbatch_size = RBATCH_SIZE;
   std::filesystem::path input_path;

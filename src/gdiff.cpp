@@ -2,10 +2,10 @@
 
 void MergeSC::merge()
 {
-  cerr_msg("Preparing to merge ", sketch_paths.size(), " sketch file(s)");
+  cerr_msg("Preparing to merge ", paths_v.size(), " sketch file(s)");
 
-  std::ofstream sout(output_path, std::ofstream::binary);
-  check_fstream(sout, "Cannot open output file", output_path);
+  std::ofstream sout(sketch_path, std::ofstream::binary);
+  check_fstream(sout, "Cannot open output file", sketch_path);
 
   // Writing a placeholder
   uint32_t total_sketches = 0;
@@ -14,11 +14,11 @@ void MergeSC::merge()
   constexpr size_t buffer_size = 10 * 1024 * 1024;
   std::vector<char> buffer(buffer_size);
 
-  for (size_t i = 0; i < sketch_paths.size(); ++i) {
+  for (size_t i = 0; i < paths_v.size(); ++i) {
     std::ifstream sin;
     sin.rdbuf()->pubsetbuf(buffer.data(), buffer_size);
-    sin.open(sketch_paths[i], std::ifstream::binary);
-    check_fstream(sin, "Cannot open sketch file", sketch_paths[i]);
+    sin.open(paths_v[i], std::ifstream::binary);
+    check_fstream(sin, "Cannot open sketch file", paths_v[i]);
 
     uint32_t nsketches = 0;
     sin.read(reinterpret_cast<char*>(&nsketches), sizeof(uint32_t));
@@ -32,16 +32,16 @@ void MergeSC::merge()
   sout.seekp(0, std::ios::beg);
   sout.write(reinterpret_cast<const char*>(&total_sketches), sizeof(uint32_t));
 
-  check_fstream(sout, "Failed to write the merged sketch file!", output_path);
+  check_fstream(sout, "Failed to write the merged sketch file!", sketch_path);
   sout.close();
 
-  cerr_msg("Merged sketch saved to ", output_path.string(), " with ", total_sketches, " sketch(es)");
+  cerr_msg("Merged sketch saved to ", sketch_path.string(), " with ", total_sketches, " sketch(es)");
 }
 
 MergeSC::MergeSC(CLI::App& sc)
 {
-  sc.add_option("-i,--sketch-paths", sketch_paths, "Input sketch files to merge")->required()->check(CLI::ExistingFile);
-  sc.add_option("-o,--output-path", output_path, "Path to store the merged sketch file")->required();
+  sc.add_option("-i,--sketch-paths", paths_v, "Input sketch files to merge")->required()->check(CLI::ExistingFile);
+  sc.add_option("-o,--output-path", sketch_path, "Path to store the merged sketch file")->required();
 }
 
 void InfoSC::info()
@@ -58,8 +58,8 @@ void InfoSC::info()
   for (uint32_t i = 0; i < nsketches; ++i) {
     uint64_t rid_len = 0;
     stream.read(reinterpret_cast<char*>(&rid_len), sizeof(uint64_t));
-    std::string rid(rid_len, '\0');
-    stream.read(&rid[0], static_cast<std::streamsize>(rid_len));
+    std::string rname(rid_len, '\0');
+    stream.read(&rname[0], static_cast<std::streamsize>(rid_len));
 
     uint64_t timestamp = 0;
     stream.read(reinterpret_cast<char*>(&timestamp), sizeof(uint64_t));
@@ -90,7 +90,7 @@ void InfoSC::info()
     if (!ts_str.empty() && ts_str.back() == '\n') ts_str.pop_back();
 
     std::cout << "\n[Sketch " << (i + 1) << "/" << nsketches << "]\n";
-    std::cout << "  Name:        " << rid << "\n";
+    std::cout << "  Name:        " << rname << "\n";
     std::cout << "  Date:        " << ts_str << "\n";
     std::cout << "  k (mer len): " << static_cast<int>(k) << "\n";
     std::cout << "  w (win len): " << static_cast<int>(w) << "\n";

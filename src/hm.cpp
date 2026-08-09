@@ -1,5 +1,9 @@
 #include "hm.hpp"
 
+#include <algorithm>
+#include <limits>
+#include "rqseq.hpp"
+
 SFHM::SFHM(const sdhm_sptr_t& source)
 {
   nkmers = source->nkmers;

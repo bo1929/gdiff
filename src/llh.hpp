@@ -3,14 +3,9 @@
 
 #include <cmath>
 #include <cstdint>
-#include <sys/types.h>
 #include <vector>
 #include <boost/math/tools/minima.hpp>
-#include "maptils.hpp"
-#include "types.hpp"
-
-static constexpr double UB = 0.99;
-static constexpr double LB = 0.0;
+#include "stils.hpp"
 
 template<typename T>
 class LLH
@@ -51,8 +46,6 @@ public:
       vc = (vc * (nh - d + 1)) / d;
       binom_coef_hnk[d] = binom_coef_k[d] - vc;
     }
-    // Same values as doubles (exact); avoids per-call conversions in the hot
-    // likelihood evaluation loop.
     binom_coef_k_d.assign(binom_coef_k.begin(), binom_coef_k.end());
     binom_coef_hnk_d.assign(binom_coef_hnk.begin(), binom_coef_hnk.end());
 
@@ -146,8 +139,6 @@ public:
 
   double prob_hit(double D, uint32_t d) const { return rho * prob_collide(d) * prob_mutate(D, d); }
 
-  // Negative log-likelihood at D for explicit counts (vv, uu). Pure: safe to
-  // call concurrently on a shared instance.
   double nll(const double& D, const uint64_t* vv, const uint64_t uu) const
   {
     double lsum = 0.0;
@@ -182,11 +173,8 @@ public:
     return -ll_dd;
   }
 
-  // MLE distance for explicit counts (v_r, u_r). Pure: safe to call
-  // concurrently on a shared instance. Returns NaN when there are no k-mer
-  // hits (t == 0): the distance is undefined, not a plateau MLE. The result
-  // is validated (an MLE at the search boundary maps to NaN). When nll_min
-  // is given, it receives the attained minimum NLL (NaN when t == 0).
+  // Returns NaN when there are no k-mer hits.
+  // The distance is undefined, instead of relying on a plateau MLE.
   double mle(const uint64_t* v_r, uint64_t u_r, double* nll_min = nullptr) const
   {
     uint64_t t = 0;
@@ -275,52 +263,5 @@ private:
   std::vector<T> fdc_v;
   std::vector<T> sdc_v;
 };
-
-// Scores for one counted window (per-bin HD histogram v, u misses, t hits).
-struct window_score_t
-{
-  double d = nanx();     // MLE distance (NaN: unmapped or invalid)
-  double info = nanx();  // observed Fisher information at d
-  double lr_bg = nanx(); // deviance vs the background distance d_bg
-  double lr_ub = nanx(); // deviance vs the plateau upper bound UB
-  bool unmapped = true;  // no k-mer hits (t == 0)
-};
-
-// MLE distance + Fisher information + deviance scores for one window. The
-// Fisher information is only reported when finite and positive; the deviance
-// vs the background is only computed when d_bg is finite. The attained NLL
-// minimum is reused from the Brent search, so no likelihood sweep is repeated.
-template<typename T>
-inline window_score_t score_window(const LLH<T>& llhf, const uint64_t* v, uint64_t u, uint64_t t, double d_bg)
-{
-  window_score_t s;
-  if (t == 0) return s;
-  s.unmapped = false;
-  double nll_d = nanx();
-  s.d = llhf.mle(v, u, &nll_d);
-  if (!std::isfinite(s.d)) return s;
-  const double info = llhf.compute_fisher_info(v, u, s.d);
-  s.info = (std::isfinite(info) && info > 0.0) ? info : nanx();
-  if (std::isfinite(d_bg)) s.lr_bg = lr_deviance(llhf.nll(d_bg, v, u), nll_d);
-  s.lr_ub = lr_deviance(llhf.nll(UB, v, u), nll_d);
-  return s;
-}
-
-// Variant for a window whose validated MLE distance d is already known (e.g.
-// from a prior strand-selection step): recomputes only the Fisher information
-// and the deviance scores, not the MLE.
-template<typename T>
-inline window_score_t score_window_at(const LLH<T>& llhf, const uint64_t* v, uint64_t u, double d, double d_bg)
-{
-  window_score_t s;
-  s.unmapped = false;
-  s.d = d;
-  const double info = llhf.compute_fisher_info(v, u, d);
-  s.info = (std::isfinite(info) && info > 0.0) ? info : nanx();
-  const double nll_d = llhf.nll(d, v, u);
-  if (std::isfinite(d_bg)) s.lr_bg = lr_deviance(llhf.nll(d_bg, v, u), nll_d);
-  s.lr_ub = lr_deviance(llhf.nll(UB, v, u), nll_d);
-  return s;
-}
 
 #endif

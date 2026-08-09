@@ -1,7 +1,7 @@
 #ifndef _RANDOM_HPP
 #define _RANDOM_HPP
 
-#include "types.hpp"
+#include <cstdint>
 #include <random>
 
 extern uint32_t seed;
