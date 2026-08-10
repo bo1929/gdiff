@@ -1,10 +1,11 @@
-#ifndef _MAPTILS_HPP
-#define _MAPTILS_HPP
+#ifndef _STILS_HPP
+#define _STILS_HPP
 
 #include "types.hpp"
 #include <algorithm>
+#include <cmath>
+#include <iostream>
 #include <limits>
-#include <sstream>
 #include <utility>
 
 static constexpr uint32_t hdist_bound = 7;
@@ -12,6 +13,10 @@ static constexpr uint32_t hdist_bound = 7;
 static constexpr double d_ub = 1.0;
 static constexpr double d_lb = 0.0;
 static constexpr double d_eps = 0.00001;
+
+// MLE search domain (Brent bounds); UB is the no-homology plateau end.
+static constexpr double UB = 0.99;
+static constexpr double LB = 0.0;
 
 static constexpr double eps = 1e-7;
 
@@ -39,23 +44,113 @@ inline char report_strand(const bool is_rc, const double d_diff) noexcept
   return (is_rc == (d_diff > 0.0)) ? '+' : '-';
 }
 
-inline double validate_distance(const double d)
-{
-  if (d >= d_ub - eps || std::isnan(d) || (d < d_lb)) {
-    return nanx();
-  }
-  return d;
-}
+inline bool is_valid_distance(const double d) noexcept { return std::isfinite(d) && d >= d_lb && d < d_ub - eps; }
 
-// Deviance score of a window/interval against a reference distance D_ref:
-// 2 * (NLL(D_ref) - NLL(d_mle)) >= 0, chi2(1)-like. Used with two references:
-// the background distance (whole-query d_q) and the plateau upper bound UB
-// (the no-homology end of the MLE search domain). Values below ~3.84 mean the
-// window is statistically indistinguishable from the reference at ~95%.
-inline double lr_deviance(const double nll_ref, const double nll_mle) noexcept
+inline double validate_distance(const double d) noexcept { return is_valid_distance(d) ? d : nanx(); }
+
+// Per-window HD counts (single strand / canonical): scan aggregator and
+// DIM/HDHist extract sink. No fw/rc split.
+struct window_counts_t
 {
-  return 2.0 * std::max(0.0, nll_ref - nll_mle);
-}
+  vec<uint64_t> hist_v;
+  uint64_t u = 0;
+  uint32_t hdist_th = 0;
+
+  window_counts_t() = default;
+
+  explicit window_counts_t(uint32_t hdist_th)
+    : hdist_th(hdist_th)
+  {
+    hist_v.assign(hdist_bound + 1, 0);
+  }
+
+  void clear() noexcept
+  {
+    std::fill(hist_v.begin(), hist_v.end(), 0);
+    u = 0;
+  }
+
+  uint64_t* hist() noexcept { return hist_v.data(); }
+  const uint64_t* hist() const noexcept { return hist_v.data(); }
+
+  uint64_t t() const noexcept
+  {
+    uint64_t sum = 0;
+    for (uint64_t c : hist_v)
+      sum += c;
+    return sum;
+  }
+
+  // scan_mers_range aggregator (is_rc ignored; canonical scan never sets it)
+  inline void operator()(uint64_t /*bin*/, uint32_t hdist, bool /*is_rc*/) noexcept
+  {
+    if (hdist <= hdist_th)
+      ++hist_v[hdist];
+    else
+      ++u;
+  }
+
+  inline void skip_mer(uint64_t /*bin*/) const noexcept {}
+};
+
+// Per-window HD counts with explicit fw/rc halves for strand-aware scans.
+struct swindow_counts_t
+{
+  vec<uint64_t> hist_fw_v;
+  vec<uint64_t> hist_rc_v;
+  uint64_t u_fw = 0;
+  uint64_t u_rc = 0;
+  uint32_t hdist_th = 0;
+
+  swindow_counts_t() = default;
+
+  explicit swindow_counts_t(uint32_t hdist_th)
+    : hdist_th(hdist_th)
+  {
+    hist_fw_v.assign(hdist_bound + 1, 0);
+    hist_rc_v.assign(hdist_bound + 1, 0);
+  }
+
+  void clear() noexcept
+  {
+    std::fill(hist_fw_v.begin(), hist_fw_v.end(), 0);
+    std::fill(hist_rc_v.begin(), hist_rc_v.end(), 0);
+    u_fw = 0;
+    u_rc = 0;
+  }
+
+  uint64_t* hist_fw() noexcept { return hist_fw_v.data(); }
+  uint64_t* hist_rc() noexcept { return hist_rc_v.data(); }
+  const uint64_t* hist_fw() const noexcept { return hist_fw_v.data(); }
+  const uint64_t* hist_rc() const noexcept { return hist_rc_v.data(); }
+
+  uint64_t t_fw() const noexcept
+  {
+    uint64_t sum = 0;
+    for (uint64_t c : hist_fw_v)
+      sum += c;
+    return sum;
+  }
+
+  uint64_t t_rc() const noexcept
+  {
+    uint64_t sum = 0;
+    for (uint64_t c : hist_rc_v)
+      sum += c;
+    return sum;
+  }
+
+  // scan_mers_range aggregator
+  inline void operator()(uint64_t /*bin*/, uint32_t hdist, bool is_rc) noexcept
+  {
+    if (hdist <= hdist_th)
+      ++(is_rc ? hist_rc_v[hdist] : hist_fw_v[hdist]);
+    else
+      ++(is_rc ? u_rc : u_fw);
+  }
+
+  inline void skip_mer(uint64_t /*bin*/) const noexcept {}
+};
 
 // 1-based half-open interval convention: inclusive start, exclusive end.
 inline bool overlaps_half_open(const interval_t& lhs, const interval_t& rhs) { return lhs.a < rhs.b && rhs.a < lhs.b; }
@@ -67,12 +162,6 @@ struct sample_t
   double I;          // Fisher information
   uint64_t bix;      // query batch index (for overlap filtering)
   interval_t bin_iv; // 1-based half-open bin coordinates
-};
-
-struct p_t
-{
-  double d; // MLE distance
-  double I; // Fisher information
 };
 
 struct record_t
@@ -89,11 +178,11 @@ struct record_t
   // Per-query fields, filled once both strands' distances are known
   double d_q = nanx();        // MLE distance for the source strand
   double d_diff = nanx();     // strand difference encoding; see strand_diff()
-  double fold = nanx();       // fold change: d / median(null samples)
+  double fold = nanx();       // fold change: d / median(background samples)
   double percentile = nanx(); // two-sided percentile for the closer strand (reference), otherwise cdf
   double qvalue = nanx();     // Benjamini-Hochberg adjusted percentile
-  double lr_bg;               // deviance vs the background (whole-query) distance; see lr_deviance()
-  double lr_ub;               // deviance vs the plateau upper bound UB; see lr_deviance()
+  double lr_bg;               // likelihood-ratio statistic vs the background distance
+  double lr_ub;               // likelihood-ratio statistic vs the plateau upper bound UB
 
   bool is_intact() const { return seq_iv.a == 1 && seq_iv.b == L; }
   interval_t get_interval() const { return {bin_iv.a - 1, bin_iv.b - 1}; } // 0-based half-open bin-boundary
@@ -141,6 +230,27 @@ inline interval_t get_coordinates(const interval_t& bin_iv, uint64_t bin_shift, 
   const uint64_t a = ((bin_iv.a - 1) << bin_shift) + 1;
   const uint64_t b = std::min((bin_iv.b - 1) << bin_shift, enmers) + k - 1;
   return {a, b};
+}
+
+// Per-strand Benjamini-Hochberg adjustment of record percentiles into qvalues.
+inline void benjamini_hochberg_correction(vec<record_t>& records_v)
+{
+  for (bool is_rc : {false, true}) {
+    vec<size_t> idx;
+    for (size_t i = 0; i < records_v.size(); ++i)
+      if (records_v[i].is_rc == is_rc && std::isfinite(records_v[i].percentile)) idx.push_back(i);
+    if (idx.empty()) continue;
+
+    std::sort(idx.begin(), idx.end(), [&](size_t a, size_t b) { return records_v[a].percentile < records_v[b].percentile; });
+
+    const double m = static_cast<double>(idx.size());
+    double q_min = 1.0;
+    for (size_t rank = idx.size(); rank >= 1; --rank) {
+      record_t& r = records_v[idx[rank - 1]];
+      q_min = std::min(q_min, std::min(1.0, r.percentile * m / static_cast<double>(rank)));
+      r.qvalue = q_min;
+    }
+  }
 }
 
 template<typename... Args>

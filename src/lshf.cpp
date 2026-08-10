@@ -110,6 +110,6 @@ uint8_t LSHF::get_k() const { return k; }
 
 uint8_t LSHF::get_h() const { return h; }
 
-vec<uint8_t> LSHF::get_npos() { return npos_v; }
+vec<uint8_t> LSHF::get_npos_v() { return npos_v; }
 
-vec<uint8_t> LSHF::get_ppos() { return ppos_v; }
+vec<uint8_t> LSHF::get_ppos_v() { return ppos_v; }

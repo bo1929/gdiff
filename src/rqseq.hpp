@@ -67,6 +67,11 @@ extern "C"
 
 KSEQ_INIT(gzFile, gzread)
 
+struct hmer_t
+{
+  uint64_t x, y, z;
+};
+
 class RSeq : public HandlerURL
 {
 public:
@@ -108,9 +113,6 @@ struct qseq_t
 
 class QSeq : public HandlerURL
 {
-  friend class QIE<double>;
-  friend class QIE<cm512_t>;
-
 public:
   QSeq(const str& input);
   ~QSeq();

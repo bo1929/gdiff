@@ -13,8 +13,8 @@ static std::filesystem::path write_tiny_sketch(const std::string& name = "test_s
 
   // Build an LSHF just to get valid ppos/npos
   auto lshf_obj = std::make_shared<LSHF>(k, h);
-  auto ppos = lshf_obj->get_ppos();
-  auto npos = lshf_obj->get_npos();
+  auto ppos = lshf_obj->get_ppos_v();
+  auto npos = lshf_obj->get_npos_v();
 
   std::ofstream sout(tmp, std::ofstream::binary);
 

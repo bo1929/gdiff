@@ -72,8 +72,8 @@ Sample exact-length query regions and summarize their MLE distances:
 gdiff dist -i reference.skc -q queries.fasta -l 500 --sample-size 200 -o distance_summary.tsv
 ```
 
-Use `--samples-output sampled_regions.tsv` to also write every valid sampled
-region and its distance. The sample size applies to the entire query file, with
+Use `--output-samples` to write every valid sampled region and its distance
+instead of the per-reference summary (to stdout, or the file given by `-o`). The sample size applies to the entire query file, with
 each eligible sequence selected in proportion to its length via weighted
 reservoir sampling. Histograms are built only for sequences that claim sample
 slots and are discarded afterward. Use `-b/--bin-shift` to bin k-mers (as in
@@ -159,30 +159,30 @@ Providing 8 distance thresholds runs all eight in one SIMD-wide pass.
 | `--sample-size` | `200` | Regions sampled across the whole query file per reference |
 | `--hdist-th` | `4` | Max Hamming distance for a k-mer hit (0-7) |
 | `-o, --output-path` | stdout | Write summary output to a file |
-| `--samples-output` | off | Write sampled region details to a TSV file |
+| `--output-samples` | off | Write per-sample output instead of the per-reference summary |
 | `--num-threads` | `1` | Parallel sketch/reference processing threads |
 
 Summary rows contain:
 
 ```
-QUERY_FILE  REF_ID  N  MEAN  SD  Q01  Q05  Q25  Q50  Q75  Q95  Q99
+QUERY_FILE  REF_ID  N  D_MED  D_MED_FILT  N_REMOVED
 ```
 
-`N` is the number of valid MLE samples, `SD` is the sample standard deviation,
-and quantiles use linear interpolation. Sampled windows with no matching
-k-mer (zero hits within `--hdist-th`) have an undefined distance: they are
-excluded from the summary and their count is reported on stderr. Sample
-detail rows contain one row per sampled window (unmapped windows carry NaN
-fields):
+`N` is the number of valid MLE samples. `D_MED` is the median of those
+distances. `D_MED_FILT` is the median after dropping samples with distance
+above `D_MED` whose likelihood-ratio statistic against `D_MED` is at least
+`6.63` (chi-square(1) critical value at 99%). `N_REMOVED` is how many such
+high outliers were dropped. Sampled windows with no matching k-mer (zero hits
+within `--hdist-th`) have an undefined distance: they are excluded from both
+medians and their count is reported on stderr. Sample detail rows contain one
+row per sampled window (unmapped windows carry NaN fields):
 
 ```
-QUERY_ID  SEQ_LEN  START  END  STRAND  REF_ID  DIST  INFO  LR_BG  LR_UB
+QUERY_ID  START  END  STRAND  REF_ID  DIST  LR_BG
 ```
 
-`INFO` is the observed Fisher information at the MLE, `LR_BG` the deviance
-against the query's median sampled distance, and `LR_UB` the deviance against
-the plateau upper bound (see `lr_deviance`); values below ~3.84 mean the
-window is statistically indistinguishable from the reference at ~95%.
+`LR_BG` is the likelihood-ratio statistic against the median finite sampled
+distance for that reference.
 
 Coordinates are 1-based and inclusive. For strand-aware sketches, each sample
 uses the lower of the forward and reverse-complement MLE distances and reports

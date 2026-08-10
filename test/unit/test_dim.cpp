@@ -84,8 +84,8 @@ vec<contig_slice_t> contiguous_slices_from_dim(DIM<T>& dim, const llh_sptr_t<T>&
 
   vec<uint64_t> pts = {1, nbins + 1};
   for (size_t ti = 0; ti < W; ++ti) {
-    if (!(th_bv & (1u << ti)) || dim.get_intervals(ti).empty()) continue;
-    for (const auto& iv : dim.get_intervals(ti)) {
+    if (!(th_bv & (1u << ti)) || dim.get_intervals_v(ti).empty()) continue;
+    for (const auto& iv : dim.get_intervals_v(ti)) {
       pts.push_back(iv.a);
       pts.push_back(iv.b + 1);
     }
@@ -106,7 +106,7 @@ vec<contig_slice_t> contiguous_slices_from_dim(DIM<T>& dim, const llh_sptr_t<T>&
     double bin_hi = d_ub;
     for (size_t ti = 0; ti < W; ++ti) {
       if (!(th_bv & (1u << ti))) continue;
-      const auto& ev = dim.get_intervals(ti);
+      const auto& ev = dim.get_intervals_v(ti);
       while (ti_ix[ti] < ev.size() && ev[ti_ix[ti]].b < a)
         ++ti_ix[ti];
       if (ti_ix[ti] >= ev.size() || ev[ti_ix[ti]].a > a) continue;
@@ -145,7 +145,7 @@ static double dim_query_mle(DIM<T>& dim, const llh_sptr_t<T>& llhf)
 template<typename T>
 static interval_t dim_interval_at(const DIM<T>& dim, uint64_t i, size_t ix = 0)
 {
-  const auto& ivs = dim.get_intervals(ix);
+  const auto& ivs = dim.get_intervals_v(ix);
   const uint64_t nbins = dim.get_nbins();
   if (i < ivs.size()) return ivs[i];
   return {nbins, nbins};
@@ -199,7 +199,7 @@ static vec<interval_t> collect_intervals_double(
   finish_dim_scan(dim, llhf, d_q);
   dim.extract_intervals_mx(tau, 1, nbins);
   dim.expand_intervals(33.0);
-  return dim.get_intervals(0);
+  return dim.get_intervals_v(0);
 }
 
 static bool intervals_equal(const vec<interval_t>& a, const vec<interval_t>& b)
@@ -673,7 +673,7 @@ TEST_CASE("SIMD DIM produces valid intervals") {
   for (size_t ix = 0; ix < 8; ++ix) {
     dim.extract_intervals_mx(1, 1, nbins, ix);
     dim.expand_intervals(33.0, ix);
-    for (const auto& iv : dim.get_intervals(ix)) {
+    for (const auto& iv : dim.get_intervals_v(ix)) {
       CHECK(iv.a >= 1);
       CHECK(iv.a <= iv.b);
       CHECK(iv.b <= nbins);
@@ -974,7 +974,7 @@ TEST_CASE("double: thrank_v is always the single threshold index") {
   DIM<double> dim(params, llhf, 8, 80);
   for (const double d_q : {0.05, 0.25, 0.99, nanx()}) {
     dim.set_query_distance(d_q);
-    const auto& thrank = dim.get_thrank();
+    const auto& thrank = dim.get_thrank_v();
     REQUIRE(thrank.size() == 1);
     CHECK(thrank[0] == 0);
   }
@@ -999,7 +999,7 @@ TEST_CASE("cm512_t: thrank_v orders thresholds relative to d_q") {
     dim.aggregate_mer(0, i);
 
   dim.set_query_distance(0.25);
-  const auto& thrank = dim.get_thrank();
+  const auto& thrank = dim.get_thrank_v();
   REQUIRE(thrank.size() == RWIDTH);
   CHECK(thrank[0] == 3); // 0.03
   CHECK(thrank[1] == 1); // 0.05
@@ -1027,7 +1027,7 @@ TEST_CASE("cm512_t: non-flipped lanes before flipped at d_q=0.088094") {
   DIM<cm512_t> dim(params, llhf, 4, 40);
 
   dim.set_query_distance(0.088094);
-  const auto& thrank = dim.get_thrank();
+  const auto& thrank = dim.get_thrank_v();
   REQUIRE(thrank.size() == RWIDTH);
   CHECK(thrank[0] == 0); // 0.05
   CHECK(thrank[1] == 1); // 0.075
@@ -1055,7 +1055,7 @@ TEST_CASE("cm512_t: NaN d_q sorts thrank_v by ascending threshold") {
   DIM<cm512_t> dim(params, llhf, 4, 40);
 
   dim.set_query_distance(nanx());
-  const auto& thrank = dim.get_thrank();
+  const auto& thrank = dim.get_thrank_v();
   REQUIRE(thrank.size() == RWIDTH);
   CHECK(thrank[0] == 1); // 0.05
   CHECK(thrank[1] == 3); // 0.10
@@ -1091,7 +1091,7 @@ TEST_CASE("set_query_distance must be called once per inclusive_scan") {
   finish_dim_scan(dim_once, llhf, 0.05);
   dim_once.extract_intervals_mx(1, 1, nbins);
   dim_once.expand_intervals(33.0);
-  const auto iv_once = dim_once.get_intervals(0);
+  const auto iv_once = dim_once.get_intervals_v(0);
 
   DIM<double> dim_twice(params, llhf, nbins, nbins);
   inject_up_down_up(dim_twice);
@@ -1101,7 +1101,7 @@ TEST_CASE("set_query_distance must be called once per inclusive_scan") {
   dim_twice.extrema_scan();
   dim_twice.extract_intervals_mx(1, 1, nbins);
   dim_twice.expand_intervals(33.0);
-  const auto iv_twice = dim_twice.get_intervals(0);
+  const auto iv_twice = dim_twice.get_intervals_v(0);
 
   CHECK_FALSE(intervals_equal(iv_once, iv_twice));
 }
@@ -1121,7 +1121,7 @@ TEST_CASE("cm512_t: per-lane flip depends on threshold vs d_q") {
     finish_dim_scan(dim, llhf, d_q);
     dim.extract_intervals_mx(1, 1, nbins, ix);
     dim.expand_intervals(33.0, ix);
-    return dim.get_intervals(ix);
+    return dim.get_intervals_v(ix);
   };
 
   const auto lane0_mid = collect_lane(0, 0.20);
@@ -1147,7 +1147,7 @@ TEST_CASE("skipping set_query_distance differs from production scan") {
   dim_skip.extrema_scan();
   dim_skip.extract_intervals_mx(1, 1, nbins);
   dim_skip.expand_intervals(33.0);
-  const auto iv_skip = dim_skip.get_intervals(0);
+  const auto iv_skip = dim_skip.get_intervals_v(0);
 
   CHECK_FALSE(intervals_equal(iv_prod, iv_skip));
 }
@@ -1178,7 +1178,7 @@ TEST_CASE("multi-gap extraction finds intervals in separated regions") {
   dim.extract_intervals_mx(1, 1, nbins);
   dim.expand_intervals(33.0);
 
-  const auto& e_v = dim.get_intervals(0);
+  const auto& e_v = dim.get_intervals_v(0);
   CHECK(e_v.size() >= 1);
   for (const auto& iv : e_v) {
     CHECK(iv.a >= 1);
@@ -1207,7 +1207,7 @@ TEST_CASE("skip_mer splits extraction at the flagged bin") {
   dim_ns.extract_intervals_mx(0, 1, nbins);
   dim_ns.expand_intervals(33.0);
   bool covers_gap = false;
-  for (const auto& iv : dim_ns.get_intervals(0))
+  for (const auto& iv : dim_ns.get_intervals_v(0))
     covers_gap = covers_gap || (iv.a <= 11 && 11 <= iv.b);
   CHECK(covers_gap);
 
@@ -1225,7 +1225,7 @@ TEST_CASE("skip_mer splits extraction at the flagged bin") {
     else
       dim.extract_intervals_mx(0, 1, nbins);
     dim.expand_intervals(33.0);
-    const auto& iv_v = dim.get_intervals(0);
+    const auto& iv_v = dim.get_intervals_v(0);
     CHECK(iv_v.size() >= 2);
     bool left = false, right = false;
     for (const auto& iv : iv_v) {

@@ -4,11 +4,12 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <utility>
 #include <vector>
-// #include <iostream> // Use for debugging
 #include <boost/math/distributions/gamma.hpp>
+#include "stils.hpp"
 
 // Gamma distribution model.
 // Fitting uses 2D Nelder-Mead over (log shape, log scale).
@@ -39,6 +40,19 @@ public:
     double nm_rho = 0.5;    // contraction coefficient
     double nm_sigma = 0.5;  // shrink coefficient
   };
+
+  [[nodiscard]] static bool validate_config(const Config& cfg) noexcept
+  {
+    if (cfg.max_niter <= 0 || !(cfg.tol > 0.0) || !(cfg.nm_step > 0.0) || !(cfg.nm_alpha > 0.0) || !(cfg.nm_expand > 1.0) ||
+        !(cfg.nm_rho > 0.0 && cfg.nm_rho < 1.0) || !(cfg.nm_sigma > 0.0 && cfg.nm_sigma < 1.0))
+      return false;
+    for (size_t i = 0; i < cfg.quantile_probs.size(); ++i) {
+      const double p = cfg.quantile_probs[i];
+      if (!std::isfinite(p) || !(p > 0.0 && p < 1.0)) return false;
+      if (i > 0 && !(cfg.quantile_probs[i - 1] < p)) return false;
+    }
+    return true;
+  }
 
   // Constants
 
@@ -76,6 +90,31 @@ public:
   // Nelder-Mead fit fails.
   [[nodiscard]] static params_t moments_estimate(const std::vector<double>& x_v) { return init_from_moments(x_v); }
 
+  // Drop non-finite samples and floor values below `floor` (typically d_eps).
+  struct prepared_t
+  {
+    std::vector<double> x;
+    uint64_t ndropped = 0;
+    uint64_t nfloored = 0;
+  };
+
+  [[nodiscard]] static prepared_t prepare_samples(const std::vector<double>& d_v, double floor)
+  {
+    prepared_t out;
+    out.x.reserve(d_v.size());
+    for (const double d : d_v) {
+      if (!std::isfinite(d)) {
+        ++out.ndropped;
+      } else if (d < floor) {
+        ++out.nfloored;
+        out.x.push_back(floor);
+      } else {
+        out.x.push_back(d);
+      }
+    }
+    return out;
+  }
+
   // Fit Gamma directly to draws via quantile matching.
   [[nodiscard]] static params_t fit_from_samples(const std::vector<double>& x_v)
   {
@@ -88,9 +127,12 @@ public:
   fit_from_samples(const std::vector<double>& x_v, const Config& cfg, double* obj_out = nullptr, int* niter_out = nullptr)
   {
     if (x_v.empty()) return {1.0, 1.0};
+    if (!validate_config(cfg)) return {NaN, NaN};
     const params_t p0 = init_from_moments(x_v);
     const auto emp_q = compute_quantiles(x_v, cfg.quantile_probs);
-    return bivariate_nelder_mead(
+    double objective = INF;
+    int niter = 0;
+    const params_t gp = bivariate_nelder_mead(
       p0,
       [&](double shape, double scale) {
         if (!(shape > 0.0) || !(scale > 0.0)) return INF;
@@ -102,8 +144,11 @@ public:
         return L;
       },
       cfg,
-      obj_out,
-      niter_out);
+      &objective,
+      &niter);
+    if (obj_out) *obj_out = objective;
+    if (niter_out) *niter_out = niter;
+    return std::isfinite(objective) && validate_params(gp) ? gp : params_t{NaN, NaN};
   }
 
   // Median of the latent Gamma distribution in (lower, upper) by binary
@@ -268,5 +313,21 @@ private:
     return {std::exp(S[0].x), std::exp(S[0].y)};
   }
 };
+
+struct gamma_fit_t
+{
+  uint64_t bix = std::numeric_limits<uint64_t>::max();
+  uint64_t nwin_bins = 0;
+  uint64_t sample_size = 0;
+  GammaModel::params_t params{1.0, 1.0};
+  double median = GammaModel::NaN;
+  bool ok = false;
+};
+
+bool test_significance(record_t& r,
+                       const vec<sample_t>& bg_samples,
+                       uint64_t sample_size,
+                       const str& qid,
+                       gamma_fit_t* fit = nullptr);
 
 #endif // _GAMMA_HPP

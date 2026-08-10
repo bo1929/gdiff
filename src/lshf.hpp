@@ -59,8 +59,8 @@ public:
   uint32_t get_npos_diff(uint32_t zc);
   char* npos_data();
   char* ppos_data();
-  vec<uint8_t> get_npos();
-  vec<uint8_t> get_ppos();
+  vec<uint8_t> get_npos_v();
+  vec<uint8_t> get_ppos_v();
   uint8_t get_k() const;
   uint8_t get_h() const;
 

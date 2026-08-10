@@ -3,6 +3,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <memory>
 #include <vector>
 #include <boost/math/tools/minima.hpp>
 #include "stils.hpp"
@@ -115,12 +116,12 @@ public:
 
   double prob_elude(uint32_t d) const
   {
-    return 1.0 - (static_cast<double>(binom_coef_hnk[d]) / static_cast<double>(binom_coef_k[d]));
+    return static_cast<double>(binom_coef_hnk[d]) / static_cast<double>(binom_coef_k[d]);
   }
 
   double prob_collide(uint32_t d) const
   {
-    return static_cast<double>(binom_coef_hnk[d]) / static_cast<double>(binom_coef_k[d]);
+    return 1.0 - (static_cast<double>(binom_coef_hnk[d]) / static_cast<double>(binom_coef_k[d]));
   }
 
   double prob_mutate(double D, uint32_t d) const { return std::pow(1.0 - D, k - d) * std::pow(D, d) * binom_coef_k[d]; }
@@ -141,11 +142,16 @@ public:
 
   double nll(const double& D, const uint64_t* vv, const uint64_t uu) const
   {
+    if (D == 0.0) {
+      for (uint32_t d = 1; d <= hdist_th; ++d)
+        if (vv[d] > 0) return pinf();
+    }
+
     double lsum = 0.0;
     double lv_m = 0.0;
     double powdc = std::pow(1.0 - D, k);
     const double logdn = k * std::log(1.0 - D);
-    const double logdp = std::log(D) - std::log(1.0 - D);
+    const double logdp = D > 0.0 ? std::log(D) - std::log(1.0 - D) : 0.0;
     const double ratioD = D / (1.0 - D);
 
     for (uint32_t d = 0; d <= k; ++d) {
@@ -263,5 +269,43 @@ private:
   std::vector<T> fdc_v;
   std::vector<T> sdc_v;
 };
+
+// -2 log[L(D_ref) / L(d_mle)] from negative log-likelihoods.
+inline double likelihood_ratio_statistic(const double nll_ref, const double nll_mle) noexcept
+{
+  if (!std::isfinite(nll_ref) || !std::isfinite(nll_mle)) return nanx();
+  return 2.0 * std::max(0.0, nll_ref - nll_mle);
+}
+
+struct likelihood_estimate_t
+{
+  double d = nanx();
+  double I = nanx();
+  double lr_bg = nanx();
+  double lr_ub = nanx();
+  bool has_hits = false;
+};
+
+template<typename T>
+inline likelihood_estimate_t
+compute_likelihood_estimate(const LLH<T>& llhf, const uint64_t* v, uint64_t u, uint64_t t, double d_bg)
+{
+  likelihood_estimate_t est;
+  if (t == 0) return est;
+  est.has_hits = true;
+
+  double nll = nanx();
+  est.d = llhf.mle(v, u, &nll);
+  if (!is_valid_distance(est.d)) return est;
+
+  const double I = llhf.compute_fisher_info(v, u, est.d);
+  est.I = (std::isfinite(I) && I > 0.0) ? I : nanx();
+  if (is_valid_distance(d_bg)) est.lr_bg = likelihood_ratio_statistic(llhf.nll(d_bg, v, u), nll);
+  est.lr_ub = likelihood_ratio_statistic(llhf.nll(UB, v, u), nll);
+  return est;
+}
+
+template<typename T>
+using llh_sptr_t = std::shared_ptr<LLH<T>>;
 
 #endif

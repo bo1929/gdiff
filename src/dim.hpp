@@ -5,7 +5,6 @@
 #include "llh.hpp"
 #include "stils.hpp"
 #include "tpool.hpp"
-#include "types.hpp"
 
 class HDHist
 {
@@ -66,8 +65,9 @@ public:
   uint64_t get_bin_size() const { return params.bin_size; }
   bool get_has_skips() const { return has_skips; }
   bool is_skip(uint64_t i) const { return has_skips && skip_v[i - 1]; } // 1-based bin
-  const vec<interval_t>& get_intervals(size_t ti) const { return intervals_v[ti]; }
-  const vec<size_t>& get_thrank() const { return thrank_v; }
+  vec<sample_t> sample_random_intervals(uint64_t nwin_bins, uint64_t bix) const;
+  const vec<interval_t>& get_intervals_v(size_t ti) const { return intervals_v[ti]; }
+  const vec<size_t>& get_thrank_v() const { return thrank_v; }
   static inline void add_to(T& dest, const T& source)
   {
     if constexpr (std::is_same_v<T, double>) {
@@ -106,5 +106,7 @@ private:
   void extract_sx(uint64_t tau, uint64_t lix, uint64_t rix, size_t ix);
   void apply_threshold_signs();
 };
+
+bool filter_background_samples(const vec<sample_t>& in_v, const record_t& r, uint64_t sample_size, vec<sample_t>& out_v);
 
 #endif

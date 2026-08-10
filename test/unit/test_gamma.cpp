@@ -100,6 +100,16 @@ TEST_CASE("fit_from_samples(d_v, cfg) respects custom quantile targets") {
   check_gamma_recovery(shape_true, scale_true, r, 0.18);
 }
 
+TEST_CASE("rejects invalid optimizer configuration") {
+  const std::vector<double> samples(20, 0.05);
+  GammaModel::Config cfg{};
+  cfg.quantile_probs = {0.2, 0.2, 0.6};
+  CHECK_FALSE(GammaModel::validate_config(cfg));
+  const auto r = GammaModel::fit_from_samples(samples, cfg);
+  CHECK(std::isnan(r.shape));
+  CHECK(std::isnan(r.scale));
+}
+
 TEST_CASE("same multiset of samples yields same fit regardless of order") {
   std::mt19937_64 rng(99);
   std::gamma_distribution<double> dist(3.0, 0.04);
@@ -162,11 +172,11 @@ TEST_CASE("rejects too few samples and invalid observations") {
 TEST_CASE("CDF increases with observed distance") {
   std::mt19937_64 rng(11);
   std::gamma_distribution<double> dist(2.0, 0.05);
-  std::vector<double> nulls(256);
-  for (auto& d : nulls) d = dist(rng);
+  std::vector<double> background(256);
+  for (auto& d : background) d = dist(rng);
 
-  const auto [prob_low, median] = GammaModel::score_from_samples(0.01, nulls, 1e-5, 0.99);
-  const auto [prob_mid, _] = GammaModel::score_from_samples(median, nulls, 1e-5, 0.99);
+  const auto [prob_low, median] = GammaModel::score_from_samples(0.01, background, 1e-5, 0.99);
+  const auto [prob_mid, _] = GammaModel::score_from_samples(median, background, 1e-5, 0.99);
   CHECK(std::isfinite(prob_low));
   CHECK(std::isfinite(median));
   CHECK(prob_low < prob_mid);
@@ -174,14 +184,14 @@ TEST_CASE("CDF increases with observed distance") {
   CHECK(median < 0.2);
 }
 
-TEST_CASE("null draw near median gets moderate probability") {
+TEST_CASE("background draw near median gets moderate probability") {
   std::mt19937_64 rng(22);
   std::gamma_distribution<double> dist(3.0, 0.04);
-  std::vector<double> nulls(64);
-  for (auto& d : nulls) d = dist(rng);
+  std::vector<double> background(64);
+  for (auto& d : background) d = dist(rng);
 
   const double target = dist(rng);
-  const auto [prob, median] = GammaModel::score_from_samples(target, nulls, 1e-5, 0.99);
+  const auto [prob, median] = GammaModel::score_from_samples(target, background, 1e-5, 0.99);
   CHECK(std::isfinite(prob));
   CHECK(std::isfinite(median));
   CHECK(prob > 0.01);

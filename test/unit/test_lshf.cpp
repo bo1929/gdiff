@@ -16,8 +16,8 @@ TEST_SUITE("LSHF")
   TEST_CASE("ppos and npos partition {0, ..., k-1}")
   {
     LSHF lshf(27, 11);
-    auto ppos = lshf.get_ppos();
-    auto npos = lshf.get_npos();
+    auto ppos = lshf.get_ppos_v();
+    auto npos = lshf.get_npos_v();
 
     CHECK(ppos.size() == 11);
     CHECK(npos.size() == 16); // k - h = 27 - 11 = 16

@@ -1,84 +1,72 @@
 #include "map.hpp"
+#include "dist.hpp"
+#include "gamma.hpp"
 #include "msg.hpp"
 #include "random.hpp"
+#include "scan.hpp"
 #include <algorithm>
 #include <atomic>
-#include <boost/math/tools/minima.hpp>
-#include <iomanip>
 #include <mutex>
 #include <numeric>
-#include <thread>
 
 extern uint32_t num_threads;
 
 namespace {
-  struct pv_t
+  inline void add_to_acc(vec<uint64_t>& acc_v, uint64_t& u_acc, const vec<uint64_t>& source_v, uint64_t u)
   {
-    uint64_t pos;
-    double val;
-  };
-
-  template<typename T>
-  inline double at(T v, const size_t ix)
-  {
-    if constexpr (std::is_same_v<T, double>) {
-      return v;
-    } else {
-      return v[ix];
-    }
-  }
-
-  inline void add_to_acc(vec<uint64_t>& v_acc, uint64_t& u_acc, const vec<uint64_t>& v, uint64_t u)
-  {
-    simde__m512i s = simde_mm512_loadu_si512(v_acc.data());
-    s = simde_mm512_add_epi64(s, simde_mm512_loadu_si512(v.data()));
-    simde_mm512_storeu_si512(v_acc.data(), s);
+    simde__m512i s = simde_mm512_loadu_si512(acc_v.data());
+    s = simde_mm512_add_epi64(s, simde_mm512_loadu_si512(source_v.data()));
+    simde_mm512_storeu_si512(acc_v.data(), s);
     u_acc += u;
   }
 } // namespace
 
 template<typename T>
-QIE<T>::QIE(const params_t<T>& params,
-            const sketch_sptr_t& sketch,
-            const lshf_sptr_t& lshf,
-            const vec<str>& seq_batch,
-            const vec<str>& qid_batch)
+QIE<T>::QIE(const params_t<T>& params, const sketch_sptr_t& sketch, const lshf_sptr_t& lshf, const vec<qseq_t>& batch_v)
   : params(params)
   , sketch(sketch)
   , lshf(lshf)
-  , seq_batch(seq_batch)
-  , qid_batch(qid_batch)
-  , batch_size(seq_batch.size())
+  , batch_v(batch_v)
   , k(lshf->get_k())
   , h(lshf->get_h())
+  , llhf(std::make_shared<LLH<T>>(k, h, sketch->get_rho(), params.hdist_th, params.dist_th))
 {
-  llhf = std::make_shared<LLH<T>>(k, h, sketch->get_rho(), params.hdist_th, params.dist_th);
-  diststat = std::make_shared<DistanceStat<T>>(params, llhf);
-  const uint64_t u64m = std::numeric_limits<uint64_t>::max();
-  mask_lr = ((u64m >> (64 - k)) << 32) + ((u64m << 32) >> (64 - k));
-  mask_bp = u64m >> ((32 - k) * 2);
   enum_only = params.enum_only;
   skip_test = (params.sample_size == 0);
   keep_hist = (!enum_only || !skip_test);
   coordinates_only = enum_only && skip_test;
   if (keep_hist) {
     // For SIMD alignment, bound is set to 8
-    v_acc.assign(hdist_bound + 1, 0);
-    v_scratch.assign(hdist_bound + 1, 0);
+    acc_v.assign(hdist_bound + 1, 0);
+    scratch_v.assign(hdist_bound + 1, 0);
   }
 }
 
 template<typename T>
-void QIE<T>::map_sequences(std::ostream& sout, const str& rid)
+void QIE<T>::sample_background(DIM<T>& dim, const size_t first_record)
 {
+  if (skip_test) return;
+  vec<uint64_t> lengths;
+  lengths.reserve(records_v.size() - first_record);
+  for (size_t ri = first_record; ri < records_v.size(); ++ri)
+    lengths.push_back(records_v[ri].nbins);
+  std::sort(lengths.begin(), lengths.end());
+  lengths.erase(std::unique(lengths.begin(), lengths.end()), lengths.end());
+  for (const uint64_t nwin_bins : lengths) {
+    const auto samples = dim.sample_random_intervals(nwin_bins, bix);
+    samples_v.insert(samples_v.end(), samples.begin(), samples.end());
+  }
+}
 
-  for (bix = 0; bix < batch_size; ++bix) {
-    const char* cseq = seq_batch[bix].data();
-    const uint64_t len = seq_batch[bix].size();
-    onmers = 0;
+template<typename T>
+void QIE<T>::map_sequences(std::ostream& sout, const str& rname)
+{
+  for (bix = 0; bix < batch_v.size(); ++bix) {
+    const char* cseq = batch_v[bix].seq.data();
+    const uint64_t len = batch_v[bix].seq.size();
 
     if (len < static_cast<uint64_t>(k)) {
-      warn_pmsg(qid_batch[bix], "skipped: sequence shorter than k-mer length ", "(len=", len, ", k=", k, ")");
+      warn_pmsg(batch_v[bix].qid, "skipped: sequence shorter than k-mer length ", "(len=", len, ", k=", k, ")");
       continue;
     }
 
@@ -86,11 +74,11 @@ void QIE<T>::map_sequences(std::ostream& sout, const str& rid)
     nbins = (enmers + params.bin_size - 1) >> params.bin_shift;
     if (nbins < 2) {
       warn_pmsg(
-        qid_batch[bix], "skipped: fewer than two bins after binning ", "(len=", len, ", bin_size=", params.bin_size, ")");
+        batch_v[bix].qid, "skipped: fewer than two bins after binning ", "(len=", len, ", bin_size=", params.bin_size, ")");
       continue;
     }
     if (params.tau_bin > nbins) {
-      warn_pmsg(qid_batch[bix], "minimum length is exceeded; using the full query as the effective minimum ");
+      warn_pmsg(batch_v[bix].qid, "minimum length is exceeded; using the full query as the effective minimum ");
     }
 
     const uint64_t tau_eff = std::min(params.tau_bin, nbins) - 1;
@@ -98,7 +86,8 @@ void QIE<T>::map_sequences(std::ostream& sout, const str& rid)
 
     if (params.canonical) {
       DIM<T> dim(params, llhf, nbins, enmers);
-      search_mers(cseq, len, dim);
+      auto ctx = make_scan_ctx(*sketch, params.bin_shift, params.hdist_th);
+      scan_mers_range<false>(ctx, cseq, 0, enmers, dim_agg_t<T>{dim, nullptr});
       dim.inclusive_scan();
 
       if (!coordinates_only) dim.compute_prefhistsum();
@@ -107,7 +96,6 @@ void QIE<T>::map_sequences(std::ostream& sout, const str& rid)
       vec<uint64_t> v_q;
       uint64_t u_q = 0, t_q = 0;
       dim.total_histogram(v_q, u_q, t_q);
-      // t_q == 0 (no k-mer hits at all): whole-query distance is undefined.
       d_q = llhf->mle(v_q.data(), u_q);
 
       dim.set_query_distance(d_q);
@@ -116,10 +104,10 @@ void QIE<T>::map_sequences(std::ostream& sout, const str& rid)
       if (enum_only) {
         extract_simple_intervals(dim, false, tau_eff, d_q);
         if (coordinates_only) continue; // skip MLE or significance
+      } else {
+        extract_ordered_intervals(dim, false, tau_eff, d_q);
       }
-
-      if (!skip_test) diststat->sample_null_pool(dim, tau_eff, bix);
-      if (!enum_only) extract_ordered_intervals(dim, false, tau_eff, d_q);
+      sample_background(dim, srprev);
 
       for (size_t ri = srprev; ri < records_v.size(); ++ri) {
         record_t& r = records_v[ri];
@@ -127,19 +115,18 @@ void QIE<T>::map_sequences(std::ostream& sout, const str& rid)
         r.d_diff = nanx();
       }
 
-      add_to_acc(v_acc, u_acc, v_q, u_q);
+      add_to_acc(acc_v, u_acc, v_q, u_q);
     } else {
       DIM<T> dim_fw(params, llhf, nbins, enmers);
       DIM<T> dim_rc(params, llhf, nbins, enmers);
-      search_mers(cseq, len, dim_fw, dim_rc);
+      scan_mers_range<true>(
+        make_scan_ctx(*sketch, params.bin_shift, params.hdist_th), cseq, 0, enmers, dim_agg_t<T>{dim_fw, &dim_rc});
 
-      // Build prefix sums/histograms; d_q chooses per-threshold signs before extrema_scan.
       for (auto* dim : {&dim_fw, &dim_rc}) {
         dim->inclusive_scan();
         if (!coordinates_only) dim->compute_prefhistsum();
       }
 
-      // Strand-wide MLE distances (undefined for a strand with no k-mer hits).
       vec<uint64_t> v_q_fw, v_q_rc;
       uint64_t u_q_fw = 0, u_q_rc = 0, t_q_fw = 0, t_q_rc = 0;
       dim_fw.total_histogram(v_q_fw, u_q_fw, t_q_fw);
@@ -148,7 +135,6 @@ void QIE<T>::map_sequences(std::ostream& sout, const str& rid)
       const double d_q_rc = llhf->mle(v_q_rc.data(), u_q_rc);
       const double d_diff = strand_diff(d_q_fw, d_q_rc);
 
-      // Determine direction per threshold, then signed extrema for extraction.
       dim_fw.set_query_distance(d_q_fw);
       dim_rc.set_query_distance(d_q_rc);
 
@@ -160,16 +146,14 @@ void QIE<T>::map_sequences(std::ostream& sout, const str& rid)
         extract_simple_intervals(dim_fw, false, tau_eff, d_q_fw);
         extract_simple_intervals(dim_rc, true, tau_eff, d_q_rc);
         if (coordinates_only) continue; // skip MLE or significance
-      }
-
-      // The lower-distance strand is the reference: rc when the difference > 0, else fw
-      const bool is_rc = (!std::isnan(d_diff)) && d_diff > 0.0;
-      if (!skip_test) diststat->sample_null_pool(is_rc ? dim_rc : dim_fw, tau_eff, bix);
-
-      if (!enum_only) {
+      } else {
         extract_ordered_intervals(dim_fw, false, tau_eff, d_q_fw);
         extract_ordered_intervals(dim_rc, true, tau_eff, d_q_rc);
       }
+
+      // The lower-distance strand is the reference: rc when the difference > 0, else fw
+      const bool is_rc = d_diff > 0.0;
+      sample_background(is_rc ? dim_rc : dim_fw, srprev);
 
       for (size_t ri = srprev; ri < records_v.size(); ++ri) {
         record_t& r = records_v[ri];
@@ -177,516 +161,51 @@ void QIE<T>::map_sequences(std::ostream& sout, const str& rid)
         r.d_diff = d_diff;
       }
 
-      add_to_acc(v_acc, u_acc, is_rc ? v_q_rc : v_q_fw, is_rc ? u_q_rc : u_q_fw);
+      add_to_acc(acc_v, u_acc, is_rc ? v_q_rc : v_q_fw, is_rc ? u_q_rc : u_q_fw);
     }
   }
 
   if (keep_hist) {
-    // t_acc == 0 (no k-mer hits in the whole batch): accumulated distance is undefined.
-    d_acc = llhf->mle(v_acc.data(), u_acc);
+    d_acc = llhf->mle(acc_v.data(), u_acc);
   }
   if (!skip_test) {
-    for (auto& r : records_v)
-      diststat->test_significance(r, params.sample_size, qid_batch[r.bix]);
-    diststat->benjamini_hochberg_correction(records_v);
+    gamma_fit_t fit;
+    for (auto& r : records_v) {
+      // Intact (full-query) rows have no length-matched background on their own
+      // query, so the null would be degenerate; leave percentile/qvalue as NaN.
+      if (r.is_intact()) continue;
+      test_significance(r, samples_v, params.sample_size, batch_v[r.bix].qid, &fit);
+    }
+    benjamini_hochberg_correction(records_v);
   }
-  report_contiguous(sout, rid);
+  report_contiguous(sout, rname);
 }
-
-template<typename T>
-DIM<T>::DIM(const params_t<T>& params, const llh_sptr_t<T>& llhf, uint64_t nbins, uint64_t nmers)
-  : params(params)
-  , llhf(llhf)
-  , nbins(nbins)
-  , nmers(nmers)
-  , keep_hist(!params.enum_only || params.sample_size > 0)
-{
-  fdc_v.resize(nbins); // Alternative?: fdc_v.reserve(nbins);
-  sdc_v.resize(nbins); // Alternative?: sdc_v.reserve(nbins);
-  thneg_v.fill(false);
-  thrank_v.resize(WIDTH);
-  for (size_t i = 0; i < WIDTH; ++i)
-    thrank_v[i] = i;
-  if (keep_hist) {
-    // Note that aggregate_mer() accumulates into rows 1 to nbins.
-    // At the end, compute_prefhistsum() converts in-place.
-    hdisthist_v.assign((nbins + 1) * (params.hdist_th + 1), 0);
-    miss_v.assign(nbins + 1, 0);
-    // First delta (HD threshold) + 1 values are zeros, same layout as fdps_v and sdps_v.
-  } else {
-    // Otherwise, just keep a global histogram for the query.
-    hdisthist_v.assign(hdist_bound + 1, 0);
-  }
-}
-
-template<typename T>
-void DIM<T>::set_query_distance(const double d_q)
-{ // {{{ OK
-  const bool is_valid = std::isfinite(d_q);
-
-  if constexpr (std::is_same_v<T, double>) {
-    const double t = params.dist_th;
-    thneg_v.front() = is_valid && t > d_q;
-    thrank_v = {0};
-  } else {
-    arr<vi_t, WIDTH> tp;
-    for (size_t i = 0; i < WIDTH; ++i) {
-      const double t = at(params.dist_th, i);
-      thneg_v[i] = is_valid && t > d_q;
-      tp[i] = {t, i};
-    }
-
-    if (!is_valid) {
-      std::sort(tp.begin(), tp.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
-    } else {
-      std::sort(tp.begin(), tp.end(), [&](const auto& a, const auto& b) {
-        const double sa = a.first <= d_q ? a.first : (2.0 * d_ub - a.first);
-        const double sb = b.first <= d_q ? b.first : (2.0 * d_ub - b.first);
-        return sa < sb;
-      });
-    }
-
-    thrank_v.resize(WIDTH);
-    for (size_t i = 0; i < WIDTH; ++i)
-      thrank_v[i] = tp[i].second;
-  }
-
-  apply_threshold_signs();
-} // }}}
-
-template<typename T>
-void DIM<T>::apply_threshold_signs()
-{ // {{{ OK
-  // Flip the sign of fdps_v lanes whose threshold is on the opposite side of d_q.
-  if constexpr (std::is_same_v<T, double>) {
-    if (!thneg_v.front()) return;
-    for (uint64_t i = 1; i < fdps_v.size(); ++i) {
-      fdps_v[i] = -fdps_v[i];
-    }
-  } else {
-    alignas(64) double xor_mask[WIDTH];
-    bool flip_sign = false;
-    for (size_t i = 0; i < WIDTH; ++i) {
-      xor_mask[i] = thneg_v[i] ? -0.0 : 0.0;
-      if (thneg_v[i]) {
-        flip_sign = true;
-      }
-    }
-    if (!flip_sign) return;
-    const simde__m512d s = simde_mm512_loadu_pd(xor_mask);
-    for (uint64_t i = 1; i < fdps_v.size(); ++i) {
-      simde__m512d v = simde_mm512_loadu_pd(fdps_v[i].data());
-      v = simde_mm512_xor_pd(v, s);
-      simde_mm512_storeu_pd(fdps_v[i].data(), v);
-    }
-  }
-} // }}}
-
-template<typename T>
-void DIM<T>::aggregate_mer(uint32_t hdist_min, uint64_t i)
-{
-  // The bin index is i, multiple k-mers in the same bin accumulate here
-  if (hdist_min <= params.hdist_th) {
-    t_q++;
-    if (keep_hist) {
-      hdisthist_v[((i + 1) * (params.hdist_th + 1)) + hdist_min]++;
-    } else {
-      hdisthist_v[hdist_min]++;
-    }
-    add_to(sdc_v[i], llhf->get_sdc(hdist_min));
-    add_to(fdc_v[i], llhf->get_fdc(hdist_min));
-  } else {
-    u_q++;
-    if (keep_hist) miss_v[i + 1]++;
-    add_to(sdc_v[i], llhf->get_sdc());
-    add_to(fdc_v[i], llhf->get_fdc());
-  }
-}
-
-template<typename T>
-void DIM<T>::release_accumulators() noexcept
-{ // {{{ OK: (probably not quite needed)
-  fdc_v.clear();
-  fdc_v.shrink_to_fit();
-  sdc_v.clear();
-  sdc_v.shrink_to_fit();
-} // }}}
-
-template<typename T>
-void QIE<T>::search_mers(const char* cseq, uint64_t len, DIM<T>& dim)
-{
-  uint64_t i = 0, j = 0, l = 0;
-  uint32_t orrix, rcrix;
-  uint64_t orenc64_bp, orenc64_lr, rcenc64_bp;
-  for (; i < len; ++i) {
-    if (__builtin_expect(SEQ_NT4_TABLE[cseq[i]] >= 4, 0)) {
-      // TODO: What to do for missing ones? Masked repeats should be handled here, too
-      l = 0;
-      continue;
-    }
-    ++l;
-    if (l < k) {
-      // TODO: What to do for missing ones? Masked repeats should be handled here, too
-      continue;
-    }
-    j = i - k + 1;
-    if (l == k) {
-      compute_encoding(cseq + j, cseq + i + 1, orenc64_lr, orenc64_bp);
-    } else {
-      update_encoding(cseq + i, orenc64_lr, orenc64_bp);
-    }
-    orenc64_bp &= mask_bp;
-    orenc64_lr &= mask_lr;
-    rcenc64_bp = revcomp_bp64(orenc64_bp, k);
-    onmers++;
-    const uint64_t bin_j = j >> params.bin_shift; // The bin index for this k-mer position
-    if (rcenc64_bp < orenc64_bp) {
-      orrix = lshf->compute_hash(orenc64_bp);
-      const uint32_t off_fw = sketch->partial_offset(orrix);
-      sketch->prefetch_offset_inc(off_fw);
-      const enc_t enc_lr_fw = lshf->drop_ppos_lr(orenc64_lr);
-      sketch->prefetch_offset_enc(off_fw);
-      uint32_t hdist_fw;
-      if (sketch->scan_bucket(off_fw, enc_lr_fw, hdist_fw)) {
-        dim.aggregate_mer(hdist_fw, bin_j);
-      }
-    } else {
-      rcrix = lshf->compute_hash(rcenc64_bp);
-      const uint32_t off_rc = sketch->partial_offset(rcrix);
-      sketch->prefetch_offset_inc(off_rc);                                  // Phase 1
-      const enc_t enc_lr_rc = lshf->drop_ppos_lr(bp64_to_lr64(rcenc64_bp)); // Phase 2
-      sketch->prefetch_offset_enc(off_rc);                                  // Phase 3
-      uint32_t hdist_rc;
-      if (sketch->scan_bucket(off_rc, enc_lr_rc, hdist_rc)) {
-        dim.aggregate_mer(hdist_rc, bin_j);
-      }
-    }
-  }
-}
-
-template<typename T>
-void QIE<T>::search_mers(const char* cseq, uint64_t len, DIM<T>& dim_fw, DIM<T>& dim_rc)
-{
-  uint64_t i = 0, j = 0, l = 0;
-  uint32_t orrix, rcrix;
-  uint64_t orenc64_bp, orenc64_lr, rcenc64_bp;
-  for (; i < len; ++i) {
-    if (__builtin_expect(SEQ_NT4_TABLE[cseq[i]] >= 4, 0)) {
-      // TODO: What to do for missing ones? Masked repeats should be handled here, too
-      l = 0;
-      continue;
-    }
-    ++l;
-    if (l < k) {
-      // TODO: What to do for missing ones? Masked repeats should be handled here, too
-      continue;
-    }
-    j = i - k + 1;
-    if (l == k) {
-      compute_encoding(cseq + j, cseq + i + 1, orenc64_lr, orenc64_bp);
-    } else {
-      update_encoding(cseq + i, orenc64_lr, orenc64_bp);
-    }
-    orenc64_bp &= mask_bp;
-    orenc64_lr &= mask_lr;
-    rcenc64_bp = revcomp_bp64(orenc64_bp, k);
-    onmers++;
-    const uint64_t bin_j = j >> params.bin_shift; // The bin index for this k-mer position
-    orrix = lshf->compute_hash(orenc64_bp);
-    rcrix = lshf->compute_hash(rcenc64_bp);
-    const uint32_t off_fw = sketch->partial_offset(orrix);
-    const uint32_t off_rc = sketch->partial_offset(rcrix);
-    sketch->prefetch_offset_inc(off_fw);
-    sketch->prefetch_offset_inc(off_rc);
-    const enc_t enc_lr_fw = lshf->drop_ppos_lr(orenc64_lr);
-    const enc_t enc_lr_rc = lshf->drop_ppos_lr(bp64_to_lr64(rcenc64_bp));
-    sketch->prefetch_offset_enc(off_fw);
-    sketch->prefetch_offset_enc(off_rc);
-    uint32_t hdist_fw;
-    if (sketch->scan_bucket(off_fw, enc_lr_fw, hdist_fw)) {
-      dim_fw.aggregate_mer(hdist_fw, bin_j);
-    }
-    uint32_t hdist_rc;
-    if (sketch->scan_bucket(off_rc, enc_lr_rc, hdist_rc)) {
-      dim_rc.aggregate_mer(hdist_rc, bin_j);
-    }
-  }
-}
-
-template<typename T>
-void DIM<T>::inclusive_scan()
-{ // {{{ OK
-  assert(nbins > 0);
-  const uint64_t s = nbins + 1;
-
-  fdps_v.resize(s);
-  sdps_v.resize(s);
-
-  if constexpr (std::is_same_v<T, double>) {
-    fdps_v[0] = 0.0;
-    sdps_v[0] = 0.0;
-    for (uint64_t i = 1; i < s; ++i) {
-      fdps_v[i] = fdps_v[i - 1] + fdc_v[i - 1];
-      sdps_v[i] = sdps_v[i - 1] + sdc_v[i - 1];
-    }
-  } else {
-    fdps_v[0].fill(0.0);
-    sdps_v[0].fill(0.0);
-    simde__m512d fdps_acc = simde_mm512_setzero_pd();
-    simde__m512d sdps_acc = simde_mm512_setzero_pd();
-    for (uint64_t i = 1; i < s; ++i) {
-      const simde__m512d fdc = simde_mm512_loadu_pd(fdc_v[i - 1].data());
-      const simde__m512d sdc = simde_mm512_loadu_pd(sdc_v[i - 1].data());
-      fdps_acc = simde_mm512_add_pd(fdps_acc, fdc);
-      sdps_acc = simde_mm512_add_pd(sdps_acc, sdc);
-      simde_mm512_storeu_pd(fdps_v[i].data(), fdps_acc);
-      simde_mm512_storeu_pd(sdps_v[i].data(), sdps_acc);
-    }
-  }
-} // }}}
-
-template<typename T>
-void DIM<T>::extrema_scan()
-{ // {{{ OK
-  const uint64_t s = nbins + 1;
-  fdpmax_v.resize(s + 1);
-  fdsmin_v.resize(s + 1);
-
-  if constexpr (std::is_same_v<T, double>) {
-    fdpmax_v[0] = ninf();
-    fdsmin_v[0] = pinf();
-    std::inclusive_scan(
-      fdps_v.begin() + 1, fdps_v.end(), fdpmax_v.begin() + 1, [](double a, double b) { return std::max(a, b); });
-    std::inclusive_scan(
-      fdps_v.rbegin(), fdps_v.rend() - 1, fdsmin_v.rbegin() + 1, [](double a, double b) { return std::min(a, b); });
-    fdpmax_v[s] = pinf();
-    fdsmin_v[s] = ninf();
-  } else {
-    fdpmax_v[0].fill(ninf());
-    fdsmin_v[0].fill(pinf());
-    simde__m512d fdpmax_acc = simde_mm512_loadu_pd(fdpmax_v[0].data());
-    simde__m512d fdsmin_acc = simde_mm512_loadu_pd(fdsmin_v[0].data());
-    for (uint64_t i = 1; i < s; ++i) {
-      const simde__m512d fdps_front = simde_mm512_loadu_pd(fdps_v[i].data());
-      const simde__m512d fdps_back = simde_mm512_loadu_pd(fdps_v[s - i].data());
-      fdpmax_acc = simde_mm512_max_pd(fdpmax_acc, fdps_front);
-      fdsmin_acc = simde_mm512_min_pd(fdsmin_acc, fdps_back);
-      simde_mm512_storeu_pd(fdpmax_v[i].data(), fdpmax_acc);
-      simde_mm512_storeu_pd(fdsmin_v[s - i].data(), fdsmin_acc);
-    }
-    fdpmax_v[s].fill(pinf());
-    fdsmin_v[s].fill(ninf());
-  }
-} // }}}
-
-// Find maximal intervals [a, b] within [lix, rix] where the prefix sum drops below a prior maximum.
-//
-// Conditions for a valid interval (a, b):
-//   1. a is a strict prefix maximum:  fdps[a] > fdpmax[a-1]
-//   2. b is right-maximal:            fdsmin[b] < fdps[a] but fdsmin[b+1] >= fdps[a]
-//   3. Minimum length:                b >= a + tau
-//   4. Negative sum:                  fdps[b] < fdps[a]
-//   5. Left-maximal (non-redundant):  fdps[b] >= fdpmax[a-1]
-//   6. b not claimed by earlier a:    b != b_prev
-//
-// Early return: if prefix sum ends below where it started (fdps[rix] < fdps[lix]), the entire [lix, rix] is one interval.
-template<typename T>
-void DIM<T>::extract_intervals_mx(const uint64_t tau, const uint64_t lix, const uint64_t rix, const size_t ix)
-{
-  uint64_t b_curr = lix;
-  uint64_t b_prev = std::numeric_limits<uint64_t>::max();
-
-  if (rix >= lix + tau && at(fdps_v[rix], ix) < at(fdps_v[lix], ix)) {
-    intervals_v[ix].emplace_back(lix, rix);
-    return;
-  }
-
-  for (uint64_t a = lix; a <= rix; ++a) {
-    const double fdpmax_a = at(fdpmax_v[a - 1], ix);
-    const double fdps_a = at(fdps_v[a], ix);
-
-    if (fdpmax_a >= fdps_a) continue; // Condition 1
-
-    while ((b_curr + 1) <= rix && (at(fdsmin_v[b_curr + 1], ix) < fdps_a))
-      ++b_curr; // Condition 2
-
-    const uint64_t b_star = b_curr;
-    if (b_star < (a + tau)) continue;               // Condition 3
-    if (at(fdps_v[b_star], ix) >= fdps_a) continue; // Condition 4
-    if (b_star == b_prev) continue;                 // Condition 6
-
-    if (at(fdps_v[b_star], ix) >= fdpmax_a) { // Condition 5
-      intervals_v[ix].emplace_back(a, b_star);
-      b_prev = b_star;
-    }
-  }
-}
-
-template<typename T>
-void DIM<T>::extract_intervals_sx(const uint64_t tau, const uint64_t lix, const uint64_t rix, const size_t ix)
-{ // {{{ ~OK: more or less identical to mx
-  // Every valid right endpoint b* is a suffix minimum of fdps_v
-  // Suffix minimum values are strictly increasing left-to-right,
-  // Hence, the pointer into the list is monotone across record highs which is O(k) total
-  const uint64_t gap_len = rix - lix + 1;
-  if (gap_len >= 1 + tau && at(fdps_v[rix], ix) < at(fdps_v[lix], ix)) {
-    intervals_v[ix].emplace_back(lix, rix);
-    return;
-  }
-
-  vec<pv_t> pv_v;
-  {
-    double y_min = pinf();
-    for (uint64_t j = rix; j >= lix; --j) {
-      const double v = at(fdps_v[j], ix);
-      if (v < y_min) {
-        y_min = v;
-        pv_v.push_back({j, v});
-      }
-    }
-    std::reverse(pv_v.begin(), pv_v.end());
-  }
-  if (pv_v.empty()) return;
-
-  size_t yix_min = 0;
-  double running_max = ninf();
-  uint64_t b_prev = std::numeric_limits<uint64_t>::max();
-
-  for (uint64_t a = lix; a <= rix; ++a) {
-    const double fdps_a = at(fdps_v[a], ix);
-    const double fdpmax_a = running_max;
-    if (fdps_a > running_max) running_max = fdps_a;
-
-    if (fdpmax_a >= fdps_a) continue; // Skip if a is not a record high
-
-    // Advance yix_min to the last suffix minimum with val < fdps_a
-    while (yix_min + 1 < pv_v.size() && pv_v[yix_min + 1].val < fdps_a) {
-      ++yix_min;
-    }
-    // Skip if no valid right endpoint with val < fdps_a
-    if (pv_v[yix_min].val >= fdps_a) continue;
-
-    const uint64_t b_star = pv_v[yix_min].pos;
-    const double fdps_bstar = pv_v[yix_min].val;
-
-    if (b_star < a + tau) continue; // Skip if no valid right endpoint in [a+tau, nbins]
-    if (b_star == b_prev) continue; // Skip if b* was already claimed
-
-    if (fdps_bstar >= fdpmax_a) {              // Left maximal
-      intervals_v[ix].emplace_back(a, b_star); // 1-based inclusive coordinates
-      b_prev = b_star;
-    }
-  }
-} // }}}
-
-template<typename T>
-void DIM<T>::expand_intervals(const double chisq_th, const size_t ix)
-{ // {{{ OK
-  auto& iv_ix = intervals_v[ix];
-  if (iv_ix.empty()) return;
-
-  double fdiff, sdiff, chisq_val;
-  uint64_t a, ap, b, bp;
-  size_t w = 0;
-  ap = iv_ix[0].a;
-  bp = iv_ix[0].b;
-
-  for (size_t i = 1; i < iv_ix.size(); ++i) {
-    a = iv_ix[i].a;
-    b = iv_ix[i].b;
-    fdiff = at(fdps_v[b], ix) - at(fdps_v[ap], ix);
-    sdiff = at(sdps_v[ap], ix) - at(sdps_v[b], ix);
-    // chisq_val = (sdiff > 0.0) ? (fdiff * fdiff) / sdiff : std::numeric_limits<double>::infinity();
-    chisq_val = ((fdiff * fdiff) + eps) / (sdiff + eps);
-
-    if ((chisq_val < chisq_th) && (a < bp)) {
-      a = ap;
-      // b = std::max(bp, b); // This is not necessary due to maximality and monotonicity of a's
-    } else {
-      iv_ix[w++] = {ap, bp}; // 1-based inclusive coordinates
-    }
-
-    ap = a;
-    bp = b;
-  }
-
-  iv_ix[w++] = {ap, bp}; // 1-based inclusive coordinates
-  iv_ix.resize(w);
-} // }}}
-
-template<typename T>
-void DIM<T>::compute_prefhistsum()
-{ // {{{ OK
-  if (!keep_hist) return;
-  const uint32_t W = params.hdist_th + 1;
-  // Add each row to the previous in-place to get prefix sums
-  for (uint64_t i = 0; i < nbins; ++i) {
-    for (uint32_t d = 0; d < W; ++d) {
-      hdisthist_v[((i + 1) * W) + d] += hdisthist_v[(i * W) + d];
-    }
-    miss_v[i + 1] += miss_v[i];
-  }
-} // }}}
-
-template<typename T>
-void DIM<T>::total_histogram(vec<uint64_t>& v, uint64_t& u, uint64_t& t) const
-{
-  if (keep_hist) {
-    extract_histogram(0, nbins, v, u, t);
-  } else {
-    v = hdisthist_v;
-    u = u_q; // explicit HD misses only; omits unscanned positions (e.g. Ns)
-    t = t_q;
-  }
-}
-
-template<typename T>
-void DIM<T>::extract_histogram(uint64_t a, uint64_t b, vec<uint64_t>& v, uint64_t& u, uint64_t& t) const
-{ // {{{ ~OK (TODO: counting misses or Ns)
-  const uint32_t W = params.hdist_th + 1;
-  v.resize(hdist_bound + 1);
-  // v.assign(hdist_bound + 1, 0);
-  const simde__mmask8 mask = static_cast<simde__mmask8>((1u << W) - 1);
-  const simde__m512i vb = simde_mm512_maskz_loadu_epi64(mask, &hdisthist_v[b * W]);
-  const simde__m512i va = simde_mm512_maskz_loadu_epi64(mask, &hdisthist_v[a * W]);
-  const simde__m512i vd = simde_mm512_sub_epi64(vb, va);
-  simde_mm512_storeu_si512(v.data(), vd);
-  const simde__m256i lend = simde_mm512_castsi512_si256(vd);
-  const simde__m256i rend = simde_mm512_extracti64x4_epi64(vd, 1);
-  const simde__m256i s4 = simde_mm256_add_epi64(lend, rend);
-  const simde__m128i s4_lend = simde_mm256_castsi256_si128(s4);
-  const simde__m128i s4_rend = simde_mm256_extracti128_si256(s4, 1);
-  const simde__m128i s2 = simde_mm_add_epi64(s4_lend, s4_rend);
-  t = simde_mm_extract_epi64(s2, 0) + simde_mm_extract_epi64(s2, 1);
-  // Explicit misses only; Ns / frac-unsampled k-mers are unobserved (not in u).
-  u = miss_v[b] - miss_v[a];
-} // }}}
 
 template<typename T>
 void QIE<T>::extract_simple_intervals(DIM<T>& dim, bool is_rc, uint64_t tau_eff, double d_q_bg)
-{ // {{{ ~OK
+{
   if constexpr (std::is_same_v<T, double>) {
     dim.extract_intervals_mx(tau_eff, 1, nbins);
     dim.expand_intervals(params.chisq);
-    for (const auto& iv : dim.get_intervals(0))
+    for (const auto& iv : dim.get_intervals_v(0))
       emit_record(dim, iv.a, iv.b + 1, 0, is_rc, d_q_bg);
   } else {
     for (size_t ix = 0; ix < WIDTH; ++ix) {
       dim.extract_intervals_mx(tau_eff, 1, nbins, ix);
       dim.expand_intervals(params.chisq, ix);
-      for (const auto& iv : dim.get_intervals(ix))
+      for (const auto& iv : dim.get_intervals_v(ix))
         emit_record(dim, iv.a, iv.b + 1, ix, is_rc, d_q_bg);
     }
   }
-} // }}}
+}
 
 template<typename T>
 void QIE<T>::extract_ordered_intervals(DIM<T>& dim, bool is_rc, uint64_t tau_eff, double d_q_bg)
-{ // {{{ ~OK
+{
   const uint64_t nbins = dim.get_nbins();
   bp_v.clear();
 
-  const auto& thrank = dim.get_thrank();
+  const auto& thrank = dim.get_thrank_v();
   if (thrank.empty()) return;
 
   size_t sbprev = 0;
@@ -712,52 +231,59 @@ void QIE<T>::extract_ordered_intervals(DIM<T>& dim, bool is_rc, uint64_t tau_eff
     }
     dim.expand_intervals(params.chisq, ix);
 
-    const auto& iv_v = dim.get_intervals(ix);
-    const size_t n_prev = bp_v.size();
+    const auto& iv_v = dim.get_intervals_v(ix);
+    const size_t nprev = bp_v.size();
     for (const auto& iv : iv_v) {
       bp_v.push_back({iv.a, iv.b + 1, ix});
     }
-    sbprev = n_prev;
+    sbprev = nprev;
   }
   merge_from(sbprev);
 
   if (bp_v.empty()) {
-    // No intervals extracted; report the full query.
-    emit_record(dim, 1, nbins + 1, size_t(-1), is_rc, d_q_bg);
-  } else {
-    // uint64_t prev = 1;
-    for (const auto& s : bp_v) {
-      // TODO: Is full segmentation desired? Even when they are too short?
-      // if (s.a_bin > prev) emit_record(dim, prev, s.a_bin, size_t(-1), is_rc);
-      emit_record(dim, s.a_bin, s.b_bin, s.ix, is_rc, d_q_bg);
-      // prev = s.b_bin;
+    if (!dim.get_has_skips()) {
+      // No intervals extracted; report the full query.
+      emit_record(dim, 1, nbins + 1, size_t(-1), is_rc, d_q_bg);
+    } else {
+      // Report one background record per maximal skip-free segment (b_bin exclusive).
+      // Segments must meet the same minimum length (tau_eff + 1 bins) as extracted intervals.
+      uint64_t a = 1;
+      for (uint64_t x = 1; x <= nbins; ++x) {
+        if (dim.is_skip(x)) {
+          if (x > a + tau_eff) emit_record(dim, a, x, size_t(-1), is_rc, d_q_bg);
+          a = x + 1;
+        }
+      }
+      if (nbins >= a + tau_eff) emit_record(dim, a, nbins + 1, size_t(-1), is_rc, d_q_bg);
     }
-    //if (prev <= nbins) emit_record(dim, prev, nbins + 1, size_t(-1), is_rc);
+  } else {
+    for (const auto& s : bp_v) {
+      emit_record(dim, s.a_bin, s.b_bin, s.ix, is_rc, d_q_bg);
+    }
   }
-} // }}}
+}
 
 template<typename T>
 void QIE<T>::emit_record(DIM<T>& dim, uint64_t a_bin, uint64_t b_bin, size_t th_ix, bool is_rc, double d_q_bg)
-{ // {{{ OK
+{
   const uint64_t L = enmers + k - 1;
 
-  window_score_t ws;
+  likelihood_estimate_t est;
   if (!coordinates_only) {
     uint64_t u, t;
-    dim.extract_histogram(a_bin - 1, b_bin - 1, v_scratch, u, t);
-    ws = score_window(*llhf, v_scratch.data(), u, t, d_q_bg);
-    // t == 0 (no k-mer hits): distance is undefined, not a plateau MLE.
-    if (ws.unmapped) ++n_unmapped;
+    dim.extract_histogram(a_bin - 1, b_bin - 1, scratch_v, u, t);
+    est = compute_likelihood_estimate(*llhf, scratch_v.data(), u, t, d_q_bg);
+    if (!est.has_hits) ++nunmapped;
   }
 
   const interval_t bin_iv{a_bin, b_bin};
   const interval_t seq_iv = get_coordinates(bin_iv, params.bin_shift, enmers, k);
-  records_v.emplace_back(bix, L, seq_iv, bin_iv, is_rc, ws.d, ws.info, th_ix, ws.lr_bg, ws.lr_ub);
-} // }}}
+  records_v.emplace_back(bix, L, seq_iv, bin_iv, is_rc, est.d, est.I, th_ix, est.lr_bg, est.lr_ub);
+}
 
 template<typename T>
-xy_t QIE<T>::get_distance_bin(const record_t& r, const arr<double, WIDTH>& th_v) const
-{ // {{{ OK
+xy_t QIE<T>::get_distance_bin(const record_t& r, const vec<double>& th_v) const
+{
   xy_t d_range{d_eps, d_ub};
   if (r.th_ix != size_t(-1)) {
     const double t_i = at(llhf->get_extrema(), r.th_ix);
@@ -770,23 +296,19 @@ xy_t QIE<T>::get_distance_bin(const record_t& r, const arr<double, WIDTH>& th_v)
     } else {
       // Matched high threshold: distance is in (th(i), th(i+1)].
       d_range.first = t_i;
-      d_range.second = (pos + 1 < WIDTH) ? th_v[pos + 1] : d_ub;
+      d_range.second = (pos + 1 < th_v.size()) ? th_v[pos + 1] : d_ub;
     }
-  } else if (std::isfinite(r.d) || std::isfinite(r.d_q)) {
-    // No threshold triggered: bracket the interval's own distance
-    const double d_anchor = std::isfinite(r.d) ? r.d : r.d_q;
-    const auto it = std::lower_bound(th_v.begin(), th_v.end(), d_anchor);
-    if (it != th_v.begin()) d_range.first = *(it - 1);
-    if (it != th_v.end()) d_range.second = *it;
+  } else {
+    const double d = is_valid_distance(r.d) ? r.d : r.d_q;
+    if (is_valid_distance(d)) d_range = bracket_distance(d, th_v);
   }
   return d_range;
-} // }}}
+}
 
 template<typename T>
-void QIE<T>::report_contiguous(std::ostream& sout, const str& rid) const
-{ // {{{ ???
-  // TODO: Revisit this and design a better format!
-  arr<double, WIDTH> th_v{};
+void QIE<T>::report_contiguous(std::ostream& sout, const str& rname) const
+{
+  vec<double> th_v(WIDTH);
   for (size_t i = 0; i < WIDTH; ++i)
     th_v[i] = at(llhf->get_extrema(), i);
   std::sort(th_v.begin(), th_v.end());
@@ -801,11 +323,11 @@ void QIE<T>::report_contiguous(std::ostream& sout, const str& rid) const
 
     if (params.canonical) {
       write_tsv(sout,
-                qid_batch[r.bix],
+                batch_v[r.bix].qid,
                 r.L,
                 r.seq_iv.a,
                 r.seq_iv.b,
-                rid,
+                rname,
                 r.d,
                 static_cast<uint32_t>(mask),
                 d_bin.str(),
@@ -820,13 +342,13 @@ void QIE<T>::report_contiguous(std::ostream& sout, const str& rid) const
         << '\n';
     } else {
       write_tsv(sout,
-                qid_batch[r.bix],
+                batch_v[r.bix].qid,
                 r.L,
                 r.seq_iv.a,
                 r.seq_iv.b,
                 report_strand(r.is_rc, r.d_diff),
                 static_cast<uint32_t>(r.is_rc),
-                rid,
+                rname,
                 r.d,
                 static_cast<uint32_t>(mask),
                 d_bin.str(),
@@ -842,13 +364,10 @@ void QIE<T>::report_contiguous(std::ostream& sout, const str& rid) const
         << '\n';
     }
   }
-} // }}}
+}
 
 template class QIE<double>;
 template class QIE<cm512_t>;
-
-template class DIM<double>;
-template class DIM<cm512_t>;
 
 template class LLH<double>;
 template class LLH<cm512_t>;
@@ -856,20 +375,20 @@ template class LLH<cm512_t>;
 bool MapSC::validate_configuration()
 {
   bool is_invalid = false;
-  if (dist_th.size() != 1 && dist_th.size() != 8) {
+  if (thresholds_v.size() != 1 && thresholds_v.size() != 8) {
     is_invalid = true;
-    cerr_msg("--dist-th requires exactly 1 or 8 thresholds; got ", dist_th.size());
+    cerr_msg("--dist-th requires exactly 1 or 8 thresholds; got ", thresholds_v.size());
   }
-  for (size_t i = 0; i < dist_th.size(); ++i) {
-    if (dist_th[i] <= 0.0) {
+  for (size_t i = 0; i < thresholds_v.size(); ++i) {
+    if (thresholds_v[i] <= 0.0) {
       is_invalid = true;
-      cerr_msg("--dist-th[", i, "] must be positive: ", dist_th[i]);
+      cerr_msg("--dist-th[", i, "] must be positive: ", thresholds_v[i]);
     }
   }
   {
-    auto sdist_th = dist_th;
-    std::sort(sdist_th.begin(), sdist_th.end());
-    if (const auto it = std::adjacent_find(sdist_th.begin(), sdist_th.end()); it != sdist_th.end()) {
+    auto sorted_v = thresholds_v;
+    std::sort(sorted_v.begin(), sorted_v.end());
+    if (const auto it = std::adjacent_find(sorted_v.begin(), sorted_v.end()); it != sorted_v.end()) {
       is_invalid = true;
       cerr_msg("--dist-th values must be unique; duplicate: ", *it);
     }
@@ -878,117 +397,79 @@ bool MapSC::validate_configuration()
     is_invalid = true;
     cerr_msg("--hdist-th must be in [0, ", hdist_bound, "] with the current SIMD histogram layout; got ", hdist_th);
   }
-  if (bin_shift >= 63) {
+  if (!validate_binning(bin_shift, tau)) {
     is_invalid = true;
-    cerr_msg("--bin-shift must be less than 63; got ", bin_shift);
   }
-  const uint64_t bin_size = (bin_shift < 63) ? (uint64_t(1) << bin_shift) : 0;
-  if (bin_size > tau) {
-    is_invalid = true;
-    cerr_msg("--bin-shift gives bin_size=", bin_size, ", which exceeds --min-length=", tau);
-  }
+  const uint64_t bin_size = (bin_shift <= 16) ? (uint64_t(1) << bin_shift) : 0;
   const uint64_t tau_bin = (bin_size > 0) ? ((tau + bin_size - 1) >> bin_shift) : 0;
   if (tau_bin < 2) {
     is_invalid = true;
-    cerr_msg("--min-length must span at least two bins after binning ", "(tau=", tau, ", bin_size=", bin_size, ")");
+    cerr_msg("-l must span at least two bins after binning ", "(tau=", tau, ", bin_size=", bin_size, ")");
   }
   return !is_invalid;
 }
 
 void MapSC::map()
 {
-  *(output_stream) << std::setprecision(5);
+  set_precision(*output_stream, 5);
 
-  // Load all query sequences once? Might be inefficient
-  qseq_sptr_t qs = std::make_shared<QSeq>(query_path);
+  qseq_sptr_t qs = std::make_shared<QSeq>(target_path);
 
-  bool cont_reading;
-  while ((cont_reading = qs->read_next_batch())) {
-    total_qseq += qs->get_cbatch_size();
+  // read_next_batch returns false on EOF *after* appending the final partial
+  // batch, so count from the accumulated vector rather than the loop iterations.
+  while (qs->read_next_batch()) {
   }
-  total_qseq += qs->get_cbatch_size();
+  total_qseq = qs->get_batch_v().size();
 
-  std::ifstream sketch_stream(sketch_path, std::ifstream::binary);
-  check_fstream(sketch_stream, std::string("Cannot open sketch file: "), sketch_path.string());
-
-  uint32_t nsketches;
-  sketch_stream.read(reinterpret_cast<char*>(&nsketches), sizeof(uint32_t));
+  const vec<uint64_t> sketch_offsets = read_sketch_offsets(sketch_path);
+  const uint32_t nsketches = static_cast<uint32_t>(sketch_offsets.size());
   const uint32_t nthreads = std::max(1u, std::min(num_threads, nsketches));
   cerr_msg("Processing ", nsketches, " sketches w/ ", nthreads, " thread(s)...");
 
-  std::vector<uint64_t> sketch_offsets(nsketches);
-  for (uint32_t i = 0; i < nsketches; ++i) {
-    sketch_offsets[i] = static_cast<uint64_t>(sketch_stream.tellg());
-    Sketch::seek_past(sketch_stream); // reads headers, seeks over data
-  }
-  sketch_stream.close();
-
-  size_t n = dist_th.size();
-
-  // Per-sketch result buffers
   std::vector<strstream> results(nsketches);
-  std::vector<uint64_t> unmapped_iv_v(nsketches, 0);
-  std::vector<uint64_t> unmapped_null_v(nsketches, 0);
-  std::atomic<uint32_t> next_idx{0};
+  std::vector<uint64_t> nunmapped_v(nsketches, 0);
   std::atomic<uint32_t> count_p{0};
   std::mutex cerr_mtx;
 
-  auto worker = [&](const uint32_t tseed) {
-    init_thread_rng(tseed);
-    uint32_t i;
-    while ((i = next_idx.fetch_add(1, std::memory_order_relaxed)) < nsketches) {
-      // Each worker opens its own file handle so no stream sharing occurs
-      std::ifstream sketch_stream(sketch_path, std::ifstream::binary);
-      sketch_sptr_t sketch = std::make_shared<Sketch>(sketch_path);
-      sketch->load_from_offset(sketch_stream, sketch_offsets[i]);
-      sketch_stream.close();
-      bool canonical = sketch->is_canonical();
+  ThreadPool pool(nthreads);
+  pool.parallel_for(nsketches, 1, [&](const uint64_t i) {
+    // Each sketch gets its own RNG stream: results are independent of scheduling.
+    init_thread_rng(static_cast<uint32_t>(i) + 1);
+    // Each task opens its own file handle so no stream sharing occurs
+    std::ifstream sketch_stream(sketch_path, std::ifstream::binary);
+    sketch_sptr_t sketch = std::make_shared<Sketch>(sketch_path);
+    sketch->load_from_offset(sketch_stream, sketch_offsets[i]);
+    sketch_stream.close();
+    bool canonical = sketch->is_canonical();
 
-      strstream sout;
-      sout << std::setprecision(5);
-      if (dist_th.size() == 1) {
-        params_t<double> params(n, dist_th.front(), hdist_th, tau, chisq, bin_shift, sample_size, canonical, enum_only);
-        QIE<double> qie(params, sketch, sketch->get_lshf_sptr(), qs->get_seq_batch(), qs->get_qid_batch());
-        qie.map_sequences(sout, sketch->get_rid());
-        unmapped_iv_v[i] = qie.get_n_unmapped();
-        unmapped_null_v[i] = qie.get_n_unmapped_samples();
-      } else {
-        params_t<cm512_t> params(n, {0}, hdist_th, tau, chisq, bin_shift, sample_size, canonical, enum_only);
-        std::copy(dist_th.begin(), dist_th.end(), params.dist_th.begin());
-        QIE<cm512_t> qie(params, sketch, sketch->get_lshf_sptr(), qs->get_seq_batch(), qs->get_qid_batch());
-        qie.map_sequences(sout, sketch->get_rid());
-        unmapped_iv_v[i] = qie.get_n_unmapped();
-        unmapped_null_v[i] = qie.get_n_unmapped_samples();
-      }
-
-      // Store result at its reserved slot (no aliasing between threads)
-      results[i] = std::move(sout);
-
-      uint32_t num_p = count_p.fetch_add(1, std::memory_order_relaxed) + 1;
-      {
-        std::lock_guard<std::mutex> lock(cerr_mtx);
-        std::cerr << "\rProcessed sketch " << num_p << "/" << nsketches << "..." << std::flush;
-        if (num_p == nsketches) std::cerr << std::endl;
-      }
+    strstream sout;
+    set_precision(sout, 5);
+    if (thresholds_v.size() == 1) {
+      params_t<double> params(thresholds_v.front(), hdist_th, tau, chisq, bin_shift, sample_size, canonical, enum_only);
+      QIE<double> qie(params, sketch, sketch->get_lshf_sptr(), qs->get_batch_v());
+      qie.map_sequences(sout, sketch->get_rname());
+      nunmapped_v[i] = qie.get_nunmapped();
+    } else {
+      params_t<cm512_t> params({0}, hdist_th, tau, chisq, bin_shift, sample_size, canonical, enum_only);
+      std::copy(thresholds_v.begin(), thresholds_v.end(), params.dist_th.begin());
+      QIE<cm512_t> qie(params, sketch, sketch->get_lshf_sptr(), qs->get_batch_v());
+      qie.map_sequences(sout, sketch->get_rname());
+      nunmapped_v[i] = qie.get_nunmapped();
     }
-  };
 
-  std::vector<std::thread> threads;
-  threads.reserve(nthreads);
-  for (uint32_t t = 0; t < nthreads; ++t) {
-    threads.emplace_back([&, t]() { worker(t + 1); });
-  }
-  for (auto& t : threads) {
-    t.join();
-  }
+    results[i] = std::move(sout);
 
-  const uint64_t total_unmapped_iv = std::accumulate(unmapped_iv_v.begin(), unmapped_iv_v.end(), uint64_t(0));
-  const uint64_t total_unmapped_null = std::accumulate(unmapped_null_v.begin(), unmapped_null_v.end(), uint64_t(0));
-  if (total_unmapped_iv > 0) {
-    cerr_msg("Unmapped intervals (no k-mer hits): ", total_unmapped_iv, " (distance reported as NA)");
-  }
-  if (total_unmapped_null > 0) {
-    cerr_msg("Unmapped null samples (no k-mer hits): ", total_unmapped_null, " (excluded from significance fits)");
+    uint32_t num_p = count_p.fetch_add(1, std::memory_order_relaxed) + 1;
+    {
+      std::lock_guard<std::mutex> lock(cerr_mtx);
+      std::cerr << "\rProcessed sketch " << num_p << "/" << nsketches << "..." << std::flush;
+      if (num_p == nsketches) std::cerr << std::endl;
+    }
+  });
+
+  const uint64_t nunmapped = std::accumulate(nunmapped_v.begin(), nunmapped_v.end(), uint64_t(0));
+  if (nunmapped > 0) {
+    cerr_msg("Unmapped intervals (no k-mer hits): ", nunmapped, " (distance reported as NA)");
   }
 
   for (uint32_t i = 0; i < nsketches; ++i) {
@@ -998,17 +479,18 @@ void MapSC::map()
 
 MapSC::MapSC(CLI::App& sc)
 {
-  sc.add_option("-q,--query-path", query_path, "Query FASTA/FASTQ file <path> (or URL) (gzip compatible)")
-    ->required()
+  sc.add_option("target-path", target_path, "Query FASTA/FASTQ file <path> (or URL) (gzip compatible)")
     ->check(url_validator | CLI::ExistingFile);
-  sc.add_option("-i,--sketch-path", sketch_path, "Sketch file at <path> to query")->required()->check(CLI::ExistingFile);
+  sc.add_option("sketch-path", sketch_path, "Reference sketch file <path>")->check(CLI::ExistingFile);
   sc.add_option("-o,--output-path", output_path, "Write output to a file at <path> [stdout]");
   sc.add_option("--hdist-th", hdist_th, "Maximum Hamming distance for a k-mer to match [4]")
     ->check(CLI::Range(0, static_cast<int>(hdist_bound)));
   sc.add_option("--chisq", chisq, "Chi-square threshold [33.00051]")->check(CLI::NonNegativeNumber);
-  sc.add_option("-d,--dist-th", dist_th, "Distance threshold(s) - provide exactly 1 or 8 values")->required()->expected(1, 8);
-  sc.add_option("-l,--min-length", tau, "Minimum interval length in k-mers")->required()->check(CLI::PositiveNumber);
-  sc.add_option("-b,--bin-shift", bin_shift, "Group consecutive k-mers into bins of size 2^b [0]")->check(CLI::Range(0, 62));
+  sc.add_option("-d,--dist-th", thresholds_v, "Distance threshold(s) - provide exactly 1 or 8 values")
+    ->required()
+    ->expected(1, 8);
+  sc.add_option("-l", tau, "Minimum interval length in k-mers")->required()->check(CLI::PositiveNumber);
+  sc.add_option("-b,--bin-shift", bin_shift, "Group consecutive k-mers into bins of size 2^b [0]")->check(CLI::Range(0, 16));
   sc.add_flag("--enum-only,!--no-enum-only", enum_only, "Enumerate intervals without MLE distance estimation [false]");
   sc.add_option("--sample-size", sample_size, "Samples for significance test (0: skip) [200]")->check(CLI::NonNegativeNumber);
   sc.callback([&]() {

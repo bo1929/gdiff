@@ -132,7 +132,7 @@ int main(int argc, char** argv)
   auto& sc_sketch = *app.add_subcommand("sketch", "Create sketches from FASTA/FASTQ files");
   auto& sc_map = *app.add_subcommand("map", "Map queries and extract distance-based patterns from sketches");
   auto& sc_dist = *app.add_subcommand("dist", "Sample query regions and summarize MLE distances");
-  auto& sc_detect = *app.add_subcommand("detect", "Fit a null distance distribution and detect outlier regions");
+  auto& sc_detect = *app.add_subcommand("detect", "Fit a background distance distribution and detect outlier regions");
   auto& sc_merge = *app.add_subcommand("merge", "Merge multiple sketches into a single sketch file");
   auto& sc_info = *app.add_subcommand("info", "Show metadata for all sketches in a sketch file");
 

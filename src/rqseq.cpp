@@ -147,14 +147,8 @@ bool QSeq::read_next_batch()
   return cont_reading;
 }
 
-bool QSeq::is_empty()
-{
-  return batch_v.empty();
-}
+bool QSeq::is_empty() { return batch_v.empty(); }
 
-void QSeq::clear()
-{
-  batch_v.clear();
-}
+void QSeq::clear() { batch_v.clear(); }
 
 template void RSeq::extract_mers(vvec<enc_t>& table);

@@ -8,6 +8,7 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <set>
 
 namespace {
 
@@ -21,11 +22,6 @@ static llh_sptr_t<double> make_map_llhf()
   return std::make_shared<LLH<double>>(27, 11, 0.5, 4, 0.1);
 }
 
-static LLH<double> make_null_llhf()
-{
-  return LLH<double>(27, 11, 0.5, 4, 0.0, false);
-}
-
 static void inject_hits_all_bins(DIM<double>& dim, uint64_t nbins, uint32_t hdist = 0, int reps = 4)
 {
   for (uint64_t i = 0; i < nbins; ++i) {
@@ -35,10 +31,9 @@ static void inject_hits_all_bins(DIM<double>& dim, uint64_t nbins, uint32_t hdis
   }
 }
 
-static void sample_null(DIM<double>& dim, uint64_t sample_size, vec<sample_t>& out,
-                        uint64_t curr_bins = 3, uint64_t tau_bins = 3, uint64_t bix = 0)
+static void sample_background(DIM<double>& dim, vec<sample_t>& out, uint64_t nwin_bins = 4, uint64_t bix = 0)
 {
-  dim.sample_intervals(make_null_llhf(), curr_bins, tau_bins, sample_size, bix, out);
+  out = dim.sample_random_intervals(nwin_bins, bix);
 }
 
 // Minimal sketch file (same layout as test_sketch.cpp) for DistanceSampler tests.
@@ -47,8 +42,8 @@ static sketch_sptr_t load_tiny_sketch(bool canonical = true)
   const auto path = std::filesystem::temp_directory_path() / "test_distance_sampler.skc";
   const uint8_t k = 27, w = 33, h = 11;
   auto lshf_obj = std::make_shared<LSHF>(k, h);
-  auto ppos = lshf_obj->get_ppos();
-  auto npos = lshf_obj->get_npos();
+  auto ppos = lshf_obj->get_ppos_v();
+  auto npos = lshf_obj->get_npos_v();
 
   {
     std::ofstream sout(path, std::ofstream::binary);
@@ -91,9 +86,9 @@ static sketch_sptr_t load_tiny_sketch(bool canonical = true)
 
 } // namespace
 
-TEST_SUITE("null sampling and significance") {
+TEST_SUITE("background sampling and significance") {
 
-TEST_CASE("sample_intervals collects windows from hit-rich query") {
+TEST_CASE("sample_random_intervals collects windows from hit-rich query") {
   seed = 7;
   init_thread_rng(0);
 
@@ -103,18 +98,18 @@ TEST_CASE("sample_intervals collects windows from hit-rich query") {
   inject_hits_all_bins(dim, 64);
   dim.compute_prefhistsum();
 
-  vec<sample_t> null_samples;
-  sample_null(dim, params.sample_size, null_samples);
-  REQUIRE(null_samples.size() >= GammaModel::min_nsamples);
-  for (const auto& s : null_samples) {
+  vec<sample_t> bg_samples;
+  sample_background(dim, bg_samples);
+  REQUIRE(bg_samples.size() >= GammaModel::min_nsamples);
+  for (const auto& s : bg_samples) {
     CHECK(std::isfinite(s.d));
     CHECK(std::isfinite(s.I));
     CHECK(s.bix == 0);
-    CHECK(s.bin_iv.a < s.bin_iv.b);
+    CHECK(s.bin_iv.b - s.bin_iv.a == 4);
   }
 }
 
-TEST_CASE("sample_intervals yields empty pool when query has no hits") {
+TEST_CASE("sample_random_intervals yields empty pool when query has no hits") {
   seed = 3;
   init_thread_rng(0);
 
@@ -122,38 +117,59 @@ TEST_CASE("sample_intervals yields empty pool when query has no hits") {
   DIM<double> dim(params, make_map_llhf(), 64, 64);
   dim.compute_prefhistsum();
 
-  vec<sample_t> null_samples;
-  sample_null(dim, params.sample_size, null_samples);
-  CHECK(null_samples.empty());
+  vec<sample_t> bg_samples;
+  sample_background(dim, bg_samples);
+  CHECK(bg_samples.empty());
 }
 
-TEST_CASE("sample_intervals falls back to tau_bins when curr_bins cannot fill") {
+TEST_CASE("sample_random_intervals returns distinct exact-length windows") {
   seed = 5;
   init_thread_rng(0);
 
   auto params = make_params(20);
   auto llhf = make_map_llhf();
-  DIM<double> dim(params, llhf, 10, 10);
-  inject_hits_all_bins(dim, 10);
+  DIM<double> dim(params, llhf, 32, 32);
+  inject_hits_all_bins(dim, 32);
   dim.compute_prefhistsum();
 
-  vec<sample_t> null_samples;
-  sample_null(dim, params.sample_size, null_samples, 16, 3, 0);
-  REQUIRE(null_samples.size() >= GammaModel::min_nsamples);
-  for (const auto& s : null_samples)
-    CHECK(s.bin_iv.b - s.bin_iv.a == 3);
+  vec<sample_t> bg_samples;
+  sample_background(dim, bg_samples, 5, 0);
+  REQUIRE(bg_samples.size() == params.sample_size);
+  std::set<uint64_t> starts;
+  for (const auto& s : bg_samples) {
+    CHECK(s.bin_iv.b - s.bin_iv.a == 5);
+    starts.insert(s.bin_iv.a);
+  }
+  CHECK(starts.size() == bg_samples.size());
 }
 
-TEST_CASE("sample_intervals skips when window exceeds query mers") {
+TEST_CASE("sample_random_intervals skips when window exceeds query bins") {
   auto params = make_params(20);
   auto llhf = make_map_llhf();
   DIM<double> dim(params, llhf, 2, 2);
   inject_hits_all_bins(dim, 2, 0, 2);
   dim.compute_prefhistsum();
 
-  vec<sample_t> null_samples;
-  sample_null(dim, params.sample_size, null_samples, 3, 3, 0);
-  CHECK(null_samples.empty());
+  vec<sample_t> bg_samples;
+  sample_background(dim, bg_samples, 3, 0);
+  CHECK(bg_samples.empty());
+}
+
+TEST_CASE("sample_random_intervals excludes windows crossing skipped bins") {
+  seed = 13;
+  init_thread_rng(0);
+
+  auto params = make_params(64);
+  DIM<double> dim(params, make_map_llhf(), 16, 16);
+  inject_hits_all_bins(dim, 16);
+  dim.skip_mer(7);
+  dim.compute_prefhistsum();
+
+  vec<sample_t> bg_samples;
+  sample_background(dim, bg_samples, 4, 0);
+  REQUIRE_FALSE(bg_samples.empty());
+  for (const auto& s : bg_samples)
+    CHECK_FALSE((s.bin_iv.a <= 8 && 8 < s.bin_iv.b));
 }
 
 TEST_CASE("test_significance scores a single record") {
@@ -166,9 +182,9 @@ TEST_CASE("test_significance scores a single record") {
   inject_hits_all_bins(dim, 64);
   dim.compute_prefhistsum();
 
-  vec<sample_t> null_samples;
-  sample_null(dim, params.sample_size, null_samples);
-  REQUIRE(null_samples.size() >= GammaModel::min_nsamples);
+  vec<sample_t> bg_samples;
+  sample_background(dim, bg_samples);
+  REQUIRE(bg_samples.size() >= GammaModel::min_nsamples);
 
   vec<uint64_t> v;
   uint64_t u, t;
@@ -180,7 +196,7 @@ TEST_CASE("test_significance scores a single record") {
   r.d_diff = -0.05;
   r.d_q = 0.2;
 
-  CHECK(test_significance(r, null_samples, params.sample_size, "q0"));
+  CHECK(test_significance(r, bg_samples, params.sample_size, "q0"));
   CHECK(std::isfinite(r.percentile));
   CHECK(r.percentile >= 0.0);
   CHECK(r.percentile <= 1.0);
@@ -199,9 +215,9 @@ TEST_CASE("benjamini_hochberg_correction assigns qvalues per strand") {
   inject_hits_all_bins(dim, 64);
   dim.compute_prefhistsum();
 
-  vec<sample_t> null_samples;
-  sample_null(dim, params.sample_size, null_samples);
-  REQUIRE(null_samples.size() >= GammaModel::min_nsamples);
+  vec<sample_t> bg_samples;
+  sample_background(dim, bg_samples);
+  REQUIRE(bg_samples.size() >= GammaModel::min_nsamples);
 
   vec<uint64_t> v;
   uint64_t u, t;
@@ -216,7 +232,7 @@ TEST_CASE("benjamini_hochberg_correction assigns qvalues per strand") {
   for (auto& r : records) {
     r.d_diff = -0.05;
     r.d_q = 0.2;
-    CHECK(test_significance(r, null_samples, params.sample_size, "q0"));
+    CHECK(test_significance(r, bg_samples, params.sample_size, "q0"));
   }
 
   benjamini_hochberg_correction(records);
@@ -228,7 +244,7 @@ TEST_CASE("benjamini_hochberg_correction assigns qvalues per strand") {
   }
 }
 
-TEST_CASE("overlapping null windows on same query are excluded from scoring") {
+TEST_CASE("overlapping background windows on same query are excluded from scoring") {
   seed = 19;
   init_thread_rng(0);
 
@@ -238,11 +254,11 @@ TEST_CASE("overlapping null windows on same query are excluded from scoring") {
   inject_hits_all_bins(dim, 64);
   dim.compute_prefhistsum();
 
-  vec<sample_t> null_samples;
-  sample_null(dim, params.sample_size, null_samples);
-  REQUIRE(null_samples.size() >= GammaModel::min_nsamples);
+  vec<sample_t> bg_samples;
+  sample_background(dim, bg_samples);
+  REQUIRE(bg_samples.size() >= GammaModel::min_nsamples);
 
-  const sample_t& anchor = null_samples.front();
+  const sample_t& anchor = bg_samples.front();
   vec<uint64_t> v;
   uint64_t u, t;
   dim.extract_histogram(anchor.bin_iv.a - 1, anchor.bin_iv.b - 1, v, u, t);
@@ -253,76 +269,152 @@ TEST_CASE("overlapping null windows on same query are excluded from scoring") {
   r.d_diff = 0.1;
   r.d_q = 0.15;
 
-  CHECK(test_significance(r, null_samples, params.sample_size, "q0"));
+  CHECK(test_significance(r, bg_samples, params.sample_size, "q0"));
   CHECK(std::isfinite(r.percentile));
 }
 
-TEST_CASE("filter_null_samples drops overlaps and invalid entries") {
+TEST_CASE("filter_background_samples drops overlaps and invalid entries") {
   const vec<sample_t> pool{
-    {0.10, 1.0, 0, {1, 3}},  // no overlap with {4, 7}
+    {0.10, 1.0, 0, {1, 4}},  // no overlap with {4, 7}
     {0.20, 1.0, 0, {4, 7}},  // overlaps record bin_iv
-    {nanx(), 1.0, 0, {10, 14}},
-    {0.30, nanx(), 0, {10, 14}},
+    {nanx(), 1.0, 0, {10, 13}},
+    {0.30, nanx(), 0, {10, 13}},
     {0.40, 1.0, 1, {4, 7}}, // other query: keep despite coord overlap
-    {0.50, 2.0, 0, {10, 14}},
+    {0.50, 2.0, 0, {10, 13}},
+    {0.60, 2.0, 0, {20, 24}}, // wrong length
   };
   record_t r(0, 32, interval_t{1, 20}, interval_t{4, 7}, false, 0.1, 1.0, 0);
   vec<sample_t> out;
-  CHECK(filter_null_samples(pool, r, 100, out));
+  CHECK(filter_background_samples(pool, r, 100, out));
   REQUIRE(out.size() == 3);
   CHECK(out[0].d == doctest::Approx(0.10));
   CHECK(out[1].d == doctest::Approx(0.40));
   CHECK(out[2].d == doctest::Approx(0.50));
 }
 
-TEST_CASE("filter_null_samples reservoirs down to sample_size") {
-  seed = 99;
-  init_thread_rng(0);
-
+TEST_CASE("filter_background_samples reservoirs down to sample_size") {
   vec<sample_t> pool;
   for (uint64_t i = 0; i < 20; ++i)
     pool.push_back({0.1 + 0.01 * static_cast<double>(i), 1.0, 0, {100 + i, 104 + i}});
-  record_t r(0, 32, interval_t{1, 20}, interval_t{1, 3}, false, 0.1, 1.0, 0);
-  vec<sample_t> out;
-  CHECK_FALSE(filter_null_samples(pool, r, 5, out));
-  CHECK(out.size() == 5);
-  for (const auto& s : out) {
+  record_t r(0, 32, interval_t{1, 20}, interval_t{1, 5}, false, 0.1, 1.0, 0);
+  vec<sample_t> out0, out1;
+  seed = 99;
+  init_thread_rng(0);
+  CHECK_FALSE(filter_background_samples(pool, r, 5, out0));
+  seed = 99;
+  init_thread_rng(0);
+  CHECK_FALSE(filter_background_samples(pool, r, 5, out1));
+
+  REQUIRE(out0.size() == 5);
+  REQUIRE(out1.size() == out0.size());
+  std::set<uint64_t> starts;
+  for (size_t i = 0; i < out0.size(); ++i) {
+    const auto& s = out0[i];
     CHECK(std::isfinite(s.d));
     CHECK(std::isfinite(s.I));
+    CHECK(s.bin_iv.a >= 100);
+    CHECK(s.bin_iv.a < 120);
+    CHECK(s.bin_iv.a == out1[i].bin_iv.a);
+    starts.insert(s.bin_iv.a);
   }
+  CHECK(starts.size() == out0.size());
 }
 
-TEST_CASE("test_significance reuses gamma_fit_cache when no overlaps excluded") {
-  vec<sample_t> null_samples;
+TEST_CASE("filter_background_samples handles zero sample size") {
+  const vec<sample_t> pool{{0.1, 1.0, 0, {10, 14}}, {0.2, 1.0, 0, {20, 24}}};
+  record_t r(0, 32, interval_t{1, 20}, interval_t{1, 5}, false, 0.1, 1.0, 0);
+  vec<sample_t> out{{0.3, 1.0, 0, {30, 34}}};
+  CHECK_FALSE(filter_background_samples(pool, r, 0, out));
+  CHECK(out.empty());
+}
+
+TEST_CASE("test_significance reuses gamma fit when no overlaps are excluded") {
+  vec<sample_t> bg_samples;
   for (uint64_t i = 0; i < 16; ++i)
-    null_samples.push_back({0.05 + 0.01 * static_cast<double>(i % 5), 5.0, 0, {20 + i, 23 + i}});
+    bg_samples.push_back({0.05 + 0.01 * static_cast<double>(i % 5), 5.0, 0, {20 + i, 23 + i}});
 
   record_t r0(0, 32, interval_t{1, 20}, interval_t{1, 4}, false, 0.08, 5.0, 0);
   record_t r1 = r0;
   r0.d_diff = nanx();
   r1.d_diff = nanx();
 
-  gamma_fit_cache_t cache;
-  CHECK(test_significance(r0, null_samples, null_samples.size(), "q0", &cache));
-  REQUIRE(cache.ok);
-  CHECK(cache.bix == 0);
-  const auto cached = cache.params;
-  const double p0 = r0.percentile;
+  gamma_fit_t fit;
+  CHECK(test_significance(r0, bg_samples, bg_samples.size(), "q0", &fit));
+  REQUIRE(fit.ok);
+  CHECK(fit.bix == r0.bix);
+  CHECK(fit.nwin_bins == r0.nbins);
+  CHECK(fit.sample_size == bg_samples.size());
 
-  CHECK(test_significance(r1, null_samples, null_samples.size(), "q0", &cache));
-  CHECK(cache.params.shape == doctest::Approx(cached.shape));
-  CHECK(cache.params.scale == doctest::Approx(cached.scale));
-  CHECK(r1.percentile == doctest::Approx(p0));
+  fit.params = {2.0, 0.05};
+  fit.median = GammaModel::median_from_params(fit.params, d_eps, d_ub - d_eps);
+  CHECK(test_significance(r1, bg_samples, bg_samples.size(), "q0", &fit));
+  CHECK(fit.params.shape == doctest::Approx(2.0));
+  CHECK(fit.params.scale == doctest::Approx(0.05));
+  CHECK(r1.percentile == doctest::Approx(GammaModel::cdf(r1.d, 2.0, 0.05)));
 }
 
-TEST_CASE("test_significance fails when null pool is too small") {
+TEST_CASE("test_significance invalidates gamma fit keys") {
+  vec<sample_t> bg_samples;
+  for (uint64_t i = 0; i < 16; ++i) {
+    bg_samples.push_back({0.05 + 0.01 * static_cast<double>(i % 5), 5.0, 0, {20 + i, 23 + i}});
+    bg_samples.push_back({0.06 + 0.01 * static_cast<double>(i % 5), 5.0, 0, {50 + i, 54 + i}});
+  }
+
+  gamma_fit_t fit;
+  record_t r(0, 32, interval_t{1, 20}, interval_t{1, 4}, false, 0.08, 5.0, 0);
+  r.d_diff = nanx();
+  REQUIRE(test_significance(r, bg_samples, 16, "q0", &fit));
+
+  r.bix = 1;
+  REQUIRE(test_significance(r, bg_samples, 16, "q1", &fit));
+  CHECK(fit.bix == 1);
+
+  r.bin_iv = {1, 5};
+  r.nbins = 4;
+  REQUIRE(test_significance(r, bg_samples, 16, "q1", &fit));
+  CHECK(fit.nwin_bins == 4);
+
+  REQUIRE(test_significance(r, bg_samples, 12, "q1", &fit));
+  CHECK(fit.sample_size == 12);
+}
+
+TEST_CASE("overlap exclusion bypasses a reusable gamma fit") {
+  vec<sample_t> bg_samples;
+  for (uint64_t i = 0; i < 16; ++i)
+    bg_samples.push_back({0.05 + 0.01 * static_cast<double>(i % 5), 5.0, 0, {20 + i, 23 + i}});
+
+  gamma_fit_t fit;
+  fit.bix = 0;
+  fit.nwin_bins = 3;
+  fit.sample_size = bg_samples.size();
+  fit.params = {2.0, 0.05};
+  fit.median = GammaModel::median_from_params(fit.params, d_eps, d_ub - d_eps);
+  fit.ok = true;
+
+  record_t r(0, 32, interval_t{1, 20}, interval_t{20, 23}, false, 0.08, 5.0, 0);
+  r.d_diff = nanx();
+  vec<sample_t> filtered;
+  REQUIRE(filter_background_samples(bg_samples, r, bg_samples.size(), filtered));
+  vec<double> d_v;
+  for (const auto& sample : filtered)
+    d_v.push_back(sample.d);
+  const auto expected_fit = GammaModel::fit_from_samples(GammaModel::prepare_samples(d_v, d_eps).x);
+  const double expected = GammaModel::cdf(r.d, expected_fit.shape, expected_fit.scale);
+
+  REQUIRE(test_significance(r, bg_samples, bg_samples.size(), "q0", &fit));
+  CHECK(fit.params.shape == doctest::Approx(2.0));
+  CHECK(fit.params.scale == doctest::Approx(0.05));
+  CHECK(r.percentile == doctest::Approx(expected));
+}
+
+TEST_CASE("test_significance fails when background pool is too small") {
   auto params = make_params(20);
-  vec<sample_t> null_samples;
+  vec<sample_t> bg_samples;
   record_t r(0, 32, interval_t{1, 20}, interval_t{5, 9}, false, 0.1, 10.0, 0);
   r.d_diff = -0.05;
   r.d_q = 0.2;
 
-  CHECK_FALSE(test_significance(r, null_samples, params.sample_size, "q0"));
+  CHECK_FALSE(test_significance(r, bg_samples, params.sample_size, "q0"));
   CHECK(std::isnan(r.percentile));
   CHECK(std::isnan(r.fold));
 }
@@ -337,9 +429,9 @@ TEST_CASE("canonical records use one-sided test when d_diff is NaN") {
   inject_hits_all_bins(dim, 64);
   dim.compute_prefhistsum();
 
-  vec<sample_t> null_samples;
-  sample_null(dim, params.sample_size, null_samples);
-  REQUIRE(null_samples.size() >= GammaModel::min_nsamples);
+  vec<sample_t> bg_samples;
+  sample_background(dim, bg_samples);
+  REQUIRE(bg_samples.size() >= GammaModel::min_nsamples);
 
   vec<uint64_t> v;
   uint64_t u, t;
@@ -350,7 +442,7 @@ TEST_CASE("canonical records use one-sided test when d_diff is NaN") {
   record_t r(0, 32, interval_t{1, 20}, interval_t{5, 9}, false, d_obs, I_obs, 0);
   r.d_diff = nanx();
 
-  CHECK(test_significance(r, null_samples, params.sample_size, "q0"));
+  CHECK(test_significance(r, bg_samples, params.sample_size, "q0"));
   CHECK(std::isfinite(r.percentile));
   CHECK(r.percentile >= 0.0);
   CHECK(r.percentile <= 1.0);
@@ -368,9 +460,9 @@ TEST_CASE("reference strand d_diff zero uses two-sided test") {
   inject_hits_all_bins(dim, 64);
   dim.compute_prefhistsum();
 
-  vec<sample_t> null_samples;
-  sample_null(dim, params.sample_size, null_samples);
-  REQUIRE(null_samples.size() >= GammaModel::min_nsamples);
+  vec<sample_t> bg_samples;
+  sample_background(dim, bg_samples);
+  REQUIRE(bg_samples.size() >= GammaModel::min_nsamples);
 
   vec<uint64_t> v;
   uint64_t u, t;
@@ -381,7 +473,7 @@ TEST_CASE("reference strand d_diff zero uses two-sided test") {
   record_t r(0, 32, interval_t{1, 20}, interval_t{5, 9}, false, d_obs, I_obs, 0);
   r.d_diff = 0.0;
 
-  CHECK(test_significance(r, null_samples, params.sample_size, "q0"));
+  CHECK(test_significance(r, bg_samples, params.sample_size, "q0"));
   CHECK(std::isfinite(r.percentile));
   CHECK((!std::isnan(r.d_diff) && (r.is_rc == (r.d_diff > 0.0))));
 }
@@ -396,9 +488,9 @@ TEST_CASE("query strand uses one-sided test") {
   inject_hits_all_bins(dim, 64);
   dim.compute_prefhistsum();
 
-  vec<sample_t> null_samples;
-  sample_null(dim, params.sample_size, null_samples);
-  REQUIRE(null_samples.size() >= GammaModel::min_nsamples);
+  vec<sample_t> bg_samples;
+  sample_background(dim, bg_samples);
+  REQUIRE(bg_samples.size() >= GammaModel::min_nsamples);
 
   vec<uint64_t> v;
   uint64_t u, t;
@@ -410,7 +502,7 @@ TEST_CASE("query strand uses one-sided test") {
   r.d_diff = -0.1;
   r.d_q = 0.15;
 
-  CHECK(test_significance(r, null_samples, params.sample_size, "q0"));
+  CHECK(test_significance(r, bg_samples, params.sample_size, "q0"));
   CHECK(std::isfinite(r.percentile));
   const bool two_sided = !std::isnan(r.d_diff) && (r.is_rc == (r.d_diff > 0.0));
   CHECK_FALSE(two_sided);
@@ -446,7 +538,7 @@ TEST_CASE("benjamini_hochberg_correction leaves NaN qvalues untouched") {
 
 TEST_SUITE("DistanceSampler") {
 
-TEST_CASE("places sample_size windows and collect_distances keeps finite only") {
+TEST_CASE("samples each valid start at most once and keeps finite distances") {
   seed = 42;
   init_thread_rng(0);
 
@@ -459,29 +551,33 @@ TEST_CASE("places sample_size windows and collect_distances keeps finite only") 
 
   ThreadPool pool(1);
   DistanceSampler sampler(sketch, batch_v, tau, 0, 4);
-  sampler.run(sample_size, false, pool);
+  sampler.run_for_all(sample_size, false, pool);
 
-  CHECK(sampler.get_nsamples() == sample_size);
+  const uint64_t npos = batch_v[0].seq.size() - k + 1 - tau + 1;
+  CHECK(sampler.get_nsamples() == npos);
   CHECK(sampler.get_nwinmers() == tau);
 
-  uint64_t n_all = 0, n_finite = 0, n_on_short = 0;
-  sampler.for_each_sample([&](uint64_t bix, uint64_t, uint64_t, double d, char) {
-    ++n_all;
-    if (bix == 1) ++n_on_short;
-    if (std::isfinite(d)) ++n_finite;
+  uint64_t nall = 0, nfinite = 0, nshort = 0;
+  std::set<uint64_t> starts;
+  sampler.for_each_sample([&](uint64_t bix, uint64_t, uint64_t start, double d, char) {
+    ++nall;
+    if (bix == 1) ++nshort;
+    if (std::isfinite(d)) ++nfinite;
+    starts.insert(start);
   });
-  CHECK(n_all == sample_size);
-  CHECK(n_on_short == 0);
+  CHECK(nall == npos);
+  CHECK(starts.size() == npos);
+  CHECK(nshort == 0);
 
   vec<double> d_v;
   sampler.collect_distances(d_v);
-  CHECK(d_v.size() == n_finite);
+  CHECK(d_v.size() == nfinite);
   for (const double d : d_v)
     CHECK(std::isfinite(d));
 
   vec<vec<double>> d_vvec(batch_v.size());
   sampler.collect_distances(d_vvec);
-  CHECK(d_vvec[0].size() == n_finite);
+  CHECK(d_vvec[0].size() == nfinite);
   CHECK(d_vvec[1].empty());
   CHECK(d_vvec[0].size() + d_vvec[1].size() == d_v.size());
 }
@@ -496,7 +592,7 @@ TEST_CASE("skips all sequences shorter than the window") {
 
   ThreadPool pool(1);
   DistanceSampler sampler(sketch, batch_v, 50, 0, 4);
-  sampler.run(30, false, pool);
+  sampler.run_for_all(30, false, pool);
 
   CHECK(sampler.get_nsamples() == 0);
   vec<double> d_v;
@@ -518,14 +614,37 @@ TEST_CASE("bin_shift rounds window length up to whole bins") {
 
   ThreadPool pool(1);
   DistanceSampler sampler(sketch, batch_v, tau, bin_shift, 4);
-  sampler.run(16, false, pool);
+  sampler.run_for_all(16, false, pool);
 
   CHECK(sampler.get_nwinmers() == expect_nwinmers);
-  CHECK(sampler.get_nsamples() == 16);
+  const uint64_t enmers = batch_v[0].seq.size() - k + 1;
+  const uint64_t npos = (enmers - expect_nwinmers) / (uint64_t(1) << bin_shift) + 1;
+  CHECK(sampler.get_nsamples() == npos);
   sampler.for_each_sample([&](uint64_t, uint64_t enmers, uint64_t start_bin, double, char) {
     const uint64_t jx = start_bin << bin_shift;
     CHECK(jx + expect_nwinmers <= enmers);
   });
+}
+
+TEST_CASE("per-sequence sampling applies sample_size to each eligible query") {
+  seed = 8;
+  init_thread_rng(0);
+
+  const sketch_sptr_t sketch = load_tiny_sketch(true);
+  const uint32_t k = sketch->get_lshf_sptr()->get_k();
+  constexpr uint64_t tau = 30;
+  constexpr uint64_t sample_size = 8;
+  vec<qseq_t> batch_v{{"q0", str(tau + k + 20, 'A')}, {"q1", str(tau + k + 30, 'C')}};
+
+  ThreadPool pool(1);
+  DistanceSampler sampler(sketch, batch_v, tau, 0, 4);
+  sampler.run_per_sequence(sample_size, false, pool);
+
+  vec<uint64_t> counts(batch_v.size(), 0);
+  sampler.for_each_sample([&](uint64_t bix, uint64_t, uint64_t, double, char) { ++counts[bix]; });
+  CHECK(counts[0] == sample_size);
+  CHECK(counts[1] == sample_size);
+  CHECK(sampler.get_nsamples() == 2 * sample_size);
 }
 
 TEST_CASE("canonical samples always report strand '.'") {
@@ -539,7 +658,7 @@ TEST_CASE("canonical samples always report strand '.'") {
 
   ThreadPool pool(1);
   DistanceSampler sampler(sketch, batch_v, tau, 0, 4);
-  sampler.run(12, false, pool);
+  sampler.run_for_all(12, false, pool);
   REQUIRE(sampler.get_nsamples() == 12);
 
   sampler.for_each_sample([&](uint64_t, uint64_t, uint64_t, double, char strand) { CHECK(strand == '.'); });
@@ -556,7 +675,7 @@ TEST_CASE("non-canonical samples report +, -, or .") {
 
   ThreadPool pool(1);
   DistanceSampler sampler(sketch, batch_v, tau, 0, 4);
-  sampler.run(12, true, pool);
+  sampler.run_for_all(12, true, pool);
   REQUIRE(sampler.get_nsamples() == 12);
   CHECK(sampler.get_llhf().k == k);
 

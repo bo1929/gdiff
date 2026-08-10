@@ -29,7 +29,8 @@ public:
                   uint64_t tau,
                   uint64_t bin_shift,
                   uint32_t hdist_th);
-  void run(uint64_t sample_size, bool keep_counts, ThreadPool& pool);
+  void run_for_all(uint64_t sample_size, bool keep_counts, ThreadPool& pool);
+  void run_per_sequence(uint64_t sample_size, bool keep_counts, ThreadPool& pool);
   void collect_distances(vec<double>& d_v) const;
   void collect_distances(vec<vec<double>>& d_vvec) const;
 
@@ -39,6 +40,24 @@ public:
     for (const auto& sch : schemes_v) {
       for (uint64_t s = 0; s < sch.nsamples; ++s)
         fn(sch.bix, sch.enmers, sch.starts_v[s], sch.d_v[s], sch.strand_v[s]);
+    }
+  }
+
+  // When keep_counts was enabled and the sample has a valid distance, hist/u are
+  // the selected-strand counts; otherwise hist is nullptr.
+  template<typename Fn>
+  void for_each_sample_counts(Fn&& fn) const
+  {
+    for (const auto& sch : schemes_v) {
+      for (uint64_t s = 0; s < sch.nsamples; ++s) {
+        const uint64_t* hist = nullptr;
+        uint64_t u = 0;
+        if (sch.keep_counts && is_valid_distance(sch.d_v[s])) {
+          hist = sch.hist_v.data() + s * (hdist_bound + 1);
+          u = sch.u_v[s];
+        }
+        fn(sch.bix, sch.enmers, sch.starts_v[s], sch.d_v[s], sch.strand_v[s], hist, u);
+      }
     }
   }
 
@@ -75,17 +94,18 @@ private:
     }
   };
 
-  void build(uint64_t sample_size, bool keep_counts);
+  void build_for_all(uint64_t sample_size, bool keep_counts);
+  void build_per_sequence(uint64_t sample_size, bool keep_counts);
   void evaluate(ThreadPool& pool);
 
   sketch_sptr_t sketch;
   const vec<qseq_t>& batch_v;
   bool canonical;
   uint32_t hdist_th;
-  uint64_t bin_shift;
   uint64_t tau;
-  uint64_t bin_size;
   uint64_t tau_bin;
+  uint64_t bin_shift;
+  uint64_t bin_size;
   uint64_t nwinmers;
   LLH<double> llhf;
   uint32_t k;

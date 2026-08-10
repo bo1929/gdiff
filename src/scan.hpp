@@ -157,7 +157,7 @@ template<typename T>
 struct dim_agg_t
 {
   DIM<T>& fw;
-  DIM<T>* rc; // null in canonical mode
+  DIM<T>* rc;
   inline void operator()(uint64_t bin, uint32_t hd, bool is_rc) const { (is_rc ? *rc : fw).aggregate_mer(hd, bin); }
   inline void skip_mer(uint64_t bin) const
   {

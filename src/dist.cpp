@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <numeric>
+#include <unordered_set>
 
 #include "common.hpp"
 #include "msg.hpp"
@@ -29,7 +31,7 @@ double linear_quantile(const vec<double>& v, const double p)
 xy_t bracket_distance(const double d, const vec<double>& th_v)
 {
   xy_t d_range{d_eps, d_ub};
-  if (!std::isfinite(d)) return d_range;
+  if (!is_valid_distance(d)) return d_range;
   const auto it = std::lower_bound(th_v.begin(), th_v.end(), d);
   if (it != th_v.begin()) d_range.first = *(it - 1);
   if (it != th_v.end()) d_range.second = *it;
@@ -38,8 +40,8 @@ xy_t bracket_distance(const double d, const vec<double>& th_v)
 
 std::pair<double, char> select_strand_distance(const double d_fw, const double d_rc)
 {
-  const bool fw_valid = std::isfinite(d_fw);
-  const bool rc_valid = std::isfinite(d_rc);
+  const bool fw_valid = is_valid_distance(d_fw);
+  const bool rc_valid = is_valid_distance(d_rc);
   if (!fw_valid && !rc_valid) return {nanx(), '.'};
   if (!rc_valid || (fw_valid && d_fw <= d_rc)) return {d_fw, '+'};
   return {d_rc, '-'};
@@ -48,11 +50,26 @@ std::pair<double, char> select_strand_distance(const double d_fw, const double d
 static vec<uint64_t> sample_random_coordinates(const uint64_t npos, const uint64_t nsamples, std::mt19937& rng)
 {
   assert(npos >= 1);
-  vec<uint64_t> starts_v;
-  starts_v.reserve(nsamples);
-  std::uniform_int_distribution<uint64_t> rstart(0, npos - 1);
-  for (uint64_t i = 0; i < nsamples; ++i)
-    starts_v.push_back(rstart(rng));
+  const uint64_t n = std::min(npos, nsamples);
+  // The full-shuffle draw is O(npos) memory, which can dominate for long
+  // queries. For sparse draws, rejection-sample distinct positions instead:
+  // O(n) memory and O(n) expected time while n << npos.
+  if (n < npos / 2) {
+    vec<uint64_t> starts_v;
+    starts_v.reserve(n);
+    std::unordered_set<uint64_t> seen;
+    seen.reserve(n);
+    std::uniform_int_distribution<uint64_t> pick(0, npos - 1);
+    while (starts_v.size() < n) {
+      const uint64_t x = pick(rng);
+      if (seen.insert(x).second) starts_v.push_back(x);
+    }
+    return starts_v;
+  }
+  vec<uint64_t> starts_v(npos);
+  std::iota(starts_v.begin(), starts_v.end(), uint64_t(0));
+  std::shuffle(starts_v.begin(), starts_v.end(), rng);
+  starts_v.resize(n);
   return starts_v;
 }
 
@@ -64,43 +81,46 @@ DistanceSampler::DistanceSampler(const sketch_sptr_t& sketch,
   : sketch(sketch)
   , batch_v(batch_v)
   , hdist_th(hdist_th)
-  , bin_shift(bin_shift)
   , tau(tau)
+  , bin_shift(bin_shift)
   , llhf(make_llhf(sketch, hdist_th))
   , k(llhf.k)
 {
   canonical = sketch->is_canonical();
   bin_size = uint64_t(1) << bin_shift;
-  tau_bin = std::max<uint64_t>(1, (tau + bin_size - 1) >> bin_shift);
+  tau_bin = std::max<uint64_t>(1, (this->tau + bin_size - 1) >> bin_shift);
   nwinmers = tau_bin << bin_shift;
 }
 
-void DistanceSampler::run(uint64_t sample_size, bool keep_counts, ThreadPool& pool)
+void DistanceSampler::run_for_all(uint64_t sample_size, bool keep_counts, ThreadPool& pool)
 {
-  build(sample_size, keep_counts);
+  build_for_all(sample_size, keep_counts);
   evaluate(pool);
 }
 
-void DistanceSampler::build(uint64_t sample_size, bool keep_counts)
+void DistanceSampler::run_per_sequence(uint64_t sample_size, bool keep_counts, ThreadPool& pool)
+{
+  build_per_sequence(sample_size, keep_counts);
+  evaluate(pool);
+}
+
+void DistanceSampler::build_for_all(uint64_t sample_size, bool keep_counts)
 {
   schemes_v.clear();
   const uint64_t xtau = nwinmers + k - 1;
-  uint64_t total_len = 0;
+  uint64_t total_npos = 0;
   vec<uint64_t> lenc_v(batch_v.size());
   for (size_t bix = 0; bix < batch_v.size(); ++bix) {
-    if (batch_v[bix].seq.size() >= xtau) {
-      total_len += batch_v[bix].seq.size();
+    const uint64_t L = batch_v[bix].seq.size();
+    if (L >= xtau) {
+      const uint64_t enmers = L - k + 1;
+      total_npos += (enmers - nwinmers) / bin_size + 1;
     }
-    lenc_v[bix] = total_len;
+    lenc_v[bix] = total_npos;
   }
-  if (total_len == 0) return;
+  if (total_npos == 0) return;
 
-  vec<uint64_t> positions_v;
-  positions_v.reserve(sample_size);
-  std::uniform_int_distribution<uint64_t> rpos(0, total_len - 1);
-  for (uint64_t i = 0; i < sample_size; ++i) {
-    positions_v.push_back(rpos(gen));
-  }
+  vec<uint64_t> positions_v = sample_random_coordinates(total_npos, sample_size, gen);
   std::sort(positions_v.begin(), positions_v.end());
 
   schemes_v.reserve(batch_v.size());
@@ -109,17 +129,32 @@ void DistanceSampler::build(uint64_t sample_size, bool keep_counts)
     const uint64_t L = batch_v[bix].seq.size();
     if (L < xtau) continue;
     const uint64_t rend = lenc_v[bix];
-    uint64_t nsamples = 0;
+    const uint64_t roff = bix == 0 ? 0 : lenc_v[bix - 1];
+    vec<uint64_t> starts_v;
     while (pidx < positions_v.size() && positions_v[pidx] < rend) {
-      ++nsamples;
+      starts_v.push_back(positions_v[pidx] - roff);
       ++pidx;
     }
-    if (nsamples == 0) continue;
+    if (starts_v.empty()) continue;
     const uint64_t enmers = L - k + 1;
-    if (enmers < nwinmers) continue;
+    const uint64_t nbins = (enmers + bin_size - 1) >> bin_shift;
+    schemes_v.emplace_back(bix, starts_v.size(), enmers, nbins, std::move(starts_v), keep_counts);
+  }
+}
+
+void DistanceSampler::build_per_sequence(const uint64_t sample_size, const bool keep_counts)
+{
+  schemes_v.clear();
+  const uint64_t xtau = nwinmers + k - 1;
+  schemes_v.reserve(batch_v.size());
+  for (size_t bix = 0; bix < batch_v.size(); ++bix) {
+    const uint64_t L = batch_v[bix].seq.size();
+    if (L < xtau) continue;
+    const uint64_t enmers = L - k + 1;
     const uint64_t nbins = (enmers + bin_size - 1) >> bin_shift;
     const uint64_t npos = (enmers - nwinmers) / bin_size + 1;
-    schemes_v.emplace_back(bix, nsamples, enmers, nbins, sample_random_coordinates(npos, nsamples, gen), keep_counts);
+    vec<uint64_t> starts_v = sample_random_coordinates(npos, sample_size, gen);
+    schemes_v.emplace_back(bix, starts_v.size(), enmers, nbins, std::move(starts_v), keep_counts);
   }
 }
 
@@ -153,12 +188,12 @@ void DistanceSampler::evaluate(ThreadPool& pool)
         const uint64_t jy = std::min(jx + nwinmers, scheme.enmers);
         agg.clear();
         scan_mers_range<false>(ctx, cseq, jx, jy, agg);
-        const double d = llhf.mle(agg.hist(), agg.u());
+        const double d = llhf.mle(agg.hist(), agg.u);
         scheme.d_v[s] = d;
         scheme.strand_v[s] = '.';
-        if (scheme.keep_counts && std::isfinite(d)) {
+        if (scheme.keep_counts && is_valid_distance(d)) {
           std::copy(agg.hist(), agg.hist() + hdist_bound + 1, scheme.hist_v.data() + s * (hdist_bound + 1));
-          scheme.u_v[s] = agg.u();
+          scheme.u_v[s] = agg.u;
         }
       }
     } else {
@@ -169,18 +204,18 @@ void DistanceSampler::evaluate(ThreadPool& pool)
         const uint64_t jy = std::min(jx + nwinmers, scheme.enmers);
         agg.clear();
         scan_mers_range<true>(ctx, cseq, jx, jy, agg);
-        const double d_fw = llhf.mle(agg.hist_fw(), agg.u_fw());
-        const double d_rc = llhf.mle(agg.hist_rc(), agg.u_rc());
+        const double d_fw = llhf.mle(agg.hist_fw(), agg.u_fw);
+        const double d_rc = llhf.mle(agg.hist_rc(), agg.u_rc);
         const auto [d, strand] = select_strand_distance(d_fw, d_rc);
         scheme.d_v[s] = d;
         scheme.strand_v[s] = strand;
-        if (scheme.keep_counts && std::isfinite(d)) {
+        if (scheme.keep_counts && is_valid_distance(d)) {
           if (strand == '-') {
             std::copy(agg.hist_rc(), agg.hist_rc() + hdist_bound + 1, scheme.hist_v.data() + s * (hdist_bound + 1));
-            scheme.u_v[s] = agg.u_rc();
+            scheme.u_v[s] = agg.u_rc;
           } else {
             std::copy(agg.hist_fw(), agg.hist_fw() + hdist_bound + 1, scheme.hist_v.data() + s * (hdist_bound + 1));
-            scheme.u_v[s] = agg.u_fw();
+            scheme.u_v[s] = agg.u_fw;
           }
         }
       }
@@ -192,7 +227,7 @@ void DistanceSampler::collect_distances(vec<double>& d_v) const
 {
   for (const auto& scheme : schemes_v) {
     for (const double d : scheme.d_v) {
-      if (std::isfinite(d)) d_v.push_back(d);
+      if (is_valid_distance(d)) d_v.push_back(d);
     }
   }
 }
@@ -202,7 +237,7 @@ void DistanceSampler::collect_distances(vec<vec<double>>& d_vvec) const
   for (const auto& scheme : schemes_v) {
     auto& dst = d_vvec[scheme.bix];
     for (const double d : scheme.d_v) {
-      if (std::isfinite(d)) dst.push_back(d);
+      if (is_valid_distance(d)) dst.push_back(d);
     }
   }
 }
@@ -217,26 +252,60 @@ uint64_t DistanceSampler::get_nsamples() const
 
 void DistSC::sample_distances(const sketch_sptr_t& sketch, const vec<qseq_t>& batch_v, strstream& sout, ThreadPool& pool)
 {
+  // chi-square(1) critical value at 99%; used to drop high-distance outliers vs d_med.
+  constexpr double lr_th_99 = 6.63;
+
   DistanceSampler sampler(sketch, batch_v, tau, bin_shift, hdist_th);
-  sampler.run(sample_size, output_samples, pool);
+  sampler.run_for_all(sample_size, true, pool);
 
-  if (output_samples) {
-    const uint64_t nwinmers = sampler.get_nwinmers();
-    const uint32_t k = sketch->get_lshf_sptr()->get_k();
-    const LLH<double>& llhf = sampler.get_llhf();
-    set_precision(sout, 5);
+  const uint64_t nwinmers = sampler.get_nwinmers();
+  const uint32_t k = sketch->get_lshf_sptr()->get_k();
+  const LLH<double>& llhf = sampler.get_llhf();
 
-    sampler.for_each_sample([&](uint64_t bix, uint64_t enmers, uint64_t start_bin, double d, char strand) {
-      const uint64_t jx = start_bin << bin_shift;
-      const uint64_t jy = std::min(jx + nwinmers, enmers);
-      write_tsv(sout, batch_v[bix].qid, jx + 1, jy + k - 1, strand, sketch->get_rname(), d) << '\n';
+  vec<double> d_v;
+  d_v.reserve(sample_size);
+  sampler.collect_distances(d_v);
+  std::sort(d_v.begin(), d_v.end());
+  const double d_med = linear_quantile(d_v, 0.5);
+
+  vec<double> d_filt;
+  d_filt.reserve(d_v.size());
+  uint64_t n_removed = 0;
+  set_precision(sout, output_samples ? 5 : 8);
+
+  sampler.for_each_sample_counts(
+    [&](uint64_t bix, uint64_t enmers, uint64_t start_bin, double d, char strand, const uint64_t* hist, uint64_t u) {
+      double lr_bg = nanx();
+      if (hist && is_valid_distance(d) && is_valid_distance(d_med)) {
+        lr_bg = likelihood_ratio_statistic(llhf.nll(d_med, hist, u), llhf.nll(d, hist, u));
+      }
+      if (output_samples) {
+        const uint64_t jx = start_bin << bin_shift;
+        const uint64_t jy = std::min(jx + nwinmers, enmers);
+        write_tsv(sout, batch_v[bix].qid, jx + 1, jy + k - 1, strand, sketch->get_rname(), d, lr_bg) << '\n';
+        return;
+      }
+      if (!is_valid_distance(d)) return;
+      // Drop distances above the median that reject H0: D = d_med at ~99%.
+      if (is_valid_distance(d_med) && d > d_med && std::isfinite(lr_bg) && lr_bg >= lr_th_99) {
+        ++n_removed;
+        return;
+      }
+      d_filt.push_back(d);
     });
-    return;
-  } else {
-    vec<double> d_v;
-    d_v.reserve(sample_size);
-    sampler.collect_distances(d_v);
+
+  if (output_samples) return;
+
+  const uint64_t n = d_v.size();
+  const uint64_t nwinu = sampler.get_nsamples() - n;
+  if (nwinu > 0) {
+    cerr_msg(
+      "[", sketch->get_rname(), "] unmapped sampled windows (no k-mer hits): ", nwinu, " (excluded from the summary)");
   }
+
+  std::sort(d_filt.begin(), d_filt.end());
+  const double d_med_filt = linear_quantile(d_filt, 0.5);
+  write_tsv(sout, target_path, sketch->get_rname(), n, d_med, d_med_filt, n_removed) << '\n';
 }
 
 void DistSC::dist()

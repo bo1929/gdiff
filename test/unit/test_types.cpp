@@ -72,9 +72,9 @@ TEST_CASE("reference strand gets two-sided significance percentile") {
   CHECK(pct_ref(0.25, false) == doctest::Approx(0.25));
 }
 
-TEST_CASE("query-wide MLE selects the reference strand for null sampling") {
+TEST_CASE("query-wide MLE selects the reference strand for background sampling") {
   const auto nan = std::numeric_limits<double>::quiet_NaN();
-  // Query-level winner used for null pool / add_to_acc: smaller finite strand MLE; fw on tie/NaN.
+  // Query-level winner used for background samples / add_to_acc: smaller finite strand MLE; fw on tie/NaN.
   const auto winner_rc = [](double fw, double rc) { return strand_diff(fw, rc) > 0.0; };
   CHECK_FALSE(winner_rc(0.2, 0.3)); // fw lower
   CHECK_FALSE(winner_rc(0.3, 0.3)); // tie -> fw
@@ -155,7 +155,7 @@ TEST_CASE("canonical NaN d_diff uses one-sided test") {
   CHECK_FALSE(two_sided(true, nan));
 }
 
-TEST_CASE("null overlap uses half-open bin boundaries") {
+TEST_CASE("background overlap uses half-open bin boundaries") {
   CHECK(::overlaps_half_open({1, 6}, {5, 7}));
   CHECK_FALSE(::overlaps_half_open({1, 6}, {6, 9}));
   CHECK_FALSE(::overlaps_half_open({6, 9}, {1, 6}));
@@ -163,6 +163,16 @@ TEST_CASE("null overlap uses half-open bin boundaries") {
 
 TEST_CASE("validate_distance rejects out-of-range and non-finite values") {
   const auto nan = std::numeric_limits<double>::quiet_NaN();
+  const auto inf = std::numeric_limits<double>::infinity();
+  CHECK(is_valid_distance(0.0));
+  CHECK(is_valid_distance(0.5));
+  CHECK(is_valid_distance(d_ub - 2.0 * eps));
+  CHECK_FALSE(is_valid_distance(d_ub - eps));
+  CHECK_FALSE(is_valid_distance(d_ub));
+  CHECK_FALSE(is_valid_distance(-0.1));
+  CHECK_FALSE(is_valid_distance(nan));
+  CHECK_FALSE(is_valid_distance(inf));
+  CHECK_FALSE(is_valid_distance(-inf));
   CHECK(std::isnan(validate_distance(d_ub)));
   CHECK(std::isnan(validate_distance(d_ub - eps)));
   CHECK(std::isnan(validate_distance(-0.1)));

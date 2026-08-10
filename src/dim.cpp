@@ -1,9 +1,11 @@
 #include "dim.hpp"
+#include "random.hpp"
 
 #include <algorithm>
 #include <cassert>
 #include <limits>
 #include <numeric>
+#include <random>
 
 namespace {
   struct pv_t
@@ -20,6 +22,7 @@ HDHist::HDHist(const uint64_t nbins, const uint32_t hdist_th, const uint64_t bin
   , hist_v((nbins + 1) * (hdist_th + 1), 0)
   , miss_v(nbins + 1, 0)
 {
+  assert(this->bin_shift <= 16);
 }
 
 template<bool Atomic>
@@ -56,22 +59,22 @@ void HDHist::compute_prefhistsum()
 void HDHist::compute_prefhistsum_parallel(ThreadPool& pool, uint32_t nchunks)
 {
   const uint32_t W = hdist_th + 1;
-  const uint64_t n_rows = nbins + 1;
-  if (nchunks <= 1 || n_rows < (uint64_t(1) << 16)) {
+  const uint64_t nrows = nbins + 1;
+  if (nchunks <= 1 || nrows < (uint64_t(1) << 16)) {
     compute_prefhistsum();
     return;
   }
-  nchunks = std::min<uint32_t>(nchunks, static_cast<uint32_t>((n_rows + 4095) / 4096));
+  nchunks = std::min<uint32_t>(nchunks, static_cast<uint32_t>((nrows + 4095) / 4096));
   if (nchunks <= 1) {
     compute_prefhistsum();
     return;
   }
-  const uint64_t rows_per = (n_rows + nchunks - 1) / nchunks;
+  const uint64_t rows_per = (nrows + nchunks - 1) / nchunks;
   uint64_t* h = hist_v.data();
   // Phase A: exclusive-local prefix sums inside each chunk.
   pool.parallel_for(nchunks, 1, [&](uint64_t c) {
     const uint64_t c0 = c * rows_per;
-    const uint64_t c1 = std::min(c0 + rows_per, n_rows);
+    const uint64_t c1 = std::min(c0 + rows_per, nrows);
     for (uint64_t r = c0 + 1; r < c1; ++r) {
       for (uint32_t d = 0; d < W; ++d)
         h[r * W + d] += h[(r - 1) * W + d];
@@ -80,7 +83,7 @@ void HDHist::compute_prefhistsum_parallel(ThreadPool& pool, uint32_t nchunks)
   // Serial combine of chunk bases (few chunks).
   vec<uint64_t> base(static_cast<uint64_t>(nchunks) * W, 0);
   for (uint32_t c = 1; c < nchunks; ++c) {
-    const uint64_t last = std::min((c * rows_per), n_rows) - 1;
+    const uint64_t last = std::min((c * rows_per), nrows) - 1;
     for (uint32_t d = 0; d < W; ++d)
       base[c * W + d] = base[(c - 1) * W + d] + h[last * W + d];
   }
@@ -88,7 +91,7 @@ void HDHist::compute_prefhistsum_parallel(ThreadPool& pool, uint32_t nchunks)
   pool.parallel_for(nchunks - 1, 1, [&](uint64_t ci) {
     const uint64_t c = ci + 1;
     const uint64_t c0 = c * rows_per;
-    const uint64_t c1 = std::min(c0 + rows_per, n_rows);
+    const uint64_t c1 = std::min(c0 + rows_per, nrows);
     const uint64_t* b = &base[c * W];
     for (uint64_t r = c0; r < c1; ++r) {
       for (uint32_t d = 0; d < W; ++d)
@@ -122,16 +125,16 @@ void HDHist::extract_histogram(const uint64_t a, const uint64_t b, vec<uint64_t>
 void HDHist::extract_histogram(uint64_t a, uint64_t b, window_counts_t& wc) const
 {
   uint64_t t = 0;
-  extract_histogram(a, b, wc.hist_v, wc.u(), t);
+  extract_histogram(a, b, wc.hist_v, wc.u, t);
 }
 
 void HDHist::extract_histogram(uint64_t a, uint64_t b, swindow_counts_t& wc, bool is_rc) const
 {
   uint64_t t = 0;
   if (is_rc)
-    extract_histogram(a, b, wc.hist_rc_v, wc.u_rc(), t);
+    extract_histogram(a, b, wc.hist_rc_v, wc.u_rc, t);
   else
-    extract_histogram(a, b, wc.hist_fw_v, wc.u_fw(), t);
+    extract_histogram(a, b, wc.hist_fw_v, wc.u_fw, t);
 }
 
 template<typename T>
@@ -158,14 +161,14 @@ DIM<T>::DIM(const params_t<T>& params, const llh_sptr_t<T>& llhf, uint64_t nbins
 template<typename T>
 void DIM<T>::set_query_distance(const double d_q)
 {
-  const bool is_valid = std::isfinite(d_q);
+  const bool is_valid = is_valid_distance(d_q);
 
   if constexpr (std::is_same_v<T, double>) {
     const double t = params.dist_th;
     thneg_v.front() = is_valid && t > d_q;
     thrank_v = {0};
   } else {
-    arr<vi_t, WIDTH> tp;
+    arr<std::pair<double, size_t>, WIDTH> tp;
     for (size_t i = 0; i < WIDTH; ++i) {
       const double t = at(params.dist_th, i);
       thneg_v[i] = is_valid && t > d_q;
@@ -465,7 +468,6 @@ void DIM<T>::expand_intervals(const double chisq_th, const size_t ix)
     b = iv_ix[i].b;
     fdiff = at(fdps_v[b], ix) - at(fdps_v[ap], ix);
     sdiff = at(sdps_v[ap], ix) - at(sdps_v[b], ix);
-    // chisq_val = (sdiff > 0.0) ? (fdiff * fdiff) / sdiff : std::numeric_limits<double>::infinity();
     chisq_val = ((fdiff * fdiff) + eps) / (sdiff + eps);
 
     // Never merge across an N-run break: a skip bin in the gap (bp, a) keeps them apart.
@@ -481,7 +483,6 @@ void DIM<T>::expand_intervals(const double chisq_th, const size_t ix)
 
     if (!skip_gap && (chisq_val < chisq_th) && (a < bp)) {
       a = ap;
-      // b = std::max(bp, b); // This is not necessary due to maximality and monotonicity of a's
     } else {
       iv_ix[w++] = {ap, bp}; // 1-based inclusive coordinates
     }
@@ -523,7 +524,7 @@ template<typename T>
 void DIM<T>::extract_histogram(uint64_t a, uint64_t b, window_counts_t& wc) const
 {
   uint64_t t = 0;
-  extract_histogram(a, b, wc.hist_v, wc.u(), t);
+  extract_histogram(a, b, wc.hist_v, wc.u, t);
 }
 
 template<typename T>
@@ -531,9 +532,73 @@ void DIM<T>::extract_histogram(uint64_t a, uint64_t b, swindow_counts_t& wc, boo
 {
   uint64_t t = 0;
   if (is_rc)
-    extract_histogram(a, b, wc.hist_rc_v, wc.u_rc(), t);
+    extract_histogram(a, b, wc.hist_rc_v, wc.u_rc, t);
   else
-    extract_histogram(a, b, wc.hist_fw_v, wc.u_fw(), t);
+    extract_histogram(a, b, wc.hist_fw_v, wc.u_fw, t);
+}
+
+template<typename T>
+vec<sample_t> DIM<T>::sample_random_intervals(const uint64_t nwin_bins, const uint64_t bix) const
+{
+  vec<sample_t> out_v;
+  if (nwin_bins == 0 || params.sample_size == 0 || nwin_bins > nbins) return out_v;
+
+  const uint64_t npos = nbins - nwin_bins + 1;
+  const size_t goal = static_cast<size_t>(std::min(params.sample_size, npos));
+  out_v.reserve(goal);
+  window_counts_t wc(llhf->hdist_th);
+
+  vec<uint64_t> starts_v(npos);
+  std::iota(starts_v.begin(), starts_v.end(), uint64_t(0));
+  std::shuffle(starts_v.begin(), starts_v.end(), gen);
+
+  for (const uint64_t x : starts_v) {
+    if (out_v.size() >= goal) break;
+    if (has_skips) {
+      const auto first = skip_v.begin() + static_cast<ptrdiff_t>(x);
+      const auto last = first + static_cast<ptrdiff_t>(nwin_bins);
+      if (std::find(first, last, uint8_t(1)) != last) continue;
+    }
+
+    const uint64_t a_bin = x + 1;
+    const uint64_t b_bin = x + nwin_bins + 1;
+    wc.clear();
+    extract_histogram(a_bin - 1, b_bin - 1, wc);
+    const double d = llhf->mle(wc.hist(), wc.u);
+    if (!is_valid_distance(d)) continue;
+    const double I = llhf->compute_fisher_info(wc.hist(), wc.u, d);
+    if (!std::isfinite(I) || I <= 0.0) continue;
+    out_v.push_back({d, I, bix, {a_bin, b_bin}});
+  }
+  return out_v;
+}
+
+bool filter_background_samples(const vec<sample_t>& in_v, const record_t& r, uint64_t sample_size, vec<sample_t>& out_v)
+{
+  bool excluded = false;
+  out_v.clear();
+  const size_t goal = std::min(in_v.size(), static_cast<size_t>(sample_size));
+  out_v.reserve(goal);
+  size_t neligible = 0;
+
+  for (const auto& s : in_v) {
+    if (s.bin_iv.b - s.bin_iv.a != r.nbins) continue;
+    if (s.bix == r.bix && overlaps_half_open(s.bin_iv, r.bin_iv)) {
+      excluded = true;
+      continue;
+    }
+    if (!std::isfinite(s.I) || s.I <= 0.0) continue;
+    if (!is_valid_distance(s.d)) continue;
+
+    ++neligible;
+    if (out_v.size() < goal) {
+      out_v.push_back(s);
+    } else if (goal > 0) {
+      const size_t j = std::uniform_int_distribution<size_t>(0, neligible - 1)(gen);
+      if (j < goal) out_v[j] = s;
+    }
+  }
+  return excluded;
 }
 
 template class DIM<double>;
