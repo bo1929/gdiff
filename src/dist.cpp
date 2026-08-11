@@ -252,7 +252,7 @@ uint64_t DistanceSampler::get_nsamples() const
 
 void DistSC::sample_distances(const sketch_sptr_t& sketch, const vec<qseq_t>& batch_v, strstream& sout, ThreadPool& pool)
 {
-  // chi-square(1) critical value at 99%; used to drop high-distance outliers vs d_med.
+  // chi-square(1) critical value at 99%; used to drop high-distance outliers vs d_median.
   constexpr double lr_th_99 = 6.63;
 
   DistanceSampler sampler(sketch, batch_v, tau, bin_shift, hdist_th);
@@ -266,7 +266,7 @@ void DistSC::sample_distances(const sketch_sptr_t& sketch, const vec<qseq_t>& ba
   d_v.reserve(sample_size);
   sampler.collect_distances(d_v);
   std::sort(d_v.begin(), d_v.end());
-  const double d_med = linear_quantile(d_v, 0.5);
+  const double d_median = linear_quantile(d_v, 0.5);
 
   vec<double> d_filt;
   d_filt.reserve(d_v.size());
@@ -276,8 +276,8 @@ void DistSC::sample_distances(const sketch_sptr_t& sketch, const vec<qseq_t>& ba
   sampler.for_each_sample_counts(
     [&](uint64_t bix, uint64_t enmers, uint64_t start_bin, double d, char strand, const uint64_t* hist, uint64_t u) {
       double lr_bg = nanx();
-      if (hist && is_valid_distance(d) && is_valid_distance(d_med)) {
-        lr_bg = likelihood_ratio_statistic(llhf.nll(d_med, hist, u), llhf.nll(d, hist, u));
+      if (hist && is_valid_distance(d) && is_valid_distance(d_median)) {
+        lr_bg = likelihood_ratio_statistic(llhf.nll(d_median, hist, u), llhf.nll(d, hist, u));
       }
       if (output_samples) {
         const uint64_t jx = start_bin << bin_shift;
@@ -286,8 +286,8 @@ void DistSC::sample_distances(const sketch_sptr_t& sketch, const vec<qseq_t>& ba
         return;
       }
       if (!is_valid_distance(d)) return;
-      // Drop distances above the median that reject H0: D = d_med at ~99%.
-      if (is_valid_distance(d_med) && d > d_med && std::isfinite(lr_bg) && lr_bg >= lr_th_99) {
+      // Drop distances above the median that reject H0: D = d_median at ~99%.
+      if (is_valid_distance(d_median) && d > d_median && std::isfinite(lr_bg) && lr_bg >= lr_th_99) {
         ++n_removed;
         return;
       }
@@ -305,7 +305,7 @@ void DistSC::sample_distances(const sketch_sptr_t& sketch, const vec<qseq_t>& ba
 
   std::sort(d_filt.begin(), d_filt.end());
   const double d_med_filt = linear_quantile(d_filt, 0.5);
-  write_tsv(sout, target_path, sketch->get_rname(), n, d_med, d_med_filt, n_removed) << '\n';
+  write_tsv(sout, target_path, sketch->get_rname(), n, d_median, d_med_filt, n_removed) << '\n';
 }
 
 void DistSC::dist()

@@ -6,7 +6,6 @@
 #include <limits>
 #include <numeric>
 #include <optional>
-#include <unordered_map>
 
 #include "common.hpp"
 #include "dist.hpp"
@@ -17,14 +16,6 @@
 extern uint32_t num_threads;
 
 namespace {
-
-  struct pair_hash
-  {
-    size_t operator()(const std::pair<uint64_t, uint64_t>& p) const noexcept
-    {
-      return std::hash<uint64_t>{}(p.first) ^ (std::hash<uint64_t>{}(p.second) << 1);
-    }
-  };
 
   // Counts of the sampled background window closest to a target distance;
   // represents a typical window's information content for the threshold screen.
@@ -56,7 +47,625 @@ namespace {
     return out_v;
   }
 
+  // Sample mean and sample standard deviation; NaN components when empty.
+  xy_t sample_mean_sd(const vec<double>& d_v)
+  {
+    if (d_v.empty()) return {nanx(), nanx()};
+    const double mean = std::accumulate(d_v.begin(), d_v.end(), 0.0) / static_cast<double>(d_v.size());
+    if (d_v.size() == 1) return {mean, 0.0};
+    double sum_sq = 0.0;
+    for (const double d : d_v) {
+      const double delta = d - mean;
+      sum_sq += delta * delta;
+    }
+    return {mean, std::sqrt(sum_sq / static_cast<double>(d_v.size() - 1))};
+  }
+
+  // SIMD params and LLH for one threshold set. Pooled mode builds this once and
+  // shares it across queries (LLH is const after construction; safe to share).
+  struct detect_ctx_t
+  {
+    params_t<cm512_t> params;
+    llh_sptr_t<cm512_t> llhf;
+
+    detect_ctx_t(const arr<double, RWIDTH>& extrema,
+                 uint32_t k,
+                 uint32_t h,
+                 double rho,
+                 uint32_t hdist_th,
+                 uint64_t tau,
+                 double chisq,
+                 uint64_t bin_shift,
+                 bool canonical)
+      : params(extrema, hdist_th, tau, chisq, bin_shift, 0, canonical, false)
+      , llhf(std::make_shared<LLH<cm512_t>>(k, h, rho, hdist_th, extrema))
+    {
+    }
+  };
+
+  // Interval extracted by one or more threshold slots (bit i = slot i). The
+  // shared likelihood estimate is filled in after deduplication.
+  struct candidate_t
+  {
+    uint64_t a_bin;
+    uint64_t b_bin;
+    uint32_t mask;
+    likelihood_estimate_t est;
+  };
+
+  inline bool operator<(const candidate_t& x, const candidate_t& y)
+  {
+    return x.a_bin < y.a_bin || (x.a_bin == y.a_bin && x.b_bin < y.b_bin);
+  }
+
+  // Merge same-interval candidates from nested lanes; OR their lane masks.
+  void merge_candidates(vec<candidate_t>& cv)
+  {
+    if (cv.empty()) return;
+    std::sort(cv.begin(), cv.end());
+    size_t w = 0;
+    for (size_t r = 1; r < cv.size(); ++r) {
+      if (cv[r].a_bin == cv[w].a_bin && cv[r].b_bin == cv[w].b_bin) {
+        cv[w].mask |= cv[r].mask;
+      } else {
+        cv[++w] = cv[r];
+      }
+    }
+    cv.resize(w + 1);
+  }
+
+  // LR screen: drops a level a typical background window cannot distinguish
+  // from the fitted median. A null win_hist/win_u disables the screen.
+  bool screen_level(const clvl_t& level,
+                    const LLH<double>& llhf,
+                    const uint64_t* win_hist,
+                    const uint64_t win_u,
+                    const double d_median)
+  {
+    if (win_hist == nullptr || win_u == 0 || !is_valid_distance(d_median)) return true;
+    // Test H0 "D = threshold" against "D = median" on a representative background
+    // window (LR, chi-square(1) at this level's own alpha). A threshold a typical
+    // window cannot tell apart from the median only re-labels background noise,
+    // so detection at such a level is dropped.
+    const double crit = GammaModel::quantile(1.0 - level.alpha, 0.5, 2.0); // chi-square(1) == Gamma(1/2, 2)
+    const double nll_med = llhf.nll(d_median, win_hist, win_u);
+    const double lr_low = likelihood_ratio_statistic(llhf.nll(level.t_low, win_hist, win_u), nll_med);
+    const double lr_high = likelihood_ratio_statistic(llhf.nll(level.t_high, win_hist, win_u), nll_med);
+    if (!std::isfinite(lr_low) || !std::isfinite(lr_high) || lr_low < crit || lr_high < crit) {
+      warn_msg(concat_msg("level ",
+                          level.alpha,
+                          " threshold(s) indistinguishable from the background median (LR: low=",
+                          lr_low,
+                          ", high=",
+                          lr_high,
+                          ", chi2 crit=",
+                          crit,
+                          "); dropping the level"));
+      return false;
+    }
+    return true;
+  }
+
+  // Writes one TSV row for an extracted interval (outlier or unmapped segment).
+  void write_outlier(strstream& os,
+                     const str& qid,
+                     uint64_t L,
+                     const interval_t& seq_iv,
+                     const str& rname,
+                     bool canonical,
+                     bool is_rc,
+                     double d_diff,
+                     double d_q,
+                     const likelihood_estimate_t& est,
+                     bool high_side,
+                     const vec<double>& side_thresholds_v,
+                     uint32_t mask,
+                     double alpha)
+  {
+    const char* side = est.has_hits ? (high_side ? "high" : "low") : "unmapped";
+    const xy_t d_range = bracket_distance(est.d, side_thresholds_v);
+    std::ostringstream d_bin;
+    d_bin.flags(os.flags());
+    d_bin.precision(os.precision());
+    d_bin << '(' << d_range.first << ", " << d_range.second << ')';
+
+    if (canonical) {
+      write_tsv(
+        os, qid, L, seq_iv.a, seq_iv.b, rname, est.d, side, mask, alpha, d_bin.str(), d_q, est.I, est.lr_bg, est.lr_ub)
+        << '\n';
+    } else {
+      write_tsv(os,
+                qid,
+                L,
+                seq_iv.a,
+                seq_iv.b,
+                report_strand(is_rc, d_diff),
+                static_cast<uint32_t>(is_rc),
+                rname,
+                est.d,
+                side,
+                mask,
+                alpha,
+                d_bin.str(),
+                d_q,
+                d_diff,
+                est.I,
+                est.lr_bg,
+                est.lr_ub)
+        << '\n';
+    }
+  }
+
 } // namespace
+
+Detector::Detector(const sketch_sptr_t& sketch,
+                   const vec<qseq_t>& batch_v,
+                   const uint64_t tau,
+                   const uint64_t bin_shift,
+                   const uint32_t hdist_th,
+                   const double chisq,
+                   const uint64_t sample_size,
+                   const vec<double>& levels,
+                   const vec<double>& fit_quantiles,
+                   const bool per_sequence,
+                   const uint32_t verbosity)
+  : sketch(sketch)
+  , batch_v(batch_v)
+  , tau(tau)
+  , bin_shift(bin_shift)
+  , hdist_th(hdist_th)
+  , chisq(chisq)
+  , sample_size(sample_size)
+  , levels(levels)
+  , fit_quantiles(fit_quantiles)
+  , per_sequence(per_sequence)
+  , verbosity(verbosity)
+{
+}
+
+bggamma_t Detector::fit(const vec<double>& d_v) const
+{
+  bggamma_t fit;
+  const auto prepared = GammaModel::prepare_samples(d_v, d_eps);
+  fit.ndropped = prepared.ndropped;
+  fit.nfloored = prepared.nfloored;
+  fit.nsamples = prepared.x.size();
+  if (prepared.x.size() < GammaModel::min_nsamples) return fit;
+  if (fit.nfloored * 20 > fit.nsamples) {
+    warn_msg(concat_msg(
+      "more than 5% floored windows (", fit.nfloored, "/", fit.nsamples, "); low-side thresholds may be meaningless"));
+  }
+
+  GammaModel::Config cfg{};
+  cfg.quantile_probs = {fit_quantiles[0], fit_quantiles[1], fit_quantiles[2]};
+  fit.params = GammaModel::fit_from_samples(prepared.x, cfg, &fit.objective, &fit.niter);
+  if (!GammaModel::validate_params(fit.params)) {
+    fit.params = GammaModel::moments_estimate(prepared.x);
+    if (!GammaModel::validate_params(fit.params)) return fit;
+    // Diagnostics from the failed Nelder-Mead run do not describe this estimate.
+    fit.objective = nanx();
+    fit.niter = 0;
+    warn_msg("Nelder-Mead gamma fit failed; falling back to the moment estimate");
+  }
+  if (fit.params.shape > 1e6) {
+    fit.params.scale *= fit.params.shape / 1e6;
+    fit.params.shape = 1e6;
+    warn_msg("near-degenerate background (all samples nearly identical); clamping gamma shape while preserving its mean");
+  }
+  const double mass_above = 1.0 - GammaModel::cdf(d_ub, fit.params.shape, fit.params.scale);
+  if (mass_above > 1e-3) {
+    warn_msg(concat_msg(
+      "fitted gamma puts ", mass_above * 100.0, "% of its mass above the maximum distance; tail thresholds are biased low"));
+  }
+  fit.ok = true;
+  return fit;
+}
+
+thcfg_t Detector::thresholds_for(const bggamma_t& fit,
+                                 const LLH<double>& llhf,
+                                 const uint64_t* win_hist,
+                                 const uint64_t win_u,
+                                 const double d_median) const
+{
+  vec<double> sorted_levels = levels;
+  std::sort(sorted_levels.begin(), sorted_levels.end(), std::greater<double>());
+
+  thcfg_t thresholds;
+  vec<double> used;
+  for (const double alpha : sorted_levels) {
+    clvl_t level{alpha,
+                 GammaModel::quantile(alpha / 2.0, fit.params.shape, fit.params.scale),
+                 GammaModel::quantile(1.0 - alpha / 2.0, fit.params.shape, fit.params.scale)};
+    level.t_low = std::clamp(level.t_low, d_eps, d_ub - d_eps);
+    level.t_high = std::clamp(level.t_high, d_eps, d_ub - d_eps);
+    if (!std::isfinite(level.t_low) || !std::isfinite(level.t_high) || !(level.t_low < level.t_high)) {
+      warn_msg(concat_msg("degenerate thresholds at level ", alpha, "; dropping the level"));
+      continue;
+    }
+    if (!screen_level(level, llhf, win_hist, win_u, d_median)) continue;
+    const bool duplicate = std::any_of(used.begin(), used.end(), [&](double t) {
+      return std::abs(t - level.t_low) < 1e-12 || std::abs(t - level.t_high) < 1e-12;
+    });
+    if (duplicate) {
+      warn_msg(concat_msg("duplicate thresholds at level ", level.alpha, " after clipping; dropping the level"));
+      continue;
+    }
+    used.push_back(level.t_low);
+    used.push_back(level.t_high);
+    thresholds.levels.push_back(level);
+  }
+  if (!thresholds.empty()) thresholds.pack();
+  return thresholds;
+}
+
+vec<thcfg_t> Detector::plan(const DistanceSampler& sampler, const vvec<double>& d_per_seq, const LLH<double>& llhf) const
+{
+  const str rname = sketch->get_rname();
+  const size_t nseq = batch_v.size();
+
+  uint64_t nmapped = 0;
+  for (const auto& d_v : d_per_seq)
+    nmapped += d_v.size();
+  const uint64_t nunmapped = sampler.get_nsamples() - nmapped;
+
+  if (!per_sequence) {
+    vec<double> d_all;
+    d_all.reserve(nmapped);
+    for (const auto& d_v : d_per_seq)
+      d_all.insert(d_all.end(), d_v.begin(), d_v.end());
+
+    const bggamma_t bg = fit(d_all);
+    if (!bg.ok) {
+      error_exit(concat_msg("gamma fit failed for sketch ",
+                            rname,
+                            " (",
+                            bg.nsamples,
+                            " usable samples; need at least ",
+                            GammaModel::min_nsamples,
+                            ")"));
+    }
+
+    const double d_median = GammaModel::quantile(0.5, bg.params.shape, bg.params.scale);
+    median_window_t win;
+    for (auto& w : find_median_windows(sampler, vec<double>(nseq, d_median))) {
+      if (w.valid && w.dev < win.dev) win = std::move(w);
+    }
+
+    thcfg_t thresholds = thresholds_for(bg, llhf, win.valid ? win.hist.data() : nullptr, win.u, d_median);
+    if (thresholds.empty()) {
+      error_exit(concat_msg("no usable confidence levels for sketch ", rname));
+    }
+
+    if (verbosity >= 1) {
+      const auto [mean, sd] = sample_mean_sd(d_all);
+      report_fit(bg, thresholds, mean, sd, nunmapped, nmapped);
+    }
+
+    return {std::move(thresholds)};
+  }
+
+  // Per-sequence: fit all sequences first so every median is known, then gather
+  // each sequence's representative (median-closest) window in one pass.
+  const uint64_t bin_size = uint64_t(1) << bin_shift;
+  const uint64_t nwinmers = ((tau + bin_size - 1) >> bin_shift) << bin_shift;
+  const uint64_t min_len = nwinmers + sketch->get_lshf_sptr()->get_k() - 1;
+
+  vec<bggamma_t> fits(nseq);
+  vec<double> dmed_v(nseq, nanx());
+  for (size_t bix = 0; bix < nseq; ++bix) {
+    fits[bix] = fit(d_per_seq[bix]);
+    if (fits[bix].ok) dmed_v[bix] = GammaModel::quantile(0.5, fits[bix].params.shape, fits[bix].params.scale);
+  }
+  const vec<median_window_t> win_v = find_median_windows(sampler, dmed_v);
+
+  vec<thcfg_t> sets(nseq);
+  uint64_t nfit = 0;
+  uint64_t nskipped = 0;
+  for (size_t bix = 0; bix < nseq; ++bix) {
+    if (fits[bix].ok) {
+      sets[bix] =
+        thresholds_for(fits[bix], llhf, win_v[bix].valid ? win_v[bix].hist.data() : nullptr, win_v[bix].u, dmed_v[bix]);
+    }
+    if (sets[bix].empty() || sets[bix].nlevels() != levels.size()) {
+      sets[bix] = {};
+      if (batch_v[bix].seq.size() >= min_len) {
+        warn_pmsg(batch_v[bix].qid, "gamma fit failed or degenerate; detection skipped for this sequence");
+        ++nskipped;
+      }
+      continue;
+    }
+    ++nfit;
+  }
+
+  if (verbosity >= 1) {
+    cerr_msg("[",
+             rname,
+             "] per-sequence fits: ",
+             nfit,
+             " ok, ",
+             nskipped,
+             " skipped",
+             " (unmapped windows: ",
+             nunmapped,
+             ", hit: ",
+             nmapped,
+             ")");
+  }
+  return sets;
+}
+
+void Detector::extract_batch(const vec<thcfg_t>& sets,
+                             const bool per_sequence,
+                             const LLH<double>& llhf,
+                             vec<lvlstat_t>& stats,
+                             uint64_t& unmapped_iv,
+                             uint64_t& unmapped_bp,
+                             strstream& sout,
+                             ThreadPool& pool) const
+{
+  const lshf_sptr_t lshf = sketch->get_lshf_sptr();
+  const uint32_t k = lshf->get_k();
+  const bool canonical = sketch->is_canonical();
+  const str rname = sketch->get_rname();
+  const uint64_t bin_size = uint64_t(1) << bin_shift;
+  const uint64_t tau_bin = std::max<uint64_t>(1, (tau + bin_size - 1) >> bin_shift);
+
+  const scan_ctx_t scan_ctx = make_scan_ctx(*sketch, bin_shift, hdist_th);
+
+  const size_t nseq = batch_v.size();
+  vec<strstream> out_v(nseq);
+  vvec<lvlstat_t> stats_v(nseq);
+  vec<uint64_t> unmapped_iv_v(nseq, 0);
+  vec<uint64_t> unmapped_bp_v(nseq, 0);
+
+  // Pooled mode shares one threshold set across all queries.
+  std::optional<detect_ctx_t> pooled_ctx;
+  if (!per_sequence) {
+    pooled_ctx.emplace(sets[0].extrema, k, lshf->get_h(), sketch->get_rho(), hdist_th, tau, chisq, bin_shift, canonical);
+  }
+
+  auto process = [&](const uint64_t bix) {
+    const thcfg_t& thresholds = sets[per_sequence ? bix : 0];
+    if (thresholds.empty()) return;
+
+    const char* cseq = batch_v[bix].seq.data();
+    const uint64_t len = batch_v[bix].seq.size();
+    if (len < static_cast<uint64_t>(k)) {
+      warn_pmsg(batch_v[bix].qid, "skipped: sequence shorter than k-mer length ", "(len=", len, ", k=", k, ")");
+      return;
+    }
+    const uint64_t enmers = len - k + 1;
+    const uint64_t nbins = (enmers + bin_size - 1) >> bin_shift;
+    if (nbins < 2) {
+      warn_pmsg(batch_v[bix].qid, "skipped: fewer than two bins after binning ", "(len=", len, ", bin_size=", bin_size, ")");
+      return;
+    }
+    const uint64_t tau_eff = std::min(tau_bin, nbins) - 1;
+
+    // Per-sequence mode: thresholds differ per query, so params/LLH are built here.
+    std::optional<detect_ctx_t> sequence_ctx;
+    if (!pooled_ctx) {
+      sequence_ctx.emplace(
+        thresholds.extrema, k, lshf->get_h(), sketch->get_rho(), hdist_th, tau, chisq, bin_shift, canonical);
+    }
+    const detect_ctx_t& ctx = pooled_ctx ? *pooled_ctx : *sequence_ctx;
+
+    strstream& os = out_v[bix];
+    set_precision(os, 5);
+    stats_v[bix].assign(thresholds.nlanes(), {});
+
+    DIM<cm512_t> dim_fw(ctx.params, ctx.llhf, nbins, enmers);
+    std::optional<DIM<cm512_t>> dim_rc;
+    if (!canonical) dim_rc.emplace(ctx.params, ctx.llhf, nbins, enmers);
+    dim_agg_t<cm512_t> agg{dim_fw, canonical ? nullptr : &*dim_rc};
+    if (canonical)
+      scan_mers_range<false>(scan_ctx, cseq, 0, enmers, agg);
+    else
+      scan_mers_range<true>(scan_ctx, cseq, 0, enmers, agg);
+
+    // Uniform per-strand pipeline: prefix sums, whole-query distance, then
+    // per-threshold extraction. Canonical mode runs a single forward "strand".
+    struct strand_t
+    {
+      DIM<cm512_t>* dim;
+      bool is_rc;
+      double d_q;
+    };
+    vec<strand_t> strands;
+    strands.push_back({&dim_fw, false, nanx()});
+    if (dim_rc) strands.push_back({&*dim_rc, true, nanx()});
+    for (auto& strand : strands) {
+      strand.dim->inclusive_scan();
+      strand.dim->compute_prefhistsum();
+      strand.dim->extrema_scan();
+      vec<uint64_t> v_q;
+      uint64_t u_q = 0, t_q = 0;
+      strand.dim->total_histogram(v_q, u_q, t_q);
+      strand.d_q = llhf.mle(v_q.data(), u_q);
+    }
+    const double d_diff = canonical ? nanx() : strand_diff(strands[0].d_q, strands[1].d_q);
+
+    // Collect candidates from every lane, merge nested duplicates, score once.
+    std::array<vec<candidate_t>, 2> candidates_v;
+    for (size_t ix = 0; ix < thresholds.nlanes(); ++ix) {
+      for (size_t si = 0; si < strands.size(); ++si) {
+        DIM<cm512_t>& dim = *strands[si].dim;
+        dim.extract_intervals_mx(tau_eff, 1, nbins, ix);
+        dim.expand_intervals(ctx.params.chisq, ix);
+        for (const auto& iv : dim.get_intervals_v(ix))
+          candidates_v[si].push_back({iv.a, iv.b + 1, static_cast<uint32_t>(1u << ix), {}});
+      }
+    }
+
+    for (size_t si = 0; si < strands.size(); ++si) {
+      vec<candidate_t>& cv = candidates_v[si];
+      merge_candidates(cv);
+
+      vec<uint64_t> scratch_v;
+      uint64_t u = 0, t = 0;
+      for (auto& c : cv) {
+        strands[si].dim->extract_histogram(c.a_bin - 1, c.b_bin - 1, scratch_v, u, t);
+        c.est = compute_likelihood_estimate(llhf, scratch_v.data(), u, t, strands[si].d_q);
+        if (!c.est.has_hits) {
+          // Count unmapped intervals once per unique (strand, a_bin, b_bin).
+          const interval_t seq_iv = get_coordinates({c.a_bin, c.b_bin}, bin_shift, enmers, k);
+          unmapped_iv_v[bix] += 1;
+          unmapped_bp_v[bix] += seq_iv.b - seq_iv.a + 1;
+        }
+      }
+    }
+
+    // Emit from merged candidates by lane mask (lane-major, then strand).
+    const uint64_t L = enmers + k - 1;
+    for (size_t ix = 0; ix < thresholds.nlanes(); ++ix) {
+      const uint32_t lane_bit = static_cast<uint32_t>(1u << ix);
+      const bool high_side = thresholds.is_high_side(ix);
+      const vec<double>& side_thresholds_v = high_side ? thresholds.high_v : thresholds.low_v;
+      for (size_t si = 0; si < strands.size(); ++si) {
+        for (const candidate_t& c : candidates_v[si]) {
+          if ((c.mask & lane_bit) == 0) continue;
+          const interval_t seq_iv = get_coordinates({c.a_bin, c.b_bin}, bin_shift, enmers, k);
+          if (c.est.has_hits) {
+            stats_v[bix][ix].nintervals += 1;
+            stats_v[bix][ix].bp_covered += seq_iv.b - seq_iv.a + 1;
+          }
+          write_outlier(os,
+                        batch_v[bix].qid,
+                        L,
+                        seq_iv,
+                        rname,
+                        canonical,
+                        strands[si].is_rc,
+                        d_diff,
+                        strands[si].d_q,
+                        c.est,
+                        high_side,
+                        side_thresholds_v,
+                        lane_bit,
+                        thresholds.alpha(ix));
+        }
+      }
+    }
+  };
+
+  pool.parallel_for(nseq, 1, process);
+
+  unmapped_iv = 0;
+  unmapped_bp = 0;
+  for (size_t bix = 0; bix < nseq; ++bix) {
+    if (out_v[bix].tellp() > 0) sout << out_v[bix].rdbuf();
+    for (size_t ix = 0; ix < stats_v[bix].size(); ++ix) {
+      stats[ix].nintervals += stats_v[bix][ix].nintervals;
+      stats[ix].bp_covered += stats_v[bix][ix].bp_covered;
+    }
+    unmapped_iv += unmapped_iv_v[bix];
+    unmapped_bp += unmapped_bp_v[bix];
+  }
+}
+
+void Detector::report_fit(const bggamma_t& fit,
+                          const thcfg_t& thresholds,
+                          const double mean,
+                          const double sd,
+                          const uint64_t nunmapped,
+                          const uint64_t nmapped) const
+{
+  const str rname = sketch->get_rname();
+  cerr_msg("[",
+           rname,
+           "] background windows: n=",
+           fit.nsamples,
+           " (floored=",
+           fit.nfloored,
+           ", dropped=",
+           fit.ndropped,
+           ", unmapped=",
+           nunmapped,
+           ", hit=",
+           nmapped,
+           ")",
+           " mean=",
+           mean,
+           " sd=",
+           sd);
+  if (verbosity >= 2) {
+    cerr_msg("[",
+             rname,
+             "] fit: shape=",
+             fit.params.shape,
+             " scale=",
+             fit.params.scale,
+             " objective=",
+             fit.objective,
+             " niter=",
+             fit.niter,
+             " median=",
+             GammaModel::quantile(0.5, fit.params.shape, fit.params.scale));
+  } else {
+    cerr_msg("[", rname, "] fit: shape=", fit.params.shape, " scale=", fit.params.scale);
+  }
+  for (const auto& level : thresholds.levels) {
+    cerr_msg("[", rname, "] level ", level.alpha, ": t_low=", level.t_low, " t_high=", level.t_high);
+  }
+}
+
+void Detector::report_stats(const thcfg_t& thresholds,
+                            const vec<lvlstat_t>& stats,
+                            const uint64_t unmapped_iv,
+                            const uint64_t unmapped_bp) const
+{
+  const str rname = sketch->get_rname();
+  for (size_t j = 0; j < thresholds.nlevels(); ++j) {
+    cerr_msg("[",
+             rname,
+             "] level ",
+             thresholds.levels[j].alpha,
+             ": high: ",
+             stats[j].nintervals,
+             " interval(s), ",
+             stats[j].bp_covered,
+             " bp | low: ",
+             stats[thresholds.nlevels() + j].nintervals,
+             " interval(s), ",
+             stats[thresholds.nlevels() + j].bp_covered,
+             " bp");
+  }
+  cerr_msg("[", rname, "] unmapped (no k-mer hits): ", unmapped_iv, " interval(s), ", unmapped_bp, " bp");
+}
+
+void Detector::run(std::ostream& out, ThreadPool& pool)
+{
+  const lshf_sptr_t lshf = sketch->get_lshf_sptr();
+  // Scalar LLH for the threshold screen and the per-interval estimates.
+  const LLH<double> llhf(lshf->get_k(), lshf->get_h(), sketch->get_rho(), hdist_th, 0.0, false);
+
+  // Pass 1: sample background windows. Counts are kept so that a representative
+  // window per fit can feed the threshold screen.
+  DistanceSampler sampler(sketch, batch_v, tau, bin_shift, hdist_th);
+  if (per_sequence)
+    sampler.run_per_sequence(sample_size, true, pool);
+  else
+    sampler.run_for_all(sample_size, true, pool);
+  vvec<double> d_per_seq(batch_v.size());
+  sampler.collect_distances(d_per_seq);
+
+  const vec<thcfg_t> sets = plan(sampler, d_per_seq, llhf);
+
+  // Pass 2: extract outlier intervals per threshold.
+  size_t max_lanes = 0;
+  for (const auto& set : sets)
+    max_lanes = std::max(max_lanes, set.nlanes());
+  vec<lvlstat_t> stats(max_lanes);
+  uint64_t unmapped_iv = 0, unmapped_bp = 0;
+  strstream sout;
+  set_precision(sout, 5);
+  extract_batch(sets, per_sequence, llhf, stats, unmapped_iv, unmapped_bp, sout, pool);
+  if (sout.tellp() > 0) out << sout.rdbuf();
+
+  if (verbosity >= 1 && !per_sequence) {
+    report_stats(sets[0], stats, unmapped_iv, unmapped_bp);
+  }
+}
 
 DetectSC::DetectSC(CLI::App& sc)
 {
@@ -137,399 +746,6 @@ bool DetectSC::validate_configuration()
   return !is_invalid;
 }
 
-DetectSC::background_fit_t DetectSC::fit_background(const vec<double>& d_v) const
-{
-  background_fit_t fit;
-  const auto prepared = GammaModel::prepare_samples(d_v, d_eps);
-  fit.ndropped = prepared.ndropped;
-  fit.nfloored = prepared.nfloored;
-  fit.nsamples = prepared.x.size();
-  if (prepared.x.size() < GammaModel::min_nsamples) return fit;
-  if (fit.nfloored * 20 > fit.nsamples) {
-    warn_msg(concat_msg(
-      "more than 5% floored windows (", fit.nfloored, "/", fit.nsamples, "); low-side thresholds may be meaningless"));
-  }
-
-  GammaModel::Config cfg{};
-  cfg.quantile_probs = {fit_quantiles[0], fit_quantiles[1], fit_quantiles[2]};
-  fit.params = GammaModel::fit_from_samples(prepared.x, cfg, &fit.objective, &fit.niter);
-  if (!GammaModel::validate_params(fit.params)) {
-    fit.params = GammaModel::moments_estimate(prepared.x);
-    if (!GammaModel::validate_params(fit.params)) return fit;
-    // Diagnostics from the failed Nelder-Mead run do not describe this estimate.
-    fit.objective = nanx();
-    fit.niter = 0;
-    warn_msg("Nelder-Mead gamma fit failed; falling back to the moment estimate");
-  }
-  if (fit.params.shape > 1e6) {
-    fit.params.scale *= fit.params.shape / 1e6;
-    fit.params.shape = 1e6;
-    warn_msg("near-degenerate background (all samples nearly identical); clamping gamma shape while preserving its mean");
-  }
-  const double mass_above = 1.0 - GammaModel::cdf(d_ub, fit.params.shape, fit.params.scale);
-  if (mass_above > 1e-3) {
-    warn_msg(concat_msg(
-      "fitted gamma puts ", mass_above * 100.0, "% of its mass above the maximum distance; tail thresholds are biased low"));
-  }
-  fit.ok = true;
-  return fit;
-}
-
-bool DetectSC::build_lanes(const background_fit_t& fit,
-                           lane_config_t& lanes,
-                           const LLH<double>& llhf,
-                           const uint64_t* win_hist,
-                           const uint64_t win_u,
-                           const double d_med) const
-{
-  lanes = lane_config_t{};
-  vec<double> lev = levels;
-  std::sort(lev.begin(), lev.end(), std::greater<double>());
-
-  vec<double> used; // all thresholds so far, for the uniqueness requirement
-  for (const double alpha : lev) {
-    double t_lo = GammaModel::quantile(alpha / 2.0, fit.params.shape, fit.params.scale);
-    double t_hi = GammaModel::quantile(1.0 - alpha / 2.0, fit.params.shape, fit.params.scale);
-    t_lo = std::clamp(t_lo, d_eps, d_ub - d_eps);
-    t_hi = std::clamp(t_hi, d_eps, d_ub - d_eps);
-    if (!std::isfinite(t_lo) || !std::isfinite(t_hi) || !(t_lo < t_hi)) {
-      warn_msg(concat_msg("degenerate thresholds at level ", alpha, "; dropping the level"));
-      continue;
-    }
-    if (win_hist != nullptr && win_u > 0 && is_valid_distance(d_med)) {
-      // Screen: test H0 "D = threshold" against "D = median" on a representative
-      // background window (LR, chi-square(1) at this level's own alpha). A
-      // threshold a typical window cannot tell apart from the median only
-      // re-labels background noise, so detection at such a level is dropped.
-      const double crit = GammaModel::quantile(1.0 - alpha, 0.5, 2.0); // chi-square(1) == Gamma(1/2, 2)
-      const double nll_med = llhf.nll(d_med, win_hist, win_u);
-      const double lr_lo = likelihood_ratio_statistic(llhf.nll(t_lo, win_hist, win_u), nll_med);
-      const double lr_hi = likelihood_ratio_statistic(llhf.nll(t_hi, win_hist, win_u), nll_med);
-      if (!std::isfinite(lr_lo) || !std::isfinite(lr_hi) || lr_lo < crit || lr_hi < crit) {
-        warn_msg(concat_msg("level ",
-                            alpha,
-                            " threshold(s) indistinguishable from the background median (LR: lo=",
-                            lr_lo,
-                            ", hi=",
-                            lr_hi,
-                            ", chi2 crit=",
-                            crit,
-                            "); dropping the level"));
-        continue;
-      }
-    }
-    const bool dup = std::any_of(
-      used.begin(), used.end(), [&](double t) { return std::abs(t - t_lo) < 1e-12 || std::abs(t - t_hi) < 1e-12; });
-    if (dup) {
-      warn_msg(concat_msg("duplicate thresholds at level ", alpha, " after clipping; dropping the level"));
-      continue;
-    }
-    used.push_back(t_lo);
-    used.push_back(t_hi);
-    lanes.thresholds.push_back({alpha, t_lo, t_hi});
-  }
-  if (lanes.thresholds.empty()) return false;
-
-  lanes.nlevels = lanes.thresholds.size();
-  lanes.nlanes = 2 * lanes.nlevels;
-  lanes.extrema.fill(0.5);
-  lanes.alpha_v.fill(0.0);
-  for (size_t j = 0; j < lanes.nlevels; ++j) {
-    lanes.extrema[j] = -lanes.thresholds[j].t_hi;                // high side: d > t_hi
-    lanes.extrema[lanes.nlevels + j] = lanes.thresholds[j].t_lo; // low side: d < t_lo
-    lanes.alpha_v[j] = lanes.thresholds[j].alpha;
-    lanes.alpha_v[lanes.nlevels + j] = lanes.thresholds[j].alpha;
-  }
-  return true;
-}
-
-void DetectSC::detect_queries(const sketch_sptr_t& sketch,
-                              const vec<qseq_t>& batch_v,
-                              const std::optional<lane_config_t>& lanes_pooled,
-                              const vec<lane_config_t>* lanes_per_seq,
-                              vec<detect_level_stats_t>& stats,
-                              uint64_t& unmapped_iv,
-                              uint64_t& unmapped_bp,
-                              strstream& sout,
-                              ThreadPool& pool) const
-{
-  const lshf_sptr_t lshf = sketch->get_lshf_sptr();
-  const uint32_t k = lshf->get_k();
-  const bool canonical = sketch->is_canonical();
-  const str rname = sketch->get_rname();
-  const uint64_t bin_size = uint64_t(1) << bin_shift;
-  const uint64_t tau_bin = std::max<uint64_t>(1, (tau + bin_size - 1) >> bin_shift);
-
-  const scan_ctx_t ctx = make_scan_ctx(*sketch, bin_shift, hdist_th);
-  const LLH<double> llhf_d(k, lshf->get_h(), sketch->get_rho(), hdist_th, 0.0, false);
-
-  const size_t nseq = batch_v.size();
-  vec<strstream> out_v(nseq);
-  vvec<detect_level_stats_t> stats_v(nseq);
-  vec<uint64_t> unmapped_iv_v(nseq, 0);
-  vec<uint64_t> unmapped_bp_v(nseq, 0);
-
-  // Pooled mode shares one lane configuration across all sequences: build the
-  // SIMD params/LLH once (LLH is const after construction; safe to share).
-  std::optional<params_t<cm512_t>> pooled_params;
-  llh_sptr_t<cm512_t> pooled_llhf;
-  if (lanes_pooled) {
-    pooled_params.emplace(lanes_pooled->extrema, hdist_th, tau, chisq, bin_shift, 0, canonical, false);
-    pooled_llhf = std::make_shared<LLH<cm512_t>>(k, lshf->get_h(), sketch->get_rho(), hdist_th, lanes_pooled->extrema);
-  }
-
-  auto process = [&](const uint64_t bix) {
-    const lane_config_t& lanes = lanes_pooled ? *lanes_pooled : (*lanes_per_seq)[bix];
-    if (lanes.nlanes == 0) return;
-
-    const char* cseq = batch_v[bix].seq.data();
-    const uint64_t len = batch_v[bix].seq.size();
-    if (len < static_cast<uint64_t>(k)) {
-      warn_pmsg(batch_v[bix].qid, "skipped: sequence shorter than k-mer length ", "(len=", len, ", k=", k, ")");
-      return;
-    }
-    const uint64_t enmers = len - k + 1;
-    const uint64_t nbins = (enmers + bin_size - 1) >> bin_shift;
-    if (nbins < 2) {
-      warn_pmsg(batch_v[bix].qid, "skipped: fewer than two bins after binning ", "(len=", len, ", bin_size=", bin_size, ")");
-      return;
-    }
-    const uint64_t tau_eff = std::min(tau_bin, nbins) - 1;
-
-    // Per-sequence mode: lanes differ per query, so params/LLH are built here.
-    std::optional<params_t<cm512_t>> seq_params;
-    llh_sptr_t<cm512_t> seq_llhf;
-    if (!pooled_llhf) {
-      seq_params.emplace(lanes.extrema, hdist_th, tau, chisq, bin_shift, 0, canonical, false);
-      seq_llhf = std::make_shared<LLH<cm512_t>>(k, lshf->get_h(), sketch->get_rho(), hdist_th, lanes.extrema);
-    }
-    const params_t<cm512_t>& params = pooled_params ? *pooled_params : *seq_params;
-    const llh_sptr_t<cm512_t>& llhf = pooled_llhf ? pooled_llhf : seq_llhf;
-
-    // Per-side ascending thresholds for distance bracketing.
-    vec<double> th_hi, th_lo;
-    for (const auto& th : lanes.thresholds) {
-      th_hi.push_back(th.t_hi); // ascending: alpha is sorted descending
-      th_lo.push_back(th.t_lo); // descending; reversed below
-    }
-    std::reverse(th_lo.begin(), th_lo.end());
-
-    strstream& os = out_v[bix];
-    set_precision(os, 5);
-    stats_v[bix].assign(lanes.nlanes, {});
-    vec<uint64_t> v_scratch;
-    uint64_t u = 0, t = 0;
-
-    // Likelihood estimates are memoized because nested lanes can emit the same
-    // interval and differ only in mask and level.
-    std::unordered_map<std::pair<uint64_t, uint64_t>, likelihood_estimate_t, pair_hash> estimates[2];
-
-    auto emit = [&](DIM<cm512_t>& dim,
-                    const uint64_t a_bin,
-                    const uint64_t b_bin,
-                    const size_t lane,
-                    const bool is_rc,
-                    const double d_q,
-                    const double d_diff) {
-      const interval_t seq_iv = get_coordinates({a_bin, b_bin}, bin_shift, enmers, k);
-      auto& cache = estimates[is_rc ? 1 : 0];
-      const auto key = std::make_pair(a_bin, b_bin);
-      auto it = cache.find(key);
-      if (it == cache.end()) {
-        dim.extract_histogram(a_bin - 1, b_bin - 1, v_scratch, u, t);
-        it = cache.emplace(key, compute_likelihood_estimate(llhf_d, v_scratch.data(), u, t, d_q)).first;
-        if (!it->second.has_hits) {
-          // Count unmapped intervals once per unique (strand, a_bin, b_bin):
-          // nested lanes re-emit the same interval at each level.
-          unmapped_iv_v[bix] += 1;
-          unmapped_bp_v[bix] += seq_iv.b - seq_iv.a + 1;
-        }
-      }
-      const likelihood_estimate_t& est = it->second;
-      const bool unmapped = !est.has_hits;
-      const double d = est.d;
-      const double info = est.I, lr_bg = est.lr_bg, lr_ub = est.lr_ub;
-      const bool high_side = lane < lanes.nlevels;
-      const auto d_range = bracket_distance(d, high_side ? th_hi : th_lo);
-      std::ostringstream d_bin;
-      d_bin.flags(os.flags());
-      d_bin.precision(os.precision());
-      d_bin << '(' << d_range.first << ", " << d_range.second << ')';
-
-      if (!unmapped) {
-        stats_v[bix][lane].nintervals += 1;
-        stats_v[bix][lane].bp_covered += seq_iv.b - seq_iv.a + 1;
-      }
-
-      const uint32_t mask = static_cast<uint32_t>(1u << lane);
-      const char* side = unmapped ? "unmapped" : (high_side ? "high" : "low");
-      const uint64_t L = enmers + k - 1;
-      if (canonical) {
-        write_tsv(os,
-                  batch_v[bix].qid,
-                  L,
-                  seq_iv.a,
-                  seq_iv.b,
-                  rname,
-                  d,
-                  side,
-                  mask,
-                  lanes.alpha_v[lane],
-                  d_bin.str(),
-                  d_q,
-                  info,
-                  lr_bg,
-                  lr_ub)
-          << '\n';
-      } else {
-        write_tsv(os,
-                  batch_v[bix].qid,
-                  L,
-                  seq_iv.a,
-                  seq_iv.b,
-                  report_strand(is_rc, d_diff),
-                  static_cast<uint32_t>(is_rc),
-                  rname,
-                  d,
-                  side,
-                  mask,
-                  lanes.alpha_v[lane],
-                  d_bin.str(),
-                  d_q,
-                  d_diff,
-                  info,
-                  lr_bg,
-                  lr_ub)
-          << '\n';
-      }
-    };
-
-    DIM<cm512_t> dim_fw(params, llhf, nbins, enmers);
-    std::optional<DIM<cm512_t>> dim_rc;
-    if (!canonical) dim_rc.emplace(params, llhf, nbins, enmers);
-    dim_agg_t<cm512_t> agg{dim_fw, canonical ? nullptr : &*dim_rc};
-    if (canonical)
-      scan_mers_range<false>(ctx, cseq, 0, enmers, agg);
-    else
-      scan_mers_range<true>(ctx, cseq, 0, enmers, agg);
-
-    // Uniform per-strand pipeline: prefix sums, whole-query distance, then
-    // per-lane extraction. Canonical mode runs a single forward "strand".
-    struct strand_t
-    {
-      DIM<cm512_t>* dim;
-      bool is_rc;
-      double d_q;
-    };
-    vec<strand_t> strands;
-    strands.push_back({&dim_fw, false, nanx()});
-    if (dim_rc) strands.push_back({&*dim_rc, true, nanx()});
-    for (auto& s : strands) {
-      s.dim->inclusive_scan();
-      s.dim->compute_prefhistsum();
-      s.dim->extrema_scan();
-      vec<uint64_t> v_q;
-      uint64_t u_q = 0, t_q = 0;
-      s.dim->total_histogram(v_q, u_q, t_q);
-      s.d_q = llhf_d.mle(v_q.data(), u_q);
-    }
-    const double d_diff = canonical ? nanx() : strand_diff(strands[0].d_q, strands[1].d_q);
-
-    for (size_t ix = 0; ix < lanes.nlanes; ++ix) {
-      for (auto& s : strands) {
-        s.dim->extract_intervals_mx(tau_eff, 1, nbins, ix);
-        s.dim->expand_intervals(params.chisq, ix);
-        for (const auto& iv : s.dim->get_intervals_v(ix))
-          emit(*s.dim, iv.a, iv.b + 1, ix, s.is_rc, s.d_q, d_diff);
-      }
-    }
-  };
-
-  pool.parallel_for(nseq, 1, process);
-
-  unmapped_iv = 0;
-  unmapped_bp = 0;
-  for (size_t bix = 0; bix < nseq; ++bix) {
-    if (out_v[bix].tellp() > 0) sout << out_v[bix].rdbuf();
-    for (size_t lane = 0; lane < stats_v[bix].size(); ++lane) {
-      stats[lane].nintervals += stats_v[bix][lane].nintervals;
-      stats[lane].bp_covered += stats_v[bix][lane].bp_covered;
-    }
-    unmapped_iv += unmapped_iv_v[bix];
-    unmapped_bp += unmapped_bp_v[bix];
-  }
-}
-
-void DetectSC::report_fit(const str& rname,
-                          const background_fit_t& fit,
-                          const lane_config_t& lanes,
-                          const double mean,
-                          const double sd,
-                          const uint64_t nunmapped,
-                          const uint64_t nmapped) const
-{
-  cerr_msg("[",
-           rname,
-           "] background windows: n=",
-           fit.nsamples,
-           " (floored=",
-           fit.nfloored,
-           ", dropped=",
-           fit.ndropped,
-           ", unmapped=",
-           nunmapped,
-           ", hit=",
-           nmapped,
-           ")",
-           " mean=",
-           mean,
-           " sd=",
-           sd);
-  if (verbosity >= 2) {
-    cerr_msg("[",
-             rname,
-             "] fit: shape=",
-             fit.params.shape,
-             " scale=",
-             fit.params.scale,
-             " objective=",
-             fit.objective,
-             " niter=",
-             fit.niter,
-             " median=",
-             GammaModel::quantile(0.5, fit.params.shape, fit.params.scale));
-  } else {
-    cerr_msg("[", rname, "] fit: shape=", fit.params.shape, " scale=", fit.params.scale);
-  }
-  for (const auto& th : lanes.thresholds) {
-    cerr_msg("[", rname, "] level ", th.alpha, ": t_lo=", th.t_lo, " t_hi=", th.t_hi);
-  }
-}
-
-void DetectSC::report_stats(const str& rname,
-                            const lane_config_t& lanes,
-                            const vec<detect_level_stats_t>& stats,
-                            const uint64_t unmapped_iv,
-                            const uint64_t unmapped_bp) const
-{
-  for (size_t j = 0; j < lanes.nlevels; ++j) {
-    cerr_msg("[",
-             rname,
-             "] level ",
-             lanes.thresholds[j].alpha,
-             ": high: ",
-             stats[j].nintervals,
-             " interval(s), ",
-             stats[j].bp_covered,
-             " bp | low: ",
-             stats[lanes.nlevels + j].nintervals,
-             " interval(s), ",
-             stats[lanes.nlevels + j].bp_covered,
-             " bp");
-  }
-  cerr_msg("[", rname, "] unmapped (no k-mer hits): ", unmapped_iv, " interval(s), ", unmapped_bp, " bp");
-}
-
 void DetectSC::detect()
 {
   set_precision(*output_stream, 5);
@@ -553,135 +769,11 @@ void DetectSC::detect()
   for (uint32_t i = 0; i < nsketches; ++i) {
     sketch_sptr_t sketch = std::make_shared<Sketch>(sketch_path);
     sketch->load_from_offset(sin, sketch_offsets[i]);
-    const str rname = sketch->get_rname();
-    const lshf_sptr_t lshf = sketch->get_lshf_sptr();
-    const uint64_t bin_size = uint64_t(1) << bin_shift;
-    const uint64_t nwinmers = ((tau + bin_size - 1) >> bin_shift) << bin_shift;
-    const uint64_t min_len = nwinmers + lshf->get_k() - 1;
-    // Scalar LLH for the threshold screen (same configuration as in detect_queries).
-    const LLH<double> llhf_d(lshf->get_k(), lshf->get_h(), sketch->get_rho(), hdist_th, 0.0, false);
-
-    // Pass 1: sample background windows. Counts are kept so that a representative
-    // window per fit can feed the threshold screen in build_lanes.
-    DistanceSampler sampler(sketch, batch_v, tau, bin_shift, hdist_th);
-    if (per_sequence)
-      sampler.run_per_sequence(sample_size, true, pool);
-    else
-      sampler.run_for_all(sample_size, true, pool);
-    vec<vec<double>> d_per_seq(batch_v.size());
-    sampler.collect_distances(d_per_seq);
-    const uint64_t nsamples = sampler.get_nsamples();
-    uint64_t nmapped = 0;
-    for (const auto& dv : d_per_seq)
-      nmapped += dv.size();
-    const uint64_t nunmapped = nsamples - nmapped;
-
-    // Fit and build lane configurations.
-    std::optional<lane_config_t> lanes_pooled;
-    vec<lane_config_t> lanes_per_seq;
-    const vec<lane_config_t>* lanes_seq_ptr = nullptr;
-    size_t nlanes_max = 0;
-
-    if (!per_sequence) {
-      vec<double> d_all;
-      d_all.reserve(nmapped);
-      for (const auto& dv : d_per_seq)
-        d_all.insert(d_all.end(), dv.begin(), dv.end());
-      const background_fit_t fit = fit_background(d_all);
-      if (!fit.ok) {
-        error_exit(concat_msg("gamma fit failed for sketch ",
-                              rname,
-                              " (",
-                              fit.nsamples,
-                              " usable samples; need at least ",
-                              GammaModel::min_nsamples,
-                              ")"));
-      }
-      const double d_med = GammaModel::quantile(0.5, fit.params.shape, fit.params.scale);
-      // Representative background window: closest to the fitted median across all queries.
-      median_window_t win;
-      for (auto& w : find_median_windows(sampler, vec<double>(batch_v.size(), d_med))) {
-        if (w.valid && w.dev < win.dev) win = std::move(w);
-      }
-      lane_config_t lanes;
-      if (!build_lanes(fit, lanes, llhf_d, win.valid ? win.hist.data() : nullptr, win.u, d_med)) {
-        error_exit(concat_msg("no usable confidence levels for sketch ", rname));
-      }
-      if (verbosity >= 1) {
-        double mean = nanx(), sd = nanx();
-        if (!d_all.empty()) {
-          mean = std::accumulate(d_all.begin(), d_all.end(), 0.0) / static_cast<double>(d_all.size());
-          if (d_all.size() > 1) {
-            double sum_sq = 0.0;
-            for (const double d : d_all) {
-              const double delta = d - mean;
-              sum_sq += delta * delta;
-            }
-            sd = std::sqrt(sum_sq / static_cast<double>(d_all.size() - 1));
-          } else {
-            sd = 0.0;
-          }
-        }
-        report_fit(rname, fit, lanes, mean, sd, nunmapped, nmapped);
-      }
-      nlanes_max = lanes.nlanes;
-      lanes_pooled = std::move(lanes);
-    } else {
-      lanes_per_seq.resize(batch_v.size());
-      // Fit all sequences first so every median is known, then gather each
-      // sequence's representative (median-closest) window in one pass.
-      vec<background_fit_t> fits(batch_v.size());
-      vec<double> dmed_v(batch_v.size(), nanx());
-      for (size_t bix = 0; bix < batch_v.size(); ++bix) {
-        fits[bix] = fit_background(d_per_seq[bix]);
-        if (fits[bix].ok) dmed_v[bix] = GammaModel::quantile(0.5, fits[bix].params.shape, fits[bix].params.scale);
-      }
-      const vec<median_window_t> win_v = find_median_windows(sampler, dmed_v);
-      uint64_t nfit = 0;
-      uint64_t nskipped = 0;
-      for (size_t bix = 0; bix < batch_v.size(); ++bix) {
-        lane_config_t lanes;
-        if (!fits[bix].ok ||
-            !build_lanes(
-              fits[bix], lanes, llhf_d, win_v[bix].valid ? win_v[bix].hist.data() : nullptr, win_v[bix].u, dmed_v[bix]) ||
-            lanes.nlevels != levels.size()) {
-          if (batch_v[bix].seq.size() >= min_len) {
-            warn_pmsg(batch_v[bix].qid, "gamma fit failed or degenerate; detection skipped for this sequence");
-            ++nskipped;
-          }
-          continue;
-        }
-        lanes_per_seq[bix] = std::move(lanes);
-        ++nfit;
-      }
-      if (verbosity >= 1) {
-        cerr_msg("[",
-                 rname,
-                 "] per-sequence fits: ",
-                 nfit,
-                 " ok, ",
-                 nskipped,
-                 " skipped",
-                 " (unmapped windows: ",
-                 nunmapped,
-                 ", hit: ",
-                 nmapped,
-                 ")");
-      }
-      lanes_seq_ptr = &lanes_per_seq;
-      nlanes_max = 2 * levels.size();
-    }
-
-    // Pass 2: extract outlier intervals per lane.
-    vec<detect_level_stats_t> stats(nlanes_max);
-    uint64_t unmapped_iv = 0, unmapped_bp = 0;
-    strstream sout;
-    set_precision(sout, 5);
-    detect_queries(sketch, batch_v, lanes_pooled, lanes_seq_ptr, stats, unmapped_iv, unmapped_bp, sout, pool);
-    if (sout.tellp() > 0) *output_stream << sout.rdbuf();
+    Detector detector(
+      sketch, batch_v, tau, bin_shift, hdist_th, chisq, sample_size, levels, fit_quantiles, per_sequence, verbosity);
+    detector.run(*output_stream, pool);
 
     if (verbosity >= 1) {
-      if (lanes_pooled) report_stats(rname, *lanes_pooled, stats, unmapped_iv, unmapped_bp);
       std::cerr << "\rProcessed sketch " << i + 1 << "/" << nsketches << "..." << std::flush;
       if (i + 1 == nsketches) std::cerr << std::endl;
     }
