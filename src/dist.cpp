@@ -276,13 +276,19 @@ void DistSC::sample_distances(const sketch_sptr_t& sketch, const vec<qseq_t>& ba
   sampler.for_each_sample_counts(
     [&](uint64_t bix, uint64_t enmers, uint64_t start_bin, double d, char strand, const uint64_t* hist, uint64_t u) {
       double lr_bg = nanx();
-      if (hist && is_valid_distance(d) && is_valid_distance(d_median)) {
-        lr_bg = likelihood_ratio_statistic(llhf.nll(d_median, hist, u), llhf.nll(d, hist, u));
+      double lr_ub = nanx();
+      if (hist && is_valid_distance(d)) {
+        uint64_t n_total = u;
+        for (uint32_t di = 0; di <= llhf.hdist_th; ++di)
+          n_total += hist[di];
+        lr_ub = compute_lr_ub(llhf, d, n_total);
+        if (is_valid_distance(d_median))
+          lr_bg = likelihood_ratio_statistic(llhf.nll(d_median, hist, u), llhf.nll(d, hist, u));
       }
       if (output_samples) {
         const uint64_t jx = start_bin << bin_shift;
         const uint64_t jy = std::min(jx + nwinmers, enmers);
-        write_tsv(sout, batch_v[bix].qid, jx + 1, jy + k - 1, strand, sketch->get_rname(), d, lr_bg) << '\n';
+        write_tsv(sout, batch_v[bix].qid, jx + 1, jy + k - 1, strand, sketch->get_rname(), d, lr_bg, lr_ub) << '\n';
         return;
       }
       if (!is_valid_distance(d)) return;

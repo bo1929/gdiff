@@ -277,6 +277,38 @@ inline double likelihood_ratio_statistic(const double nll_ref, const double nll_
   return 2.0 * std::max(0.0, nll_ref - nll_mle);
 }
 
+// Weakest detectable match pattern: one hit at hdist_th, all other observed
+// k-mers are misses. Its MLE is the largest distance the model can estimate for
+// a sketch given n_total observed k-mers.
+template<typename T>
+inline double max_estimable_distance(const LLH<T>& llhf, uint64_t n_total, double* nll_min = nullptr)
+{
+  if (n_total == 0) {
+    if (nll_min) *nll_min = nanx();
+    return nanx();
+  }
+  arr<uint64_t, hdist_bound + 1> v{};
+  v[llhf.hdist_th] = 1;
+  return llhf.mle(v.data(), n_total - 1, nll_min);
+}
+
+// Likelihood-ratio of the window MLE distance vs the sketch's max estimable
+// distance, evaluated on the extreme match counts that define that ceiling.
+// Large values mean d is well below the detection limit; near 0 means d is
+// indistinguishable from the weakest detectable homology.
+template<typename T>
+inline double compute_lr_ub(const LLH<T>& llhf, double d, uint64_t n_total)
+{
+  if (!is_valid_distance(d) || n_total == 0) return nanx();
+  arr<uint64_t, hdist_bound + 1> v{};
+  v[llhf.hdist_th] = 1;
+  const uint64_t u = n_total - 1;
+  double nll_ub = nanx();
+  const double d_ub_est = llhf.mle(v.data(), u, &nll_ub);
+  if (!is_valid_distance(d_ub_est)) return nanx();
+  return likelihood_ratio_statistic(llhf.nll(d, v.data(), u), nll_ub);
+}
+
 struct likelihood_estimate_t
 {
   double d = nanx();
@@ -301,7 +333,7 @@ compute_likelihood_estimate(const LLH<T>& llhf, const uint64_t* v, uint64_t u, u
   const double I = llhf.compute_fisher_info(v, u, est.d);
   est.I = (std::isfinite(I) && I > 0.0) ? I : nanx();
   if (is_valid_distance(d_bg)) est.lr_bg = likelihood_ratio_statistic(llhf.nll(d_bg, v, u), nll);
-  est.lr_ub = likelihood_ratio_statistic(llhf.nll(UB, v, u), nll);
+  est.lr_ub = compute_lr_ub(llhf, est.d, t + u);
   return est;
 }
 

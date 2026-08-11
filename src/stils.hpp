@@ -182,7 +182,7 @@ struct record_t
   double percentile = nanx(); // two-sided percentile for the closer strand (reference), otherwise cdf
   double qvalue = nanx();     // Benjamini-Hochberg adjusted percentile
   double lr_bg;               // likelihood-ratio statistic vs the background distance
-  double lr_ub;               // likelihood-ratio statistic vs the plateau upper bound UB
+  double lr_ub;               // likelihood-ratio statistic vs max estimable distance (extreme match counts)
 
   bool is_intact() const { return seq_iv.a == 1 && seq_iv.b == L; }
   interval_t get_interval() const { return {bin_iv.a - 1, bin_iv.b - 1}; } // 0-based half-open bin-boundary
