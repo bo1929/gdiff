@@ -22,6 +22,7 @@ struct clvl_t
   double t_low;
   double t_high;
   bool high = true; // false when high-side detection is disabled for this level
+  bool low = true;  // false when low-side detection is disabled for this level
 };
 
 // Result of fitting Gamma(shape, scale) to background window distances.
@@ -67,6 +68,18 @@ struct thcfg_t
     return levels[level_ix].high;
   }
 
+  [[nodiscard]] bool low_enabled(size_t level_ix) const
+  {
+    assert(level_ix < nlevels());
+    return levels[level_ix].low;
+  }
+
+  [[nodiscard]] bool lane_enabled(size_t ix) const
+  {
+    assert(ix < nlanes());
+    return is_high_side(ix) ? high_enabled(ix) : low_enabled(ix - nlevels());
+  }
+
   void set_median_window(const uint64_t* hist, uint64_t u, double d_med)
   {
     d_median = d_med;
@@ -87,9 +100,9 @@ struct thcfg_t
     high_v.reserve(nlevels());
     low_v.reserve(nlevels());
     for (size_t j = 0; j < nlevels(); ++j) {
-      // Disabled high lanes stay at d_eps and are skipped during extraction.
+      // Disabled lanes stay at d_eps and are skipped during extraction.
       if (levels[j].high) extrema[j] = -levels[j].t_high;
-      extrema[nlevels() + j] = levels[j].t_low;
+      if (levels[j].low) extrema[nlevels() + j] = levels[j].t_low;
       high_v.push_back(levels[j].t_high);
       low_v.push_back(levels[j].t_low);
     }
@@ -128,7 +141,8 @@ private:
                          const uint64_t* win_hist,
                          uint64_t win_u,
                          double d_median,
-                         bool disable_high) const;
+                         bool disable_high,
+                         bool disable_low) const;
   vec<thcfg_t> plan(const DistanceSampler& sampler, const vvec<double>& d_per_seq, const LLH<double>& llhf) const;
   void extract_batch(const vec<thcfg_t>& sets,
                      bool per_sequence,

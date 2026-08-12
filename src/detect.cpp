@@ -153,9 +153,16 @@ namespace {
     cv.resize(w + 1);
   }
 
+  // True when the background is too close for low-side outliers to be meaningful:
+  // fitted median below 0.001, or more than 10% of windows floored at d_eps.
+  bool should_disable_low(const bggamma_t& fit, double d_median)
+  {
+    if (std::isfinite(d_median) && d_median < 0.001) return true;
+    return fit.nsamples > 0 && fit.nfloored * 10 > fit.nsamples;
+  }
+
   // LR screen for the high threshold only: drops high-side detection when a
   // typical background window cannot tell t_high apart from the fitted median.
-  // Low-side detection is left alone — near-floor backgrounds still need it.
   bool screen_high_side(const clvl_t& level,
                         const LLH<double>& llhf,
                         const uint64_t* win_hist,
@@ -299,7 +306,8 @@ thcfg_t Detector::thresholds_for(const bggamma_t& fit,
                                  const uint64_t* win_hist,
                                  const uint64_t win_u,
                                  const double d_median,
-                                 const bool disable_high) const
+                                 const bool disable_high,
+                                 const bool disable_low) const
 {
   vec<double> sorted_levels = levels;
   std::sort(sorted_levels.begin(), sorted_levels.end(), std::greater{});
@@ -311,6 +319,7 @@ thcfg_t Detector::thresholds_for(const bggamma_t& fit,
     clvl_t level{alpha,
                  GammaModel::quantile(alpha / 2.0, fit.params.shape, fit.params.scale),
                  GammaModel::quantile(1.0 - alpha / 2.0, fit.params.shape, fit.params.scale),
+                 true,
                  true};
     level.t_low = std::clamp(level.t_low, d_eps, d_ub - d_eps);
     level.t_high = std::clamp(level.t_high, d_eps, d_ub - d_eps);
@@ -319,14 +328,19 @@ thcfg_t Detector::thresholds_for(const bggamma_t& fit,
       continue;
     }
     level.high = !disable_high && screen_high_side(level, llhf, win_hist, win_u, d_median);
+    level.low = !disable_low;
+    if (!level.high && !level.low) {
+      warn_msg(concat_msg("level ", level.alpha, ": both sides disabled; dropping the level"));
+      continue;
+    }
     const bool duplicate = std::any_of(used.begin(), used.end(), [&](double t) {
-      return std::abs(t - level.t_low) < 1e-12 || (level.high && std::abs(t - level.t_high) < 1e-12);
+      return (level.low && std::abs(t - level.t_low) < 1e-12) || (level.high && std::abs(t - level.t_high) < 1e-12);
     });
     if (duplicate) {
       warn_msg(concat_msg("duplicate thresholds at level ", level.alpha, " after clipping; dropping the level"));
       continue;
     }
-    used.push_back(level.t_low);
+    if (level.low) used.push_back(level.t_low);
     if (level.high) used.push_back(level.t_high);
     thresholds.levels.push_back(level);
   }
@@ -379,9 +393,22 @@ vec<thcfg_t> Detector::plan(const DistanceSampler& sampler, const vvec<double>& 
                             "); disabling high-side detection"));
       }
     }
+    bool disable_low = false;
+    if (should_disable_low(bg, d_median)) {
+      disable_low = true;
+      warn_msg(concat_msg("background too close for low-side detection for sketch ",
+                          rname,
+                          " (d_median=",
+                          d_median,
+                          ", floored=",
+                          bg.nfloored,
+                          "/",
+                          bg.nsamples,
+                          "); disabling low-side detection"));
+    }
 
     thcfg_t thresholds =
-      thresholds_for(bg, llhf, win.valid ? win.hist.data() : nullptr, win.u, d_median, disable_high);
+      thresholds_for(bg, llhf, win.valid ? win.hist.data() : nullptr, win.u, d_median, disable_high, disable_low);
     if (thresholds.empty()) {
       error_exit(concat_msg("no usable confidence levels for sketch ", rname));
     }
@@ -423,8 +450,15 @@ vec<thcfg_t> Detector::plan(const DistanceSampler& sampler, const vvec<double>& 
                     "background median indistinguishable from max estimable distance; disabling high-side detection");
         }
       }
-      sets[bix] =
-        thresholds_for(fits[bix], llhf, win.valid ? win.hist.data() : nullptr, win.u, dmed_v[bix], disable_high);
+      bool disable_low = false;
+      if (should_disable_low(fits[bix], dmed_v[bix])) {
+        disable_low = true;
+        if (batch_v[bix].seq.size() >= min_len) {
+          warn_pmsg(batch_v[bix].qid, "background too close for low-side detection; disabling low-side detection");
+        }
+      }
+      sets[bix] = thresholds_for(
+        fits[bix], llhf, win.valid ? win.hist.data() : nullptr, win.u, dmed_v[bix], disable_high, disable_low);
       if (!sets[bix].empty())
         sets[bix].set_median_window(win.valid ? win.hist.data() : nullptr, win.u, dmed_v[bix]);
     }
@@ -552,7 +586,7 @@ void Detector::extract_batch(const vec<thcfg_t>& sets,
     // Collect candidates from every lane, merge nested duplicates, score once.
     arr<vec<candidate_t>, 2> candidates_v;
     for (size_t ix = 0; ix < thresholds.nlanes(); ++ix) {
-      if (thresholds.is_high_side(ix) && !thresholds.high_enabled(ix)) continue;
+      if (!thresholds.lane_enabled(ix)) continue;
       for (size_t si = 0; si < nstrands; ++si) {
         DIM<cm512_t>& dim = *strands[si].dim;
         dim.extract_intervals_mx(tau_eff, 1, nbins, ix);
@@ -591,7 +625,7 @@ void Detector::extract_batch(const vec<thcfg_t>& sets,
     // Emit from merged candidates by lane mask (lane-major, then strand).
     const uint64_t L = enmers + k - 1;
     for (size_t ix = 0; ix < thresholds.nlanes(); ++ix) {
-      if (thresholds.is_high_side(ix) && !thresholds.high_enabled(ix)) continue;
+      if (!thresholds.lane_enabled(ix)) continue;
       const uint32_t bit = lane_bit(ix);
       const bool high_side = thresholds.is_high_side(ix);
       const vec<double>& side_thresholds_v = high_side ? thresholds.high_v : thresholds.low_v;
@@ -680,10 +714,9 @@ void Detector::report_fit(const bggamma_t& fit,
     cerr_msg("[", rname, "] fit: shape=", fit.params.shape, " scale=", fit.params.scale);
   }
   for (const auto& level : thresholds.levels) {
-    if (level.high)
-      cerr_msg("[", rname, "] level ", level.alpha, ": t_low=", level.t_low, " t_high=", level.t_high);
-    else
-      cerr_msg("[", rname, "] level ", level.alpha, ": t_low=", level.t_low, " t_high=skipped");
+    const str t_lo = level.low ? concat_msg(level.t_low) : str("skipped");
+    const str t_hi = level.high ? concat_msg(level.t_high) : str("skipped");
+    cerr_msg("[", rname, "] level ", level.alpha, ": t_low=", t_lo, " t_high=", t_hi);
   }
 }
 
@@ -694,31 +727,15 @@ void Detector::report_stats(const thcfg_t& thresholds,
 {
   const str rname = sketch->get_rname();
   for (size_t j = 0; j < thresholds.nlevels(); ++j) {
-    if (thresholds.high_enabled(j)) {
-      cerr_msg("[",
-               rname,
-               "] level ",
-               thresholds.levels[j].alpha,
-               ": high: ",
-               stats[j].nintervals,
-               " interval(s), ",
-               stats[j].bp_covered,
-               " bp | low: ",
-               stats[thresholds.nlevels() + j].nintervals,
-               " interval(s), ",
-               stats[thresholds.nlevels() + j].bp_covered,
-               " bp");
-    } else {
-      cerr_msg("[",
-               rname,
-               "] level ",
-               thresholds.levels[j].alpha,
-               ": high: skipped | low: ",
-               stats[thresholds.nlevels() + j].nintervals,
-               " interval(s), ",
-               stats[thresholds.nlevels() + j].bp_covered,
-               " bp");
-    }
+    const str high_s = thresholds.high_enabled(j)
+                         ? concat_msg(stats[j].nintervals, " interval(s), ", stats[j].bp_covered, " bp")
+                         : str("skipped");
+    const str low_s = thresholds.low_enabled(j) ? concat_msg(stats[thresholds.nlevels() + j].nintervals,
+                                                            " interval(s), ",
+                                                            stats[thresholds.nlevels() + j].bp_covered,
+                                                            " bp")
+                                                : str("skipped");
+    cerr_msg("[", rname, "] level ", thresholds.levels[j].alpha, ": high: ", high_s, " | low: ", low_s);
   }
   cerr_msg("[", rname, "] unmapped (no k-mer hits): ", unmapped_iv, " interval(s), ", unmapped_bp, " bp");
 }
