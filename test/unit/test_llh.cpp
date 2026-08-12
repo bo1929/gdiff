@@ -130,6 +130,30 @@ TEST_CASE("likelihood-ratio statistic rejects invalid likelihoods") {
   CHECK(std::isnan(likelihood_ratio_statistic(1.0, inf)));
 }
 
+TEST_CASE("max estimable distance is MLE of one hit at hdist_th") {
+  LLH<double> llh(27, 11, 0.5, 4, 0.1, false);
+  const uint64_t n_total = 1000;
+  arr<uint64_t, hdist_bound + 1> v{};
+  v[4] = 1;
+  const double d_ref = llh.mle(v.data(), n_total - 1);
+  const double d_max = max_estimable_distance(llh, n_total);
+  CHECK(d_max == doctest::Approx(d_ref).epsilon(tol));
+  CHECK(is_valid_distance(d_max));
+  CHECK(std::isnan(max_estimable_distance(llh, 0)));
+}
+
+TEST_CASE("compute_lr_ub is near zero at the max estimable distance") {
+  LLH<double> llh(27, 11, 0.5, 4, 0.1, false);
+  const uint64_t n_total = 1000;
+  const double d_max = max_estimable_distance(llh, n_total);
+  CHECK(compute_lr_ub(llh, d_max, n_total) == doctest::Approx(0.0).epsilon(1e-8));
+  const double lr_close = compute_lr_ub(llh, 0.01, n_total);
+  CHECK(std::isfinite(lr_close));
+  CHECK(lr_close > 1.0);
+  CHECK(std::isnan(compute_lr_ub(llh, d_max, 0)));
+  CHECK(std::isnan(compute_lr_ub(llh, nanx(), n_total)));
+}
+
 TEST_CASE("get_fdc sign correctness") {
   // For positive extrema, fdc should reflect the direction of the first derivative
   LLH<double> llh(27, 11, 0.5, 4, 0.1);

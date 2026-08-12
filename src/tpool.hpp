@@ -1,10 +1,12 @@
 #ifndef _TPOOL_HPP
 #define _TPOOL_HPP
 
+#include <algorithm>
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -16,7 +18,7 @@
 // The return happens only after all invocations have completed.
 // Hence, the invocation is finished when no worker still references the task.
 // The calling (coordinator) thread participates in the work.
-// Not re-entrant: fn must not call parallel_for and must be driven froma coordinator thread.
+// Not re-entrant: fn must not call parallel_for and must be driven from a coordinator thread.
 class ThreadPool
 {
 public:
@@ -56,32 +58,33 @@ public:
       return;
     }
     chunk = std::max<uint64_t>(chunk, 1);
+
+    // Keep fn alive for late workers: task_fn is a shared_ptr member, and each
+    // worker copies it under the lock before drain. The old pointer-to-stack
+    // design raced when the coordinator finished all indices before a worker
+    // woke and then destroyed the local std::function.
+    auto held = std::make_shared<std::function<void(uint64_t)>>(fn);
     next.store(0, std::memory_order_relaxed);
     remaining.store(n, std::memory_order_relaxed);
-    active.store(0, std::memory_order_relaxed);
+    acks.store(0, std::memory_order_relaxed);
     {
       std::lock_guard<std::mutex> lock(mtx);
       task_n = n;
       task_chunk = chunk;
-      task_fn = &fn;
+      task_fn = held;
       ++generation;
     }
     cv.notify_all();
-    drain(n, chunk, fn);
-    // remaining == 0 once every claimed index has been processed; active == 0
-    // once no worker can still touch this task's state.
-    while (remaining.load(std::memory_order_acquire) != 0 || active.load(std::memory_order_acquire) != 0)
+    drain(n, chunk, *held);
+    // remaining == 0: every index claimed and processed.
+    // acks == nworkers: every worker has observed this generation and finished
+    // its drain (possibly a no-op). This closes the wake-after-finish race
+    // that used to leave workers dereferencing a destroyed task_fn.
+    while (remaining.load(std::memory_order_acquire) != 0 || acks.load(std::memory_order_acquire) < nworkers)
       std::this_thread::yield();
   }
 
 private:
-  struct task_snapshot_t
-  {
-    uint64_t n;
-    uint64_t chunk;
-    const std::function<void(uint64_t)>* fn;
-  };
-
   static void drain(uint64_t n,
                     uint64_t chunk,
                     const std::function<void(uint64_t)>& fn,
@@ -104,17 +107,20 @@ private:
   {
     uint64_t seen = 0;
     while (true) {
-      task_snapshot_t task;
+      uint64_t n = 0;
+      uint64_t chunk = 1;
+      std::shared_ptr<std::function<void(uint64_t)>> fn;
       {
         std::unique_lock<std::mutex> lock(mtx);
         cv.wait(lock, [&]() { return stop || generation != seen; });
         if (stop) return;
         seen = generation;
-        task = {task_n, task_chunk, task_fn};
-        active.fetch_add(1, std::memory_order_acq_rel);
+        n = task_n;
+        chunk = task_chunk;
+        fn = task_fn;
       }
-      drain(task.n, task.chunk, *task.fn);
-      active.fetch_sub(1, std::memory_order_acq_rel);
+      if (fn) drain(n, chunk, *fn);
+      acks.fetch_add(1, std::memory_order_acq_rel);
     }
   }
 
@@ -126,10 +132,10 @@ private:
   bool stop = false;
   uint64_t task_n = 0;
   uint64_t task_chunk = 1;
-  const std::function<void(uint64_t)>* task_fn = nullptr;
+  std::shared_ptr<std::function<void(uint64_t)>> task_fn;
   std::atomic<uint64_t> next{0};
   std::atomic<uint64_t> remaining{0};
-  std::atomic<uint64_t> active{0};
+  std::atomic<uint64_t> acks{0};
 };
 
 #endif

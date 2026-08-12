@@ -9,6 +9,7 @@
 #include "sketch.hpp"
 #include "tpool.hpp"
 #include <algorithm>
+#include <cassert>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -41,16 +42,25 @@ struct thcfg_t
   vec<double> high_v; // ascending t_high
   vec<double> low_v;  // ascending t_low
 
-  size_t nlevels() const { return levels.size(); }
-  size_t nlanes() const { return 2 * levels.size(); }
-  bool empty() const { return levels.empty(); }
+  [[nodiscard]] size_t nlevels() const { return levels.size(); }
+  [[nodiscard]] size_t nlanes() const { return 2 * levels.size(); }
+  [[nodiscard]] bool empty() const { return levels.empty(); }
 
-  bool is_high_side(size_t ix) const { return ix < nlevels(); }
-  double alpha(size_t ix) const { return levels[is_high_side(ix) ? ix : ix - nlevels()].alpha; }
+  [[nodiscard]] bool is_high_side(size_t ix) const { return ix < nlevels(); }
+  [[nodiscard]] double alpha(size_t ix) const
+  {
+    assert(ix < nlanes());
+    return levels[is_high_side(ix) ? ix : ix - nlevels()].alpha;
+  }
 
+  // Pack high-side lanes as -t_high and low-side lanes as +t_low so the
+  // maximal-interval extractor can target both tails without d_q sign flips.
+  // Unused SIMD lanes are filled with d_eps: leaving them at 0 makes LLH
+  // derivatives divide by zero and poison those lanes with Inf.
   void pack()
   {
-    extrema.fill(0.0);
+    assert(nlanes() <= RWIDTH);
+    extrema.fill(d_eps);
     high_v.clear();
     low_v.clear();
     high_v.reserve(nlevels());

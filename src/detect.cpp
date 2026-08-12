@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <cmath>
 #include <limits>
 #include <numeric>
@@ -25,6 +26,17 @@ namespace {
     uint64_t u = 0;
     double dev = std::numeric_limits<double>::infinity();
     bool valid = false;
+
+    void consider(double d, const uint64_t* hist_in, uint64_t u_in, double target)
+    {
+      if (hist_in == nullptr || u_in == 0 || !is_valid_distance(d) || !is_valid_distance(target)) return;
+      const double cand = std::abs(d - target);
+      if (cand >= dev) return;
+      std::copy(hist_in, hist_in + hdist_bound + 1, hist.begin());
+      u = u_in;
+      dev = cand;
+      valid = true;
+    }
   };
 
   // Single pass over the samples: per query with a finite dmed_v[bix], copy the
@@ -33,19 +45,24 @@ namespace {
   {
     vec<median_window_t> out_v(dmed_v.size());
     sampler.for_each_sample_counts([&](uint64_t bix, uint64_t, uint64_t, double d, char, const uint64_t* hist, uint64_t u) {
-      if (bix >= dmed_v.size() || !is_valid_distance(dmed_v[bix])) return;
-      if (hist == nullptr || u == 0 || !is_valid_distance(d)) return;
-      const double dev = std::abs(d - dmed_v[bix]);
-      median_window_t& out = out_v[bix];
-      if (dev < out.dev) {
-        std::copy(hist, hist + hdist_bound + 1, out.hist.begin());
-        out.u = u;
-        out.dev = dev;
-        out.valid = true;
-      }
+      if (bix >= dmed_v.size()) return;
+      out_v[bix].consider(d, hist, u, dmed_v[bix]);
     });
     return out_v;
   }
+
+  // Pooled-fit variant: one target median shared across all sampled windows.
+  median_window_t find_median_window(const DistanceSampler& sampler, double d_median)
+  {
+    median_window_t out;
+    if (!is_valid_distance(d_median)) return out;
+    sampler.for_each_sample_counts([&](uint64_t, uint64_t, uint64_t, double d, char, const uint64_t* hist, uint64_t u) {
+      out.consider(d, hist, u, d_median);
+    });
+    return out;
+  }
+
+  constexpr uint32_t lane_bit(size_t ix) { return uint32_t{1} << ix; }
 
   // Sample mean and sample standard deviation; NaN components when empty.
   xy_t sample_mean_sd(const vec<double>& d_v)
@@ -268,10 +285,11 @@ thcfg_t Detector::thresholds_for(const bggamma_t& fit,
                                  const double d_median) const
 {
   vec<double> sorted_levels = levels;
-  std::sort(sorted_levels.begin(), sorted_levels.end(), std::greater<double>());
+  std::sort(sorted_levels.begin(), sorted_levels.end(), std::greater{});
 
   thcfg_t thresholds;
   vec<double> used;
+  used.reserve(2 * sorted_levels.size());
   for (const double alpha : sorted_levels) {
     clvl_t level{alpha,
                  GammaModel::quantile(alpha / 2.0, fit.params.shape, fit.params.scale),
@@ -326,10 +344,7 @@ vec<thcfg_t> Detector::plan(const DistanceSampler& sampler, const vvec<double>& 
     }
 
     const double d_median = GammaModel::quantile(0.5, bg.params.shape, bg.params.scale);
-    median_window_t win;
-    for (auto& w : find_median_windows(sampler, vec<double>(nseq, d_median))) {
-      if (w.valid && w.dev < win.dev) win = std::move(w);
-    }
+    const median_window_t win = find_median_window(sampler, d_median);
 
     thcfg_t thresholds = thresholds_for(bg, llhf, win.valid ? win.hist.data() : nullptr, win.u, d_median);
     if (thresholds.empty()) {
@@ -421,6 +436,7 @@ void Detector::extract_batch(const vec<thcfg_t>& sets,
   // Pooled mode shares one threshold set across all queries.
   std::optional<detect_ctx_t> pooled_ctx;
   if (!per_sequence) {
+    assert(!sets.empty() && !sets[0].empty());
     pooled_ctx.emplace(sets[0].extrema, k, lshf->get_h(), sketch->get_rho(), hdist_th, tau, chisq, bin_shift, canonical);
   }
 
@@ -469,12 +485,13 @@ void Detector::extract_batch(const vec<thcfg_t>& sets,
     {
       DIM<cm512_t>* dim;
       bool is_rc;
-      double d_q;
+      double d_q = nanx();
     };
-    vec<strand_t> strands;
-    strands.push_back({&dim_fw, false, nanx()});
-    if (dim_rc) strands.push_back({&*dim_rc, true, nanx()});
-    for (auto& strand : strands) {
+    arr<strand_t, 2> strands{{strand_t{&dim_fw, false}, strand_t{canonical ? nullptr : &*dim_rc, true}}};
+    const size_t nstrands = canonical ? 1 : 2;
+
+    for (size_t si = 0; si < nstrands; ++si) {
+      strand_t& strand = strands[si];
       strand.dim->inclusive_scan();
       strand.dim->compute_prefhistsum();
       strand.dim->extrema_scan();
@@ -486,18 +503,18 @@ void Detector::extract_batch(const vec<thcfg_t>& sets,
     const double d_diff = canonical ? nanx() : strand_diff(strands[0].d_q, strands[1].d_q);
 
     // Collect candidates from every lane, merge nested duplicates, score once.
-    std::array<vec<candidate_t>, 2> candidates_v;
+    arr<vec<candidate_t>, 2> candidates_v;
     for (size_t ix = 0; ix < thresholds.nlanes(); ++ix) {
-      for (size_t si = 0; si < strands.size(); ++si) {
+      for (size_t si = 0; si < nstrands; ++si) {
         DIM<cm512_t>& dim = *strands[si].dim;
         dim.extract_intervals_mx(tau_eff, 1, nbins, ix);
         dim.expand_intervals(ctx.params.chisq, ix);
         for (const auto& iv : dim.get_intervals_v(ix))
-          candidates_v[si].push_back({iv.a, iv.b + 1, static_cast<uint32_t>(1u << ix), {}});
+          candidates_v[si].push_back({iv.a, iv.b + 1, lane_bit(ix), {}});
       }
     }
 
-    for (size_t si = 0; si < strands.size(); ++si) {
+    for (size_t si = 0; si < nstrands; ++si) {
       vec<candidate_t>& cv = candidates_v[si];
       merge_candidates(cv);
 
@@ -518,12 +535,12 @@ void Detector::extract_batch(const vec<thcfg_t>& sets,
     // Emit from merged candidates by lane mask (lane-major, then strand).
     const uint64_t L = enmers + k - 1;
     for (size_t ix = 0; ix < thresholds.nlanes(); ++ix) {
-      const uint32_t lane_bit = static_cast<uint32_t>(1u << ix);
+      const uint32_t bit = lane_bit(ix);
       const bool high_side = thresholds.is_high_side(ix);
       const vec<double>& side_thresholds_v = high_side ? thresholds.high_v : thresholds.low_v;
-      for (size_t si = 0; si < strands.size(); ++si) {
+      for (size_t si = 0; si < nstrands; ++si) {
         for (const candidate_t& c : candidates_v[si]) {
-          if ((c.mask & lane_bit) == 0) continue;
+          if ((c.mask & bit) == 0) continue;
           const interval_t seq_iv = get_coordinates({c.a_bin, c.b_bin}, bin_shift, enmers, k);
           if (c.est.has_hits) {
             stats_v[bix][ix].nintervals += 1;
@@ -541,7 +558,7 @@ void Detector::extract_batch(const vec<thcfg_t>& sets,
                         c.est,
                         high_side,
                         side_thresholds_v,
-                        lane_bit,
+                        bit,
                         thresholds.alpha(ix));
         }
       }
@@ -554,6 +571,7 @@ void Detector::extract_batch(const vec<thcfg_t>& sets,
   unmapped_bp = 0;
   for (size_t bix = 0; bix < nseq; ++bix) {
     if (out_v[bix].tellp() > 0) sout << out_v[bix].rdbuf();
+    assert(stats_v[bix].size() <= stats.size());
     for (size_t ix = 0; ix < stats_v[bix].size(); ++ix) {
       stats[ix].nintervals += stats_v[bix][ix].nintervals;
       stats[ix].bp_covered += stats_v[bix][ix].bp_covered;
@@ -662,7 +680,7 @@ void Detector::run(std::ostream& out, ThreadPool& pool)
   extract_batch(sets, per_sequence, llhf, stats, unmapped_iv, unmapped_bp, sout, pool);
   if (sout.tellp() > 0) out << sout.rdbuf();
 
-  if (verbosity >= 1 && !per_sequence) {
+  if (verbosity >= 1 && !per_sequence && !sets.empty()) {
     report_stats(sets[0], stats, unmapped_iv, unmapped_bp);
   }
 }
