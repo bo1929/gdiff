@@ -570,12 +570,14 @@ void Detector::extract_batch(const vec<thcfg_t>& sets,
       uint64_t u = 0, t = 0;
       for (auto& c : cv) {
         strands[si].dim->extract_histogram(c.a_bin - 1, c.b_bin - 1, scratch_v, u, t);
-        // Region counts give d / I / lr_ub; lr_bg is scored on the median window
-        // with null = d_median and alt = the region's MLE distance.
+        // Region counts give d / I / lr_ub. lr_bg is the deviance of the region's
+        // distance vs d_median on the median window's match counts (pass the worse
+        // NLL first so the statistic stays non-negative).
         c.est = compute_likelihood_estimate(llhf, scratch_v.data(), u, t, nanx());
         if (c.est.has_hits && is_valid_distance(c.est.d) && thresholds.med_valid) {
-          c.est.lr_bg = likelihood_ratio_statistic(llhf.nll(thresholds.d_median, thresholds.med_hist.data(), thresholds.med_u),
-                                                   llhf.nll(c.est.d, thresholds.med_hist.data(), thresholds.med_u));
+          c.est.lr_bg =
+            likelihood_ratio_statistic(llhf.nll(c.est.d, thresholds.med_hist.data(), thresholds.med_u),
+                                       llhf.nll(thresholds.d_median, thresholds.med_hist.data(), thresholds.med_u));
         }
         if (!c.est.has_hits) {
           // Count unmapped intervals once per unique (strand, a_bin, b_bin).
