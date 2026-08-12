@@ -165,24 +165,22 @@ Providing 8 distance thresholds runs all eight in one SIMD-wide pass.
 Summary rows contain:
 
 ```
-QUERY_FILE  REF_ID  N  D_MED  D_MED_FILT  N_REMOVED
+QUERY_FILE  REF_ID  N  D_MED
 ```
 
 `N` is the number of valid MLE samples. `D_MED` is the median of those
-distances. `D_MED_FILT` is the median after dropping samples with distance
-above `D_MED` whose likelihood-ratio statistic against `D_MED` is at least
-`6.63` (chi-square(1) critical value at 99%). `N_REMOVED` is how many such
-high outliers were dropped. Sampled windows with no matching k-mer (zero hits
-within `--hdist-th`) have an undefined distance: they are excluded from both
-medians and their count is reported on stderr. Sample detail rows contain one
-row per sampled window (unmapped windows carry NaN fields):
+distances. Sampled windows with no matching k-mer (zero hits within
+`--hdist-th`) have an undefined distance: they are excluded from the median
+and their count is reported on stderr. Sample detail rows contain one row per
+sampled window (unmapped windows carry NaN fields):
 
 ```
-QUERY_ID  START  END  STRAND  REF_ID  DIST  LR_BG
+QUERY_ID  START  END  STRAND  REF_ID  DIST  LR_BG  LR_UB
 ```
 
 `LR_BG` is the likelihood-ratio statistic against the median finite sampled
-distance for that reference.
+distance for that reference. `LR_UB` is the LR against the sketch's max
+estimable distance.
 
 Coordinates are 1-based and inclusive. For strand-aware sketches, each sample
 uses the lower of the forward and reverse-complement MLE distances and reports

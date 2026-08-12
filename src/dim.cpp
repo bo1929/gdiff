@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstring>
 #include <limits>
 #include <numeric>
 #include <random>
@@ -106,10 +107,20 @@ void HDHist::extract_histogram(const uint64_t a, const uint64_t b, vec<uint64_t>
 {
   assert(a <= b && b <= nbins);
   const uint32_t W = hdist_th + 1;
+  assert(W <= RWIDTH && W <= hdist_bound + 1);
+  // Copy into 8-lane scratch first. A direct mm512_maskz_loadu on &hist_v[row*W]
+  // is unsafe when W < 8: SIMDe's non-native path (and some native masked loads
+  // near a page boundary) still touch a full 64-byte vector and can SEGV on the
+  // last prefix-sum rows.
+  alignas(64) uint64_t hb[RWIDTH] = {};
+  alignas(64) uint64_t ha[RWIDTH] = {};
+  std::memcpy(hb, &hist_v[b * W], W * sizeof(uint64_t));
+  std::memcpy(ha, &hist_v[a * W], W * sizeof(uint64_t));
+
   v.resize(hdist_bound + 1);
   const simde__mmask8 mask = static_cast<simde__mmask8>((1u << W) - 1);
-  const simde__m512i vb = simde_mm512_maskz_loadu_epi64(mask, &hist_v[b * W]);
-  const simde__m512i va = simde_mm512_maskz_loadu_epi64(mask, &hist_v[a * W]);
+  const simde__m512i vb = simde_mm512_maskz_loadu_epi64(mask, hb);
+  const simde__m512i va = simde_mm512_maskz_loadu_epi64(mask, ha);
   const simde__m512i vd = simde_mm512_sub_epi64(vb, va);
   simde_mm512_storeu_si512(v.data(), vd);
   const simde__m256i lend = simde_mm512_castsi512_si256(vd);

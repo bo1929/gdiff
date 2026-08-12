@@ -252,9 +252,6 @@ uint64_t DistanceSampler::get_nsamples() const
 
 void DistSC::sample_distances(const sketch_sptr_t& sketch, const vec<qseq_t>& batch_v, strstream& sout, ThreadPool& pool)
 {
-  // chi-square(1) critical value at 99%; used to drop high-distance outliers vs d_median.
-  constexpr double lr_th_99 = 6.63;
-
   DistanceSampler sampler(sketch, batch_v, tau, bin_shift, hdist_th);
   sampler.run_for_all(sample_size, true, pool);
 
@@ -268,39 +265,27 @@ void DistSC::sample_distances(const sketch_sptr_t& sketch, const vec<qseq_t>& ba
   std::sort(d_v.begin(), d_v.end());
   const double d_median = linear_quantile(d_v, 0.5);
 
-  vec<double> d_filt;
-  d_filt.reserve(d_v.size());
-  uint64_t n_removed = 0;
   set_precision(sout, output_samples ? 5 : 8);
 
-  sampler.for_each_sample_counts(
-    [&](uint64_t bix, uint64_t enmers, uint64_t start_bin, double d, char strand, const uint64_t* hist, uint64_t u) {
-      double lr_bg = nanx();
-      double lr_ub = nanx();
-      if (hist && is_valid_distance(d)) {
-        uint64_t n_total = u;
-        for (uint32_t di = 0; di <= llhf.hdist_th; ++di)
-          n_total += hist[di];
-        lr_ub = compute_lr_ub(llhf, d, n_total);
-        if (is_valid_distance(d_median))
-          lr_bg = likelihood_ratio_statistic(llhf.nll(d_median, hist, u), llhf.nll(d, hist, u));
-      }
-      if (output_samples) {
+  if (output_samples) {
+    sampler.for_each_sample_counts(
+      [&](uint64_t bix, uint64_t enmers, uint64_t start_bin, double d, char strand, const uint64_t* hist, uint64_t u) {
+        double lr_bg = nanx();
+        double lr_ub = nanx();
+        if (hist && is_valid_distance(d)) {
+          uint64_t n_total = u;
+          for (uint32_t di = 0; di <= llhf.hdist_th; ++di)
+            n_total += hist[di];
+          lr_ub = compute_lr_ub(llhf, d, n_total);
+          if (is_valid_distance(d_median))
+            lr_bg = likelihood_ratio_statistic(llhf.nll(d_median, hist, u), llhf.nll(d, hist, u));
+        }
         const uint64_t jx = start_bin << bin_shift;
         const uint64_t jy = std::min(jx + nwinmers, enmers);
         write_tsv(sout, batch_v[bix].qid, jx + 1, jy + k - 1, strand, sketch->get_rname(), d, lr_bg, lr_ub) << '\n';
-        return;
-      }
-      if (!is_valid_distance(d)) return;
-      // Drop distances above the median that reject H0: D = d_median at ~99%.
-      if (is_valid_distance(d_median) && d > d_median && std::isfinite(lr_bg) && lr_bg >= lr_th_99) {
-        ++n_removed;
-        return;
-      }
-      d_filt.push_back(d);
-    });
-
-  if (output_samples) return;
+      });
+    return;
+  }
 
   const uint64_t n = d_v.size();
   const uint64_t nwinu = sampler.get_nsamples() - n;
@@ -309,9 +294,7 @@ void DistSC::sample_distances(const sketch_sptr_t& sketch, const vec<qseq_t>& ba
       "[", sketch->get_rname(), "] unmapped sampled windows (no k-mer hits): ", nwinu, " (excluded from the summary)");
   }
 
-  std::sort(d_filt.begin(), d_filt.end());
-  const double d_med_filt = linear_quantile(d_filt, 0.5);
-  write_tsv(sout, target_path, sketch->get_rname(), n, d_median, d_med_filt, n_removed) << '\n';
+  write_tsv(sout, target_path, sketch->get_rname(), n, d_median) << '\n';
 }
 
 void DistSC::dist()

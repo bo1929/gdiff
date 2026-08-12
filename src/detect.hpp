@@ -21,6 +21,7 @@ struct clvl_t
   double alpha;
   double t_low;
   double t_high;
+  bool high = true; // false when high-side detection is disabled for this level
 };
 
 // Result of fitting Gamma(shape, scale) to background window distances.
@@ -53,10 +54,12 @@ struct thcfg_t
     return levels[is_high_side(ix) ? ix : ix - nlevels()].alpha;
   }
 
-  // Pack high-side lanes as -t_high and low-side lanes as +t_low so the
-  // maximal-interval extractor can target both tails without d_q sign flips.
-  // Unused SIMD lanes are filled with d_eps: leaving them at 0 makes LLH
-  // derivatives divide by zero and poison those lanes with Inf.
+  [[nodiscard]] bool high_enabled(size_t level_ix) const
+  {
+    assert(level_ix < nlevels());
+    return levels[level_ix].high;
+  }
+
   void pack()
   {
     assert(nlanes() <= RWIDTH);
@@ -66,7 +69,8 @@ struct thcfg_t
     high_v.reserve(nlevels());
     low_v.reserve(nlevels());
     for (size_t j = 0; j < nlevels(); ++j) {
-      extrema[j] = -levels[j].t_high;
+      // Disabled high lanes stay at d_eps and are skipped during extraction.
+      if (levels[j].high) extrema[j] = -levels[j].t_high;
       extrema[nlevels() + j] = levels[j].t_low;
       high_v.push_back(levels[j].t_high);
       low_v.push_back(levels[j].t_low);
@@ -105,7 +109,8 @@ private:
                          const LLH<double>& llhf,
                          const uint64_t* win_hist,
                          uint64_t win_u,
-                         double d_median) const;
+                         double d_median,
+                         bool disable_high) const;
   vec<thcfg_t> plan(const DistanceSampler& sampler, const vvec<double>& d_per_seq, const LLH<double>& llhf) const;
   void extract_batch(const vec<thcfg_t>& sets,
                      bool per_sequence,
