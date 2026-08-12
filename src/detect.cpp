@@ -385,6 +385,7 @@ vec<thcfg_t> Detector::plan(const DistanceSampler& sampler, const vvec<double>& 
     if (thresholds.empty()) {
       error_exit(concat_msg("no usable confidence levels for sketch ", rname));
     }
+    thresholds.set_median_window(win.valid ? win.hist.data() : nullptr, win.u, d_median);
 
     if (verbosity >= 1) {
       const auto [mean, sd] = sample_mean_sd(d_all);
@@ -424,6 +425,8 @@ vec<thcfg_t> Detector::plan(const DistanceSampler& sampler, const vvec<double>& 
       }
       sets[bix] =
         thresholds_for(fits[bix], llhf, win.valid ? win.hist.data() : nullptr, win.u, dmed_v[bix], disable_high);
+      if (!sets[bix].empty())
+        sets[bix].set_median_window(win.valid ? win.hist.data() : nullptr, win.u, dmed_v[bix]);
     }
     if (sets[bix].empty() || sets[bix].nlevels() != levels.size()) {
       sets[bix] = {};
@@ -567,7 +570,13 @@ void Detector::extract_batch(const vec<thcfg_t>& sets,
       uint64_t u = 0, t = 0;
       for (auto& c : cv) {
         strands[si].dim->extract_histogram(c.a_bin - 1, c.b_bin - 1, scratch_v, u, t);
-        c.est = compute_likelihood_estimate(llhf, scratch_v.data(), u, t, strands[si].d_q);
+        // Region counts give d / I / lr_ub; lr_bg is scored on the median window
+        // with null = d_median and alt = the region's MLE distance.
+        c.est = compute_likelihood_estimate(llhf, scratch_v.data(), u, t, nanx());
+        if (c.est.has_hits && is_valid_distance(c.est.d) && thresholds.med_valid) {
+          c.est.lr_bg = likelihood_ratio_statistic(llhf.nll(thresholds.d_median, thresholds.med_hist.data(), thresholds.med_u),
+                                                   llhf.nll(c.est.d, thresholds.med_hist.data(), thresholds.med_u));
+        }
         if (!c.est.has_hits) {
           // Count unmapped intervals once per unique (strand, a_bin, b_bin).
           const interval_t seq_iv = get_coordinates({c.a_bin, c.b_bin}, bin_shift, enmers, k);

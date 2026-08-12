@@ -43,6 +43,13 @@ struct thcfg_t
   vec<double> high_v; // ascending t_high
   vec<double> low_v;  // ascending t_low
 
+  // Representative background window (closest sampled distance to d_median).
+  // Used for the high-side screen and for interval lr_bg.
+  arr<uint64_t, hdist_bound + 1> med_hist{};
+  uint64_t med_u = 0;
+  double d_median = nanx();
+  bool med_valid = false;
+
   [[nodiscard]] size_t nlevels() const { return levels.size(); }
   [[nodiscard]] size_t nlanes() const { return 2 * levels.size(); }
   [[nodiscard]] bool empty() const { return levels.empty(); }
@@ -58,6 +65,17 @@ struct thcfg_t
   {
     assert(level_ix < nlevels());
     return levels[level_ix].high;
+  }
+
+  void set_median_window(const uint64_t* hist, uint64_t u, double d_med)
+  {
+    d_median = d_med;
+    med_valid = hist != nullptr && u > 0 && is_valid_distance(d_med);
+    med_u = med_valid ? u : 0;
+    if (med_valid)
+      std::copy(hist, hist + hdist_bound + 1, med_hist.begin());
+    else
+      med_hist.fill(0);
   }
 
   void pack()
