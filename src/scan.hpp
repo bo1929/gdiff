@@ -4,8 +4,29 @@
 #include "dim.hpp"
 #include "stils.hpp"
 #include "sketch.hpp"
+#include <chrono>
 #include <cstdint>
 #include <limits>
+
+// #region agent log
+struct scan_prof_t
+{
+  uint64_t n_kmers = 0;
+  uint64_t n_probes = 0;
+  uint64_t n_empty = 0;
+  uint64_t n_enc_cmp = 0;
+  uint64_t ns_encode = 0;
+  uint64_t ns_flush = 0;
+  uint64_t ns_hdist = 0;
+};
+inline thread_local scan_prof_t* g_scan_prof = nullptr;
+inline uint64_t agent_ns_now()
+{
+  using clock = std::chrono::steady_clock;
+  return static_cast<uint64_t>(
+    std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now().time_since_epoch()).count());
+}
+// #endregion
 
 inline uint32_t bucket_hdist_min(const enc_t* ix1, const enc_t* ix2, const enc_t enc)
 {
@@ -67,6 +88,9 @@ inline void scan_mers_range(const scan_ctx_t& ctx, const char* cseq, const uint6
   enc_t b_enc[2][scan_block];
 
   auto flush = [&]() {
+    // #region agent log
+    const uint64_t t_flush0 = g_scan_prof ? agent_ns_now() : 0;
+    // #endregion
     // Phase A: prefetch the bucket-boundary lines for the whole block.
     for (size_t s = 0; s < n; ++s) {
       if (b_off[0][s] != Sketch::INVALID_BIX) sfhm->prefetch_inc(b_off[0][s]);
@@ -98,21 +122,51 @@ inline void scan_mers_range(const scan_ctx_t& ctx, const char* cseq, const uint6
       }
     }
     // Phase C: scan buckets and agg observed k-mers (hits and misses).
+    // #region agent log
+    const uint64_t t_h0 = g_scan_prof ? agent_ns_now() : 0;
+    // #endregion
     for (size_t s = 0; s < n; ++s) {
       if (beg[0][s] != nullptr) {
+        // #region agent log
+        if (g_scan_prof) {
+          ++g_scan_prof->n_probes;
+          const uint64_t blen = static_cast<uint64_t>(end[0][s] - beg[0][s]);
+          g_scan_prof->n_enc_cmp += blen;
+          if (blen == 0) ++g_scan_prof->n_empty;
+        }
+        // #endregion
         const uint32_t hdist = bucket_hdist_min(beg[0][s], end[0][s], b_enc[0][s]);
         agg(b_bin[s], hdist, false);
       }
       if constexpr (C) {
         if (beg[1][s] != nullptr) {
+          // #region agent log
+          if (g_scan_prof) {
+            ++g_scan_prof->n_probes;
+            const uint64_t blen = static_cast<uint64_t>(end[1][s] - beg[1][s]);
+            g_scan_prof->n_enc_cmp += blen;
+            if (blen == 0) ++g_scan_prof->n_empty;
+          }
+          // #endregion
           const uint32_t hdist = bucket_hdist_min(beg[1][s], end[1][s], b_enc[1][s]);
           agg(b_bin[s], hdist, true);
         }
       }
     }
+    // #region agent log
+    if (g_scan_prof) {
+      const uint64_t t1 = agent_ns_now();
+      g_scan_prof->ns_hdist += t1 - t_h0;
+      g_scan_prof->ns_flush += t1 - t_flush0;
+    }
+    // #endregion
     n = 0;
   };
 
+  // #region agent log
+  const uint64_t t_scan0 = g_scan_prof ? agent_ns_now() : 0;
+  const uint64_t flush0 = g_scan_prof ? g_scan_prof->ns_flush : 0;
+  // #endregion
   for (uint64_t i = j0; i < i1; ++i) {
     if (__builtin_expect(SEQ_NT4_TABLE[static_cast<uint8_t>(cseq[i])] >= 4, 0)) {
       l = 0;
@@ -133,23 +187,41 @@ inline void scan_mers_range(const scan_ctx_t& ctx, const char* cseq, const uint6
     if (__builtin_expect(j >= j1, 0)) break;
     const uint64_t rc_bp = revcomp_bp64(enc_bp, k);
     if constexpr (C) {
-      b_off[0][n] = sketch->validate_bucket_ix(lshf->compute_hash_bp(enc_bp));
-      b_off[1][n] = sketch->validate_bucket_ix(lshf->compute_hash_bp(rc_bp));
+      const uint32_t off0 = sketch->validate_bucket_ix(lshf->compute_hash_bp(enc_bp));
+      const uint32_t off1 = sketch->validate_bucket_ix(lshf->compute_hash_bp(rc_bp));
+      // Both outside nrows (--frac): unobserved; do not buffer.
+      if (off0 == Sketch::INVALID_BIX && off1 == Sketch::INVALID_BIX) continue;
+      b_off[0][n] = off0;
+      b_off[1][n] = off1;
       b_enc[0][n] = lshf->drop_ppos_lr(enc_lr);
       b_enc[1][n] = lshf->drop_ppos_lr(bp64_to_lr64(rc_bp));
     } else {
+      uint32_t off;
+      enc_t enc;
       if (rc_bp < enc_bp) {
-        b_off[0][n] = sketch->validate_bucket_ix(lshf->compute_hash_bp(enc_bp));
-        b_enc[0][n] = lshf->drop_ppos_lr(enc_lr);
+        off = sketch->validate_bucket_ix(lshf->compute_hash_bp(enc_bp));
+        enc = lshf->drop_ppos_lr(enc_lr);
       } else {
-        b_off[0][n] = sketch->validate_bucket_ix(lshf->compute_hash_bp(rc_bp));
-        b_enc[0][n] = lshf->drop_ppos_lr(bp64_to_lr64(rc_bp));
+        off = sketch->validate_bucket_ix(lshf->compute_hash_bp(rc_bp));
+        enc = lshf->drop_ppos_lr(bp64_to_lr64(rc_bp));
       }
+      if (off == Sketch::INVALID_BIX) continue;
+      b_off[0][n] = off;
+      b_enc[0][n] = enc;
     }
     b_bin[n] = j >> ctx.bin_shift;
+    // #region agent log
+    if (g_scan_prof) ++g_scan_prof->n_kmers;
+    // #endregion
     if (++n == scan_block) flush();
   }
   if (n) flush();
+  // #region agent log
+  if (g_scan_prof) {
+    const uint64_t flush_delta = g_scan_prof->ns_flush - flush0;
+    g_scan_prof->ns_encode += agent_ns_now() - t_scan0 - flush_delta;
+  }
+  // #endregion
 }
 
 // Adapts DIM<T>::aggregate_mer to the scan_mers_range call signature.

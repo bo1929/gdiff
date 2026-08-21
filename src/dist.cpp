@@ -1,8 +1,13 @@
 #include "dist.hpp"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
+#include <fstream>
+#include <mutex>
 #include <numeric>
+#include <string>
 #include <unordered_set>
 
 #include "common.hpp"
@@ -11,6 +16,26 @@
 #include "scan.hpp"
 
 extern uint32_t num_threads;
+
+// #region agent log
+static void agent_log(const char* hyp, const char* loc, const char* msg, const std::string& data_json)
+{
+  std::ofstream out("/Users/asapci/Desktop/gidiff/.cursor/debug-b2098f.log", std::ios::app);
+  if (!out) return;
+  const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::system_clock::now().time_since_epoch())
+                    .count();
+  out << "{\"sessionId\":\"b2098f\",\"runId\":\"pre-fix\",\"hypothesisId\":\"" << hyp
+      << "\",\"location\":\"" << loc << "\",\"message\":\"" << msg << "\",\"data\":" << data_json
+      << ",\"timestamp\":" << ms << "}\n";
+}
+static uint64_t agent_ms_now()
+{
+  return static_cast<uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
+      .count());
+}
+// #endregion
 
 static LLH<double> make_llhf(const sketch_sptr_t& sketch, uint32_t hdist_th)
 {
@@ -106,6 +131,9 @@ void DistanceSampler::run_per_sequence(uint64_t sample_size, bool keep_counts, T
 
 void DistanceSampler::build_for_all(uint64_t sample_size, bool keep_counts)
 {
+  // #region agent log
+  const uint64_t t0 = agent_ms_now();
+  // #endregion
   schemes_v.clear();
   const uint64_t xtau = nwinmers + k - 1;
   uint64_t total_npos = 0;
@@ -140,6 +168,15 @@ void DistanceSampler::build_for_all(uint64_t sample_size, bool keep_counts)
     const uint64_t nbins = (enmers + bin_size - 1) >> bin_shift;
     schemes_v.emplace_back(bix, starts_v.size(), enmers, nbins, std::move(starts_v), keep_counts);
   }
+  // #region agent log
+  agent_log("D",
+            "dist.cpp:build_for_all",
+            "prefix_and_sample",
+            std::string("{\"ms\":") + std::to_string(agent_ms_now() - t0) + ",\"nseq\":" +
+              std::to_string(batch_v.size()) + ",\"total_npos\":" + std::to_string(total_npos) +
+              ",\"nsamples\":" + std::to_string(positions_v.size()) + ",\"lenc_bytes\":" +
+              std::to_string(lenc_v.size() * sizeof(uint64_t)) + "}");
+  // #endregion
 }
 
 void DistanceSampler::build_per_sequence(const uint64_t sample_size, const bool keep_counts)
@@ -160,6 +197,12 @@ void DistanceSampler::build_per_sequence(const uint64_t sample_size, const bool 
 
 void DistanceSampler::evaluate(ThreadPool& pool)
 {
+  // #region agent log
+  const uint64_t t_eval0 = agent_ms_now();
+  std::atomic<uint64_t> ns_scan{0}, ns_mle{0}, n_windows{0};
+  scan_prof_t scan_acc;
+  std::mutex scan_mu;
+  // #endregion
   const uint32_t nworkers = pool.size();
   const scan_ctx_t ctx = make_scan_ctx(*sketch, bin_shift, hdist_th);
 
@@ -180,6 +223,11 @@ void DistanceSampler::evaluate(ThreadPool& pool)
     const task_t& t = tasks_v[ti];
     scheme_t& scheme = schemes_v[t.six];
     const char* cseq = batch_v[scheme.bix].seq.data();
+    // #region agent log
+    scan_prof_t local_prof;
+    g_scan_prof = &local_prof;
+    uint64_t local_scan = 0, local_mle = 0, local_win = 0;
+    // #endregion
     if (canonical) {
       window_counts_t agg(hdist_th);
       for (uint64_t s = t.a; s < t.b; ++s) {
@@ -187,8 +235,20 @@ void DistanceSampler::evaluate(ThreadPool& pool)
         const uint64_t jx = a_bin << bin_shift;
         const uint64_t jy = std::min(jx + nwinmers, scheme.enmers);
         agg.clear();
+        // #region agent log
+        const uint64_t ts0 = agent_ns_now();
+        // #endregion
         scan_mers_range<false>(ctx, cseq, jx, jy, agg);
+        // #region agent log
+        const uint64_t ts1 = agent_ns_now();
+        // #endregion
         const double d = llhf.mle(agg.hist(), agg.u);
+        // #region agent log
+        const uint64_t ts2 = agent_ns_now();
+        local_scan += ts1 - ts0;
+        local_mle += ts2 - ts1;
+        ++local_win;
+        // #endregion
         scheme.d_v[s] = d;
         scheme.strand_v[s] = '.';
         if (scheme.keep_counts && is_valid_distance(d)) {
@@ -203,10 +263,22 @@ void DistanceSampler::evaluate(ThreadPool& pool)
         const uint64_t jx = a_bin << bin_shift;
         const uint64_t jy = std::min(jx + nwinmers, scheme.enmers);
         agg.clear();
+        // #region agent log
+        const uint64_t ts0 = agent_ns_now();
+        // #endregion
         scan_mers_range<true>(ctx, cseq, jx, jy, agg);
+        // #region agent log
+        const uint64_t ts1 = agent_ns_now();
+        // #endregion
         const double d_fw = llhf.mle(agg.hist_fw(), agg.u_fw);
         const double d_rc = llhf.mle(agg.hist_rc(), agg.u_rc);
         const auto [d, strand] = select_strand_distance(d_fw, d_rc);
+        // #region agent log
+        const uint64_t ts2 = agent_ns_now();
+        local_scan += ts1 - ts0;
+        local_mle += ts2 - ts1;
+        ++local_win;
+        // #endregion
         scheme.d_v[s] = d;
         scheme.strand_v[s] = strand;
         if (scheme.keep_counts && is_valid_distance(d)) {
@@ -220,7 +292,43 @@ void DistanceSampler::evaluate(ThreadPool& pool)
         }
       }
     }
+    // #region agent log
+    g_scan_prof = nullptr;
+    ns_scan.fetch_add(local_scan, std::memory_order_relaxed);
+    ns_mle.fetch_add(local_mle, std::memory_order_relaxed);
+    n_windows.fetch_add(local_win, std::memory_order_relaxed);
+    {
+      std::lock_guard<std::mutex> lock(scan_mu);
+      scan_acc.n_kmers += local_prof.n_kmers;
+      scan_acc.n_probes += local_prof.n_probes;
+      scan_acc.n_empty += local_prof.n_empty;
+      scan_acc.n_enc_cmp += local_prof.n_enc_cmp;
+      scan_acc.ns_encode += local_prof.ns_encode;
+      scan_acc.ns_flush += local_prof.ns_flush;
+      scan_acc.ns_hdist += local_prof.ns_hdist;
+    }
+    // #endregion
   });
+  // #region agent log
+  agent_log(
+    "A",
+    "dist.cpp:evaluate",
+    "scan_vs_mle",
+    std::string("{\"eval_ms\":") + std::to_string(agent_ms_now() - t_eval0) + ",\"scan_ms\":" +
+      std::to_string(ns_scan.load() / 1000000) + ",\"mle_ms\":" + std::to_string(ns_mle.load() / 1000000) +
+      ",\"n_windows\":" + std::to_string(n_windows.load()) + ",\"canonical\":" +
+      std::to_string(canonical ? 1 : 0) + "}");
+  agent_log("B",
+            "dist.cpp:evaluate",
+            "scan_breakdown",
+            std::string("{\"n_kmers\":") + std::to_string(scan_acc.n_kmers) + ",\"n_probes\":" +
+              std::to_string(scan_acc.n_probes) + ",\"n_empty\":" + std::to_string(scan_acc.n_empty) +
+              ",\"n_enc_cmp\":" + std::to_string(scan_acc.n_enc_cmp) + ",\"encode_ms\":" +
+              std::to_string(scan_acc.ns_encode / 1000000) + ",\"flush_ms\":" +
+              std::to_string(scan_acc.ns_flush / 1000000) + ",\"hdist_ms\":" +
+              std::to_string(scan_acc.ns_hdist / 1000000) + ",\"flush_minus_hdist_ms\":" +
+              std::to_string((scan_acc.ns_flush - scan_acc.ns_hdist) / 1000000) + "}");
+  // #endregion
 }
 
 void DistanceSampler::collect_distances(vec<double>& d_v) const
@@ -299,9 +407,15 @@ void DistSC::sample_distances(const sketch_sptr_t& sketch, const vec<qseq_t>& ba
 
 void DistSC::dist()
 {
+  // #region agent log
+  const uint64_t t_all0 = agent_ms_now();
+  // #endregion
   qseq_sptr_t qs = std::make_shared<QSeq>(target_path);
   while (qs->read_next_batch()) {
   }
+  // #region agent log
+  const uint64_t t_q1 = agent_ms_now();
+  // #endregion
 
   const vec<uint64_t> sketch_offsets = read_sketch_offsets(sketch_path);
   const uint32_t nsketches = static_cast<uint32_t>(sketch_offsets.size());
@@ -316,17 +430,37 @@ void DistSC::dist()
   std::ifstream sin(sketch_path, std::ifstream::binary);
   check_fstream(sin, "Cannot open sketch file for reading", sketch_path.string());
 
+  uint64_t load_ms = 0, sample_ms = 0;
   for (uint32_t i = 0; i < nsketches; ++i) {
+    // #region agent log
+    const uint64_t tl0 = agent_ms_now();
+    // #endregion
     sketch_sptr_t sketch = std::make_shared<Sketch>(sketch_path);
     sketch->load_from_offset(sin, sketch_offsets[i]);
+    // #region agent log
+    load_ms += agent_ms_now() - tl0;
+    const uint64_t ts0 = agent_ms_now();
+    // #endregion
 
     strstream sout;
     sample_distances(sketch, batch_v, sout, pool);
+    // #region agent log
+    sample_ms += agent_ms_now() - ts0;
+    // #endregion
     if (sout.tellp() > 0) *output_stream << sout.rdbuf();
 
     std::cerr << "\rProcessed sketch " << i + 1 << "/" << nsketches << "..." << std::flush;
     if (i + 1 == nsketches) std::cerr << std::endl;
   }
+  // #region agent log
+  agent_log("C",
+            "dist.cpp:dist",
+            "phase_totals",
+            std::string("{\"query_load_ms\":") + std::to_string(t_q1 - t_all0) + ",\"sketch_load_ms\":" +
+              std::to_string(load_ms) + ",\"sample_eval_ms\":" + std::to_string(sample_ms) +
+              ",\"total_ms\":" + std::to_string(agent_ms_now() - t_all0) + ",\"nsketches\":" +
+              std::to_string(nsketches) + ",\"nseq\":" + std::to_string(batch_v.size()) + "}");
+  // #endregion
 }
 
 DistSC::DistSC(CLI::App& sc)
