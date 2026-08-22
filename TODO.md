@@ -2,3 +2,22 @@
 * Revisit output formats and CLI.
 * Have a map mode where you can specify the direction, too.
 
+
+Reconsider:
+- `detect.cpp`
+- `detect.hpp `
+- `dim.cpp`
+- `dim.hpp`
+- `dist.cpp`
+- `dist.hpp`
+- `gamma.cpp`
+- `gamma.hpp`
+- `gdiff.cpp` (?)
+- `gdiff.hpp` (?)
+- `map.cpp` (?)
+- `map.hpp` (?)
+- `sketch.cpp` (?)
+- `sketch.hpp` (?)
+- `types.hpp` (?)
+- `scan.hpp` (?)
+- `stils.hpp` (?)
