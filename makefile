@@ -89,7 +89,14 @@ ifneq ($(MODE),static)
 endif
 CPPFLAGS += -D_LCURL=$(LCURL)
 
-SOURCES  = $(wildcard src/*.cpp)
+# >>> BEGIN sketch2/dist2 (gdiff2) — remove this block and src/{gdiff2,sketch2,dist2}.* to drop
+PROGRAM2    = gdiff2
+SK2_SOURCES = src/gdiff2.cpp src/sketch2.cpp src/dist2.cpp
+SK2_OBJECTS = $(patsubst src/%.cpp,$(BDIR)/%.o,$(SK2_SOURCES))
+SK2_DEPENDS = $(SK2_OBJECTS:.o=.d)
+# <<< END sketch2/dist2 source list (filter below)
+
+SOURCES  = $(filter-out $(SK2_SOURCES),$(wildcard src/*.cpp))
 OBJECTS  = $(patsubst src/%.cpp,$(BDIR)/%.o,$(SOURCES))
 DEPENDS  = $(OBJECTS:.o=.d)
 
@@ -108,7 +115,9 @@ TEST_BIN = $(BDIR)/test_gdiff
 # Rules
 .PHONY: all dynamic static debug clang tidy tidy-fix clean test-unit test-regression test
 
-all: $(PROGRAM)
+# >>> BEGIN sketch2/dist2 (gdiff2) target — remove with the block above
+all: $(PROGRAM) $(PROGRAM2)
+# <<< END sketch2/dist2 all-target (restore to: all: $(PROGRAM))
 
 dynamic:
 	$(MAKE) MODE=dynamic $(PROGRAM)
@@ -156,14 +165,22 @@ $(BDIR)/%.o: src/%.cpp | $(BDIR)
 $(PROGRAM): $(OBJECTS)
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) $^ -o $@ $(LDLIBS)
 
+# >>> BEGIN sketch2/dist2 (gdiff2) link — remove with the other gdiff2 blocks
+$(PROGRAM2): $(SK2_OBJECTS) $(LIB_OBJECTS)
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) $^ -o $@ $(LDLIBS)
+# <<< END sketch2/dist2 link
+
 $(BDIR):
 	@mkdir -p $@
 
 clean:
-	rm -rf $(BDIR) $(PROGRAM)
+	rm -rf $(BDIR) $(PROGRAM) $(PROGRAM2)
 	@echo "Clean."
 
 -include $(DEPENDS)
+# >>> BEGIN sketch2/dist2 deps — remove with the other gdiff2 blocks
+-include $(SK2_DEPENDS)
+# <<< END sketch2/dist2 deps
 
 # ── Test targets ──────────────────────────────────────────────────────────────
 

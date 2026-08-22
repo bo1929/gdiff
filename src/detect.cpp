@@ -459,8 +459,7 @@ vec<thcfg_t> Detector::plan(const DistanceSampler& sampler, const vvec<double>& 
       }
       sets[bix] = thresholds_for(
         fits[bix], llhf, win.valid ? win.hist.data() : nullptr, win.u, dmed_v[bix], disable_high, disable_low);
-      if (!sets[bix].empty())
-        sets[bix].set_median_window(win.valid ? win.hist.data() : nullptr, win.u, dmed_v[bix]);
+      if (!sets[bix].empty()) sets[bix].set_median_window(win.valid ? win.hist.data() : nullptr, win.u, dmed_v[bix]);
     }
     if (sets[bix].empty() || sets[bix].nlevels() != levels.size()) {
       sets[bix] = {};
@@ -730,11 +729,11 @@ void Detector::report_stats(const thcfg_t& thresholds,
     const str high_s = thresholds.high_enabled(j)
                          ? concat_msg(stats[j].nintervals, " interval(s), ", stats[j].bp_covered, " bp")
                          : str("skipped");
-    const str low_s = thresholds.low_enabled(j) ? concat_msg(stats[thresholds.nlevels() + j].nintervals,
-                                                            " interval(s), ",
-                                                            stats[thresholds.nlevels() + j].bp_covered,
-                                                            " bp")
-                                                : str("skipped");
+    const str low_s =
+      thresholds.low_enabled(j)
+        ? concat_msg(
+            stats[thresholds.nlevels() + j].nintervals, " interval(s), ", stats[thresholds.nlevels() + j].bp_covered, " bp")
+        : str("skipped");
     cerr_msg("[", rname, "] level ", thresholds.levels[j].alpha, ": high: ", high_s, " | low: ", low_s);
   }
   cerr_msg("[", rname, "] unmapped (no k-mer hits): ", unmapped_iv, " interval(s), ", unmapped_bp, " bp");
