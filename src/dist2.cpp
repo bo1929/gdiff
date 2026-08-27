@@ -349,8 +349,14 @@ Dist2SC::dir_out_t Dist2SC::run_direction(const Sketch2& query,
           lr_bg = likelihood_ratio_statistic(llhf.nll(d_median, row.hist, row.u), llhf.nll(row.d, row.hist, row.u));
       }
       const win2_t& win = query.get_wins()[row.wix];
-      write_tsv(
-        ss, dir_label, win.qid, win.start + 1, win.end + k - 1, row.strand, reference.get_rname(), row.d, lr_bg, lr_ub)
+      write_tsv(ss,
+                dir_label,
+                win.qid,
+                win.start + 1,
+                win.end + k - 1,
+                query.get_rname(),
+                reference.get_rname(),
+                row.d) //, lr_bg, lr_ub)
         << "\n";
     }
     out.samples = ss.str();
