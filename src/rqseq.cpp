@@ -1,12 +1,14 @@
 #include "rqseq.hpp"
 
+#define HLL_BUCKET_FACTOR 13
+
 RSeq::RSeq(const str& input, const lshf_sptr_t& lshf, uint8_t w, uint32_t frac_th, bool canonical)
   : w(w)
   , frac_th(frac_th)
   , canonical(canonical)
   , lshf(lshf)
-  , csk(12)
-  , isk(12)
+  , csk(HLL_BUCKET_FACTOR)
+  , isk(HLL_BUCKET_FACTOR)
 {
   uint64_t u64m = std::numeric_limits<uint64_t>::max();
   k = lshf->get_k();
@@ -106,7 +108,7 @@ void RSeq::extract_mers(vvec<T>& table)
     }
     rix = lshf->compute_hash_bp(cminimizer.x);
     if (rix < frac_th) {
-      isk.add(cminimizer.z);
+      isk.add(xhur64m(cminimizer.y & mask_lr));
       table[rix].push_back(lshf->drop_ppos_lr(cminimizer.y));
     }
   }
