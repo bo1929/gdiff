@@ -196,7 +196,6 @@ void SDHM::fill_table(uint32_t nrows, const rseq_sptr_t& rs)
       rs->extract_mers(enc_vvec);
     }
   }
-  rs->compute_rho();
   sort_columns();
   make_unique();
 }

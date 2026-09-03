@@ -15,8 +15,6 @@
 #include "exthash.hpp"
 #include "hyperloglog.hpp"
 
-#define RBATCH_SIZE 512
-
 class HandlerURL
 {
 protected:
@@ -79,7 +77,7 @@ public:
   ~RSeq();
   bool set_curr_seq();
   bool read_next_seq();
-  void compute_rho();
+  double get_cardinality() const;
   double get_rho() const;
   template<typename T>
   void extract_mers(vvec<T>& table);
@@ -98,9 +96,8 @@ private:
   lshf_sptr_t lshf;
   uint64_t mask_bp = 0;
   uint64_t mask_lr = 0;
-  double n1_est = 0; // HLL estimate of all k-mers
-  double n2_est = 0; // HLL estimate of sketched k-mers
-  double rho = 1.0;
+  hll::HyperLogLog csk;
+  hll::HyperLogLog isk;
   std::filesystem::path input_path;
 };
 
@@ -128,7 +125,7 @@ private:
   bool is_url;
   vec<qseq_t> batch_v;
   uint64_t cbatch_size = 0;
-  uint64_t rbatch_size = RBATCH_SIZE;
+  uint64_t rbatch_size = 512;
   std::filesystem::path input_path;
 };
 

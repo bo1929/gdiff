@@ -5,6 +5,8 @@ RSeq::RSeq(const str& input, const lshf_sptr_t& lshf, uint8_t w, uint32_t frac_t
   , frac_th(frac_th)
   , canonical(canonical)
   , lshf(lshf)
+  , csk(12)
+  , isk(12)
 {
   uint64_t u64m = std::numeric_limits<uint64_t>::max();
   k = lshf->get_k();
@@ -38,11 +40,15 @@ RSeq::~RSeq()
   }
 }
 
-void RSeq::compute_rho() { rho = n2_est / n1_est; }
-
 bool RSeq::read_next_seq() { return kseq_read(kseq) >= 0; }
 
-double RSeq::get_rho() const { return rho; }
+double RSeq::get_cardinality() const { return csk.estimate(); }
+
+double RSeq::get_rho() const
+{
+  double cardinality = csk.estimate();
+  return isk.estimate() / cardinality;
+}
 
 bool RSeq::set_curr_seq()
 {
@@ -64,8 +70,6 @@ void RSeq::extract_mers(vvec<T>& table)
     ldiff = 1;
     w = k;
   }
-  hll::HyperLogLog c1(12);
-  hll::HyperLogLog c2(12);
   uint64_t klix = 0;
   uint64_t orenc64_bp, orenc64_lr;
   std::vector<hmer_t> winenc_v(ldiff);
@@ -87,7 +91,7 @@ void RSeq::extract_mers(vvec<T>& table)
       update_encoding(cseq + i - 1, orenc64_lr, orenc64_bp);
     }
     winenc_v[klix] = {orenc64_bp & mask_bp, orenc64_lr & mask_lr, xhur64(orenc64_bp & mask_bp)};
-    c1.add(winenc_v[klix].z);
+    csk.add(winenc_v[klix].z);
     if (++klix == ldiff) klix = 0;
     if ((l < w) && (i != len)) {
       continue;
@@ -102,12 +106,10 @@ void RSeq::extract_mers(vvec<T>& table)
     }
     rix = lshf->compute_hash_bp(cminimizer.x);
     if (rix < frac_th) {
-      c2.add(cminimizer.z);
+      isk.add(cminimizer.z);
       table[rix].push_back(lshf->drop_ppos_lr(cminimizer.y));
     }
   }
-  n1_est += c1.estimate();
-  n2_est += c2.estimate();
 }
 
 QSeq::QSeq(const str& input)
