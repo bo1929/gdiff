@@ -354,9 +354,12 @@ Dist2SC::dir_out_t Dist2SC::run_direction(const Sketch2& query,
                 win.qid,
                 win.start + 1,
                 win.end + k - 1,
+                row.strand,
                 query.get_rname(),
                 reference.get_rname(),
-                row.d) //, lr_bg, lr_ub)
+                row.d,
+                lr_bg,
+                lr_ub)
         << "\n";
     }
     out.samples = ss.str();
