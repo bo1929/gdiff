@@ -118,9 +118,7 @@ TEST_CASE("sliding window consistency for k=4") {
 TEST_SUITE("revcomp_bp64") {
 
 TEST_CASE("ACGT reverse complement is ACGT") {
-  // ACGT -> rc(ACGT) = ACGT
-  // bp: A=00 C=01 G=10 T=11 -> 00011011 = 0x1B
-  // rc: A=00 C=01 G=10 T=11 -> 0x1B
+  // ACGT is its own reverse complement (bp 0x1B).
   uint64_t enc = 0x1B;
   uint64_t rc = revcomp_bp64(enc, 4);
   CHECK(rc == 0x1B);
@@ -256,9 +254,7 @@ TEST_CASE("all-A vs all-T has max hdist for length") {
 TEST_SUITE("extract_bits") {
 
 TEST_CASE("extracts correct bits") {
-  // x = 0b11010110, mask = 0b10100100 -> extract bits at positions 2,5,7
-  // bit 2 = 1 (-> result bit 0), bit 5 = 0 (-> result bit 1), bit 7 = 1 (-> result bit 2)
-  // result = 0b101 = 5
+  // Extract bits 2,5,7 of 0b11010110 under mask 0b10100100 -> 0b101.
   uint64_t x = 0b11010110;
   uint64_t mask = 0b10100100;
   CHECK(extract_bits(x, mask) == 0b101);

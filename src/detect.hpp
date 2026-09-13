@@ -4,6 +4,7 @@
 #include "CLI11.hpp"
 #include "gamma.hpp"
 #include "llh.hpp"
+#include "sym.hpp"
 #include "stils.hpp"
 #include "rqseq.hpp"
 #include "sketch.hpp"
@@ -44,8 +45,7 @@ struct thcfg_t
   vec<double> high_v; // ascending t_high
   vec<double> low_v;  // ascending t_low
 
-  // Representative background window (closest sampled distance to d_median).
-  // Used for the high-side screen and for interval lr_bg.
+  // Background window closest to d_median; used for the high-side screen and lr_bg.
   arr<uint64_t, hdist_bound + 1> med_hist{};
   uint64_t med_u = 0;
   double d_median = nanx();
@@ -120,7 +120,7 @@ struct lvlstat_t
 class Detector
 {
 public:
-  Detector(const sketch_sptr_t& sketch,
+  Detector(const Sketch& sketch,
            const vec<qseq_t>& batch_v,
            uint64_t tau,
            uint64_t bin_shift,
@@ -130,9 +130,11 @@ public:
            const vec<double>& levels,
            const vec<double>& fit_quantiles,
            bool per_sequence,
+           bool low_memory,
            uint32_t verbosity);
 
-  void run(std::ostream& out, ThreadPool& pool);
+  // Empty rev_rows: one-directional null. Otherwise reconcile both directions.
+  void run(std::ostream& out, ThreadPool& pool, const vec<dpoint_t>& rev_rows, double lr_th, double min_portion);
 
 private:
   bggamma_t fit(const vec<double>& d_v) const;
@@ -143,7 +145,11 @@ private:
                          double d_median,
                          bool disable_high,
                          bool disable_low) const;
-  vec<thcfg_t> plan(const DistanceSampler& sampler, const vvec<double>& d_per_seq, const LLH<double>& llhf) const;
+  // fit_v is the gamma sample (pooled or per-sequence); may differ from d_per_seq.
+  vec<thcfg_t> plan(const DistanceSampler& sampler,
+                    const vvec<double>& d_per_seq,
+                    const vvec<double>& fit_v,
+                    const LLH<double>& llhf) const;
   void extract_batch(const vec<thcfg_t>& sets,
                      bool per_sequence,
                      const LLH<double>& llhf,
@@ -158,7 +164,7 @@ private:
   void
   report_stats(const thcfg_t& thresholds, const vec<lvlstat_t>& stats, uint64_t unmapped_iv, uint64_t unmapped_bp) const;
 
-  const sketch_sptr_t sketch;
+  const Sketch& sketch;
   const vec<qseq_t>& batch_v;
   const uint64_t tau;
   const uint64_t bin_shift;
@@ -168,7 +174,9 @@ private:
   const vec<double>& levels;
   const vec<double>& fit_quantiles;
   const bool per_sequence;
+  const bool low_memory;
   const uint32_t verbosity;
+  double sym_distance = nanx(); // reconciled point estimate, reported with the fit
 };
 
 class DetectSC
@@ -192,6 +200,11 @@ private:
   vec<double> levels;
   vec<double> fit_quantiles;
   bool per_sequence = false;
+  bool symmetric = true;
+  double lr_th = lr_th_default;
+  double min_portion = min_portion_default;
+  uint64_t batch_bases = 0; // 0 = load the whole query, preserving the pooled fit
+  bool low_memory = false;
   uint32_t verbosity = 1;
 };
 

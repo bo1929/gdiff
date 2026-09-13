@@ -8,6 +8,8 @@
 #include <numeric>
 #include <optional>
 
+#include <sys/mman.h>
+
 #include "common.hpp"
 #include "dist.hpp"
 #include "msg.hpp"
@@ -18,8 +20,7 @@ extern uint32_t num_threads;
 
 namespace {
 
-  // Counts of the sampled background window closest to a target distance;
-  // represents a typical window's information content for the threshold screen.
+  // Background window closest to a target distance; used for the threshold screen.
   struct median_window_t
   {
     std::array<uint64_t, hdist_bound + 1> hist{};
@@ -39,12 +40,11 @@ namespace {
     }
   };
 
-  // Single pass over the samples: per query with a finite dmed_v[bix], copy the
-  // counts of the window whose distance is closest to that query's median.
+  // Per-query window whose distance is closest to that query's median.
   vec<median_window_t> find_median_windows(const DistanceSampler& sampler, const vec<double>& dmed_v)
   {
     vec<median_window_t> out_v(dmed_v.size());
-    sampler.for_each_sample_counts([&](uint64_t bix, uint64_t, uint64_t, double d, char, const uint64_t* hist, uint64_t u) {
+    sampler.for_each_counts([&](uint64_t bix, uint64_t, uint64_t, double d, char, const uint64_t* hist, uint64_t u) {
       if (bix >= dmed_v.size()) return;
       out_v[bix].consider(d, hist, u, dmed_v[bix]);
     });
@@ -56,7 +56,7 @@ namespace {
   {
     median_window_t out;
     if (!is_valid_distance(d_median)) return out;
-    sampler.for_each_sample_counts([&](uint64_t, uint64_t, uint64_t, double d, char, const uint64_t* hist, uint64_t u) {
+    sampler.for_each_counts([&](uint64_t, uint64_t, uint64_t, double d, char, const uint64_t* hist, uint64_t u) {
       out.consider(d, hist, u, d_median);
     });
     return out;
@@ -67,11 +67,8 @@ namespace {
   // chi-square(1) 99% critical value; same cut dist uses for median filtering.
   constexpr double lr_th_99 = 6.63;
 
-  // True when d_median cannot be told apart from max_estimable_distance on a
-  // window with n_total observed k-mers (lr_ub below lr_th). That ceiling is the
-  // weakest homology the model can estimate — the practical lower limit of
-  // usable signal — so a background parked there has nothing left to detect.
-  bool median_at_estimable_floor(const LLH<double>& llhf, double d_median, uint64_t n_total, double* lr_out = nullptr)
+  // True when d_median is indistinguishable from the sketch's detection ceiling.
+  bool median_floored(const LLH<double>& llhf, double d_median, uint64_t n_total, double* lr_out = nullptr)
   {
     const double lr = compute_lr_ub(llhf, d_median, n_total);
     if (lr_out) *lr_out = lr;
@@ -100,8 +97,7 @@ namespace {
     return {mean, std::sqrt(sum_sq / static_cast<double>(d_v.size() - 1))};
   }
 
-  // SIMD params and LLH for one threshold set. Pooled mode builds this once and
-  // shares it across queries (LLH is const after construction; safe to share).
+  // SIMD params and LLH for one threshold set; shared across queries in pooled mode.
   struct detect_ctx_t
   {
     params_t<cm512_t> params;
@@ -122,8 +118,7 @@ namespace {
     }
   };
 
-  // Interval extracted by one or more threshold slots (bit i = slot i). The
-  // shared likelihood estimate is filled in after deduplication.
+  // Interval from one or more threshold slots (bit i = slot i).
   struct candidate_t
   {
     uint64_t a_bin;
@@ -153,16 +148,14 @@ namespace {
     cv.resize(w + 1);
   }
 
-  // True when the background is too close for low-side outliers to be meaningful:
-  // fitted median below 0.001, or more than 10% of windows floored at d_eps.
+  // Disable low-side when the fitted median is < 0.001 or >10% of windows are floored.
   bool should_disable_low(const bggamma_t& fit, double d_median)
   {
     if (std::isfinite(d_median) && d_median < 0.001) return true;
     return fit.nsamples > 0 && fit.nfloored * 10 > fit.nsamples;
   }
 
-  // LR screen for the high threshold only: drops high-side detection when a
-  // typical background window cannot tell t_high apart from the fitted median.
+  // Drop high-side detection when a typical window cannot tell t_high from the median.
   bool screen_high_side(const clvl_t& level,
                         const LLH<double>& llhf,
                         const uint64_t* win_hist,
@@ -238,7 +231,7 @@ namespace {
 
 } // namespace
 
-Detector::Detector(const sketch_sptr_t& sketch,
+Detector::Detector(const Sketch& sketch,
                    const vec<qseq_t>& batch_v,
                    const uint64_t tau,
                    const uint64_t bin_shift,
@@ -248,6 +241,7 @@ Detector::Detector(const sketch_sptr_t& sketch,
                    const vec<double>& levels,
                    const vec<double>& fit_quantiles,
                    const bool per_sequence,
+                   const bool low_memory,
                    const uint32_t verbosity)
   : sketch(sketch)
   , batch_v(batch_v)
@@ -259,6 +253,7 @@ Detector::Detector(const sketch_sptr_t& sketch,
   , levels(levels)
   , fit_quantiles(fit_quantiles)
   , per_sequence(per_sequence)
+  , low_memory(low_memory)
   , verbosity(verbosity)
 {
 }
@@ -348,9 +343,12 @@ thcfg_t Detector::thresholds_for(const bggamma_t& fit,
   return thresholds;
 }
 
-vec<thcfg_t> Detector::plan(const DistanceSampler& sampler, const vvec<double>& d_per_seq, const LLH<double>& llhf) const
+vec<thcfg_t> Detector::plan(const DistanceSampler& sampler,
+                            const vvec<double>& d_per_seq,
+                            const vvec<double>& fit_v,
+                            const LLH<double>& llhf) const
 {
-  const str rname = sketch->get_rname();
+  const str& rname = sketch.get_rname();
   const size_t nseq = batch_v.size();
 
   uint64_t nmapped = 0;
@@ -359,12 +357,7 @@ vec<thcfg_t> Detector::plan(const DistanceSampler& sampler, const vvec<double>& 
   const uint64_t nunmapped = sampler.get_nsamples() - nmapped;
 
   if (!per_sequence) {
-    vec<double> d_all;
-    d_all.reserve(nmapped);
-    for (const auto& d_v : d_per_seq)
-      d_all.insert(d_all.end(), d_v.begin(), d_v.end());
-
-    const bggamma_t bg = fit(d_all);
+    const bggamma_t bg = fit(fit_v.front());
     if (!bg.ok) {
       error_exit(concat_msg("gamma fit failed for sketch ",
                             rname,
@@ -380,7 +373,7 @@ vec<thcfg_t> Detector::plan(const DistanceSampler& sampler, const vvec<double>& 
     bool disable_high = false;
     if (win.valid) {
       double lr_ub = nanx();
-      if (median_at_estimable_floor(llhf, d_median, window_n_total(win, hdist_th), &lr_ub)) {
+      if (median_floored(llhf, d_median, window_n_total(win, hdist_th), &lr_ub)) {
         disable_high = true;
         warn_msg(concat_msg("background median indistinguishable from max estimable distance for sketch ",
                             rname,
@@ -415,23 +408,22 @@ vec<thcfg_t> Detector::plan(const DistanceSampler& sampler, const vvec<double>& 
     thresholds.set_median_window(win.valid ? win.hist.data() : nullptr, win.u, d_median);
 
     if (verbosity >= 1) {
-      const auto [mean, sd] = sample_mean_sd(d_all);
+      const auto [mean, sd] = sample_mean_sd(fit_v.front());
       report_fit(bg, thresholds, mean, sd, nunmapped, nmapped);
     }
 
     return {std::move(thresholds)};
   }
 
-  // Per-sequence: fit all sequences first so every median is known, then gather
-  // each sequence's representative (median-closest) window in one pass.
+  // Fit all sequences first, then pick each sequence's median-closest window.
   const uint64_t bin_size = uint64_t(1) << bin_shift;
   const uint64_t nwinmers = ((tau + bin_size - 1) >> bin_shift) << bin_shift;
-  const uint64_t min_len = nwinmers + sketch->get_lshf_sptr()->get_k() - 1;
+  const uint64_t min_len = nwinmers + sketch.get_k() - 1;
 
   vec<bggamma_t> fits(nseq);
   vec<double> dmed_v(nseq, nanx());
   for (size_t bix = 0; bix < nseq; ++bix) {
-    fits[bix] = fit(d_per_seq[bix]);
+    fits[bix] = fit(fit_v[bix]);
     if (fits[bix].ok) dmed_v[bix] = GammaModel::quantile(0.5, fits[bix].params.shape, fits[bix].params.scale);
   }
   const vec<median_window_t> win_v = find_median_windows(sampler, dmed_v);
@@ -443,7 +435,7 @@ vec<thcfg_t> Detector::plan(const DistanceSampler& sampler, const vvec<double>& 
     if (fits[bix].ok) {
       const median_window_t& win = win_v[bix];
       bool disable_high = false;
-      if (win.valid && median_at_estimable_floor(llhf, dmed_v[bix], window_n_total(win, hdist_th))) {
+      if (win.valid && median_floored(llhf, dmed_v[bix], window_n_total(win, hdist_th))) {
         disable_high = true;
         if (batch_v[bix].seq.size() >= min_len) {
           warn_pmsg(batch_v[bix].qid,
@@ -498,14 +490,14 @@ void Detector::extract_batch(const vec<thcfg_t>& sets,
                              strstream& sout,
                              ThreadPool& pool) const
 {
-  const lshf_sptr_t lshf = sketch->get_lshf_sptr();
+  const lshf_sptr_t& lshf = sketch.get_lshf_sptr();
   const uint32_t k = lshf->get_k();
-  const bool canonical = sketch->is_canonical();
-  const str rname = sketch->get_rname();
+  const bool canonical = sketch.is_canonical();
+  const str& rname = sketch.get_rname();
   const uint64_t bin_size = uint64_t(1) << bin_shift;
   const uint64_t tau_bin = std::max<uint64_t>(1, (tau + bin_size - 1) >> bin_shift);
 
-  const scan_ctx_t scan_ctx = make_scan_ctx(*sketch, bin_shift, hdist_th);
+  const scan_ctx_t scan_ctx = make_scan_ctx(sketch, bin_shift, hdist_th);
 
   const size_t nseq = batch_v.size();
   vec<strstream> out_v(nseq);
@@ -517,7 +509,7 @@ void Detector::extract_batch(const vec<thcfg_t>& sets,
   std::optional<detect_ctx_t> pooled_ctx;
   if (!per_sequence) {
     assert(!sets.empty() && !sets[0].empty());
-    pooled_ctx.emplace(sets[0].extrema, k, lshf->get_h(), sketch->get_rho(), hdist_th, tau, chisq, bin_shift, canonical);
+    pooled_ctx.emplace(sets[0].extrema, k, lshf->get_h(), sketch.get_rho(), hdist_th, tau, chisq, bin_shift, canonical);
   }
 
   auto process = [&](const uint64_t bix) {
@@ -542,7 +534,7 @@ void Detector::extract_batch(const vec<thcfg_t>& sets,
     std::optional<detect_ctx_t> sequence_ctx;
     if (!pooled_ctx) {
       sequence_ctx.emplace(
-        thresholds.extrema, k, lshf->get_h(), sketch->get_rho(), hdist_th, tau, chisq, bin_shift, canonical);
+        thresholds.extrema, k, lshf->get_h(), sketch.get_rho(), hdist_th, tau, chisq, bin_shift, canonical);
     }
     const detect_ctx_t& ctx = pooled_ctx ? *pooled_ctx : *sequence_ctx;
 
@@ -559,8 +551,7 @@ void Detector::extract_batch(const vec<thcfg_t>& sets,
     else
       scan_mers_range<true>(scan_ctx, cseq, 0, enmers, agg);
 
-    // Uniform per-strand pipeline: prefix sums, whole-query distance, then
-    // per-threshold extraction. Canonical mode runs a single forward "strand".
+    // Prefix sums, whole-query distance, then per-threshold extraction.
     struct strand_t
     {
       DIM<cm512_t>* dim;
@@ -574,7 +565,8 @@ void Detector::extract_batch(const vec<thcfg_t>& sets,
       strand_t& strand = strands[si];
       strand.dim->inclusive_scan();
       strand.dim->compute_prefhistsum();
-      strand.dim->extrema_scan();
+      // mx uses precomputed extrema; sx derives them per lane.
+      if (!low_memory) strand.dim->extrema_scan();
       vec<uint64_t> v_q;
       uint64_t u_q = 0, t_q = 0;
       strand.dim->total_histogram(v_q, u_q, t_q);
@@ -588,7 +580,10 @@ void Detector::extract_batch(const vec<thcfg_t>& sets,
       if (!thresholds.lane_enabled(ix)) continue;
       for (size_t si = 0; si < nstrands; ++si) {
         DIM<cm512_t>& dim = *strands[si].dim;
-        dim.extract_intervals_mx(tau_eff, 1, nbins, ix);
+        if (low_memory)
+          dim.extract_intervals_sx(tau_eff, 1, nbins, ix);
+        else
+          dim.extract_intervals_mx(tau_eff, 1, nbins, ix);
         dim.expand_intervals(ctx.params.chisq, ix);
         for (const auto& iv : dim.get_intervals_v(ix))
           candidates_v[si].push_back({iv.a, iv.b + 1, lane_bit(ix), {}});
@@ -603,9 +598,7 @@ void Detector::extract_batch(const vec<thcfg_t>& sets,
       uint64_t u = 0, t = 0;
       for (auto& c : cv) {
         strands[si].dim->extract_histogram(c.a_bin - 1, c.b_bin - 1, scratch_v, u, t);
-        // Region counts give d / I / lr_ub. lr_bg is the deviance of the region's
-        // distance vs d_median on the median window's match counts (pass the worse
-        // NLL first so the statistic stays non-negative).
+        // Region counts give d / I / lr_ub; lr_bg vs d_median on the median window.
         c.est = compute_likelihood_estimate(llhf, scratch_v.data(), u, t, nanx());
         if (c.est.has_hits && is_valid_distance(c.est.d) && thresholds.med_valid) {
           c.est.lr_bg =
@@ -678,7 +671,7 @@ void Detector::report_fit(const bggamma_t& fit,
                           const uint64_t nunmapped,
                           const uint64_t nmapped) const
 {
-  const str rname = sketch->get_rname();
+  const str& rname = sketch.get_rname();
   cerr_msg("[",
            rname,
            "] background windows: n=",
@@ -712,6 +705,9 @@ void Detector::report_fit(const bggamma_t& fit,
   } else {
     cerr_msg("[", rname, "] fit: shape=", fit.params.shape, " scale=", fit.params.scale);
   }
+  if (std::isfinite(sym_distance)) {
+    cerr_msg("[", rname, "] reconciled symmetric distance: ", sym_distance);
+  }
   for (const auto& level : thresholds.levels) {
     const str t_lo = level.low ? concat_msg(level.t_low) : str("skipped");
     const str t_hi = level.high ? concat_msg(level.t_high) : str("skipped");
@@ -724,7 +720,7 @@ void Detector::report_stats(const thcfg_t& thresholds,
                             const uint64_t unmapped_iv,
                             const uint64_t unmapped_bp) const
 {
-  const str rname = sketch->get_rname();
+  const str& rname = sketch.get_rname();
   for (size_t j = 0; j < thresholds.nlevels(); ++j) {
     const str high_s = thresholds.high_enabled(j)
                          ? concat_msg(stats[j].nintervals, " interval(s), ", stats[j].bp_covered, " bp")
@@ -739,14 +735,16 @@ void Detector::report_stats(const thcfg_t& thresholds,
   cerr_msg("[", rname, "] unmapped (no k-mer hits): ", unmapped_iv, " interval(s), ", unmapped_bp, " bp");
 }
 
-void Detector::run(std::ostream& out, ThreadPool& pool)
+void Detector::run(std::ostream& out,
+                  ThreadPool& pool,
+                  const vec<dpoint_t>& rev_rows,
+                  const double lr_th,
+                  const double min_portion)
 {
-  const lshf_sptr_t lshf = sketch->get_lshf_sptr();
   // Scalar LLH for the threshold screen and the per-interval estimates.
-  const LLH<double> llhf(lshf->get_k(), lshf->get_h(), sketch->get_rho(), hdist_th, 0.0, false);
+  const LLH<double> llhf(sketch.get_k(), sketch.get_h(), sketch.get_rho(), hdist_th, 0.0, false);
 
-  // Pass 1: sample background windows. Counts are kept so that a representative
-  // window per fit can feed the threshold screen.
+  // Sample background windows; keep counts for the threshold screen.
   DistanceSampler sampler(sketch, batch_v, tau, bin_shift, hdist_th);
   if (per_sequence)
     sampler.run_per_sequence(sample_size, true, pool);
@@ -755,7 +753,35 @@ void Detector::run(std::ostream& out, ThreadPool& pool)
   vvec<double> d_per_seq(batch_v.size());
   sampler.collect_distances(d_per_seq);
 
-  const vec<thcfg_t> sets = plan(sampler, d_per_seq, llhf);
+  // Gamma null: one-directional, or reconciled when a reverse sample is given.
+  vvec<double> fit_v;
+  if (rev_rows.empty()) {
+    if (per_sequence) {
+      fit_v = d_per_seq;
+    } else {
+      fit_v.emplace_back();
+      for (const auto& d_v : d_per_seq)
+        fit_v.front().insert(fit_v.front().end(), d_v.begin(), d_v.end());
+    }
+  } else if (per_sequence) {
+    // Reverse sample is genome-level; every sequence reconciles against it.
+    vec<vec<dpoint_t>> rows_per_seq(batch_v.size());
+    sampler.collect_samples(rows_per_seq);
+    fit_v.resize(batch_v.size());
+    for (size_t bix = 0; bix < batch_v.size(); ++bix) {
+      const sym_est_t est =
+        sym_estimate(sym_merge(rows_per_seq[bix], rev_rows), lr_th, min_portion);
+      fit_v[bix] = est.null_d_v;
+    }
+  } else {
+    vec<dpoint_t> fwd_rows;
+    sampler.collect_samples(fwd_rows);
+    const sym_est_t est = sym_estimate(sym_merge(std::move(fwd_rows), rev_rows), lr_th, min_portion);
+    sym_distance = est.distance;
+    fit_v.push_back(est.null_d_v);
+  }
+
+  const vec<thcfg_t> sets = plan(sampler, d_per_seq, fit_v, llhf);
 
   // Pass 2: extract outlier intervals per threshold.
   size_t max_lanes = 0;
@@ -791,6 +817,23 @@ DetectSC::DetectSC(CLI::App& sc)
   sc.add_option("--levels", levels, "Two-sided confidence level(s) - provide exactly 1 or 4 values [0.05 0.01 0.001 0.0001]")
     ->expected(1, 4);
   sc.add_flag("--per-sequence", per_sequence, "Fit and sample the background per query sequence [per-sketch]");
+  sc.add_flag("--symmetric,!--no-symmetric",
+              symmetric,
+              "Build the background null from both directions (default) or from the query side only");
+  sc.add_option("--lr-th", lr_th, "Likelihood-ratio cut for the symmetric reconciliation filter [3.841]")
+    ->check(CLI::NonNegativeNumber);
+  sc.add_option("--min-portion",
+                min_portion,
+                "Use the filtered null only if this fraction of windows survives --lr-th [0.66]")
+    ->check(CLI::Range(0.0, 1.0));
+  sc.add_flag("--low-memory",
+              low_memory,
+              "Derive interval extrema on the fly instead of precomputing them: "
+              "two fewer whole-query arrays, at some time cost");
+  sc.add_option("--batch-bases",
+                batch_bases,
+                "Query bases held in memory at once; 0 loads the whole query [0]")
+    ->check(CLI::NonNegativeNumber);
   sc.add_option("--fit-quantiles", fit_quantiles, "Three central quantile probabilities for the gamma fit [0.2 0.4 0.6]")
     ->expected(3);
   sc.add_option("--verbosity", verbosity, "Statistics and report detail level (0-3) [1]")->check(CLI::Range(0, 3));
@@ -856,29 +899,61 @@ void DetectSC::detect()
 {
   set_precision(*output_stream, 5);
 
-  qseq_sptr_t qs = std::make_shared<QSeq>(target_path);
-  while (qs->read_next_batch()) {
+  QSeq qs(target_path, batch_bases ? batch_bases : std::numeric_limits<uint64_t>::max());
+  while (qs.read_next_batch()) {
   }
-  const auto& batch_v = qs->get_batch_v();
+  const vec<qseq_t>& batch_v = qs.get_batch_v();
 
-  const vec<uint64_t> sketch_offsets = read_sketch_offsets(sketch_path);
-  const uint32_t nsketches = static_cast<uint32_t>(sketch_offsets.size());
+  const SketchFile file(sketch_path);
+  const uint32_t nsketches = file.size();
+  const sketch_config_t& cfg = file.get_config();
 
   ThreadPool pool(num_threads);
-  cerr_msg("Processing ", nsketches, " sketches w/ ", pool.size(), " thread(s)...");
+  cerr_msg("Processing ", nsketches, " sketch(es) w/ ", pool.size(), " thread(s)...");
 
   init_thread_rng(1);
 
-  std::ifstream sin(sketch_path, std::ifstream::binary);
-  check_fstream(sin, "Cannot open sketch file for reading", sketch_path.string());
+  // Reverse null: reference windows vs one in-memory sketch of the query.
+  Sketch query_sketch;
+  if (symmetric) {
+    if (cfg.tau == 0) {
+      error_exit("Symmetric detection needs stored reference windows; re-sketch with -l or pass --no-symmetric");
+    }
+    const lshf_sptr_t lshf = std::make_shared<LSHF>(cfg.ppos, cfg.npos);
+    built_sketch_t built = build_buckets(target_path, lshf, cfg.w, cfg.nrows, cfg.canonical);
+    query_sketch = Sketch(cfg,
+                          std::filesystem::path(target_path).filename().string(),
+                          std::move(built.buckets),
+                          built.nkmers,
+                          built.rho);
+    if (per_sequence) {
+      warn_msg("--per-sequence with symmetric detection: the reverse sample is genome-level, "
+               "so every sequence is reconciled against the same one");
+    }
+  }
 
   for (uint32_t i = 0; i < nsketches; ++i) {
-    sketch_sptr_t sketch = std::make_shared<Sketch>(sketch_path);
-    sketch->load_from_offset(sin, sketch_offsets[i]);
-    Detector detector(
-      sketch, batch_v, tau, bin_shift, hdist_th, chisq, sample_size, levels, fit_quantiles, per_sequence, verbosity);
-    detector.run(*output_stream, pool);
+    const Sketch sketch = file.open(i, symmetric ? SketchPart::All : SketchPart::Buckets);
+    vec<dpoint_t> rev_rows;
+    if (symmetric) {
+      rev_rows = run_direction(sketch, query_sketch, "ba", hdist_th, cfg.tau, false).rows;
+    }
+    Detector detector(sketch,
+                      batch_v,
+                      tau,
+                      bin_shift,
+                      hdist_th,
+                      chisq,
+                      sample_size,
+                      levels,
+                      fit_quantiles,
+                      per_sequence,
+                      low_memory,
+                      verbosity);
+    detector.run(*output_stream, pool, rev_rows, lr_th, min_portion);
 
+    const record_entry_t& e = file.get_index().records[i];
+    file.advise(e.offset, e.len, MADV_DONTNEED);
     if (verbosity >= 1) {
       std::cerr << "\rProcessed sketch " << i + 1 << "/" << nsketches << "..." << std::flush;
       if (i + 1 == nsketches) std::cerr << std::endl;

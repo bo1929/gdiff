@@ -7,9 +7,7 @@
   #include <immintrin.h>
 #endif
 
-// Branchless bit compaction via a precomputed delta-swap network.
-// (Hacker's Delight "compress", generalized to 64 bits).
-// Applies the same transformation as PEXT for a fixed mask.
+// Branchless bit compaction (Hacker's Delight compress / PEXT for a fixed mask).
 inline uint64_t compress_mv(uint64_t x, const arr<uint64_t, 6>& mv)
 {
   uint64_t t;

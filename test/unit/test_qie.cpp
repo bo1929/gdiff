@@ -11,25 +11,25 @@
 
 static const std::string TEST_DIR = "test/";
 static const std::string GENOMES_DIR = TEST_DIR + "genomes/";
-static const std::string SKETCHES_DIR_A = TEST_DIR + "sketches/";  // strand-aware
-static const std::string SKETCHES_DIR_B = TEST_DIR + "sketches2/"; // strand-agnostic
+static const std::string SKETCHES_DIR_A = TEST_DIR + "sketches-saware/";  // strand-aware
+static const std::string SKETCHES_DIR_B = TEST_DIR + "sketches-sagnostic/"; // strand-agnostic
 
 // Strand-aware output: 19 columns (18 tabs); trailing three are info/lr_bg/lr_ub
 static constexpr int k_sa_cols = 19;
 static constexpr int k_sa_tabs = 18;
-static constexpr int k_sa_seq_len = 1;
-static constexpr int k_sa_interval_start = 2;
-static constexpr int k_sa_interval_end = 3;
+static constexpr int k_sa_len = 1;
+static constexpr int k_sa_start = 2;
+static constexpr int k_sa_end = 3;
 static constexpr int k_sa_strand = 4;
-static constexpr int k_sa_is_rc = 5;
+static constexpr int k_sa_rc = 5;
 static constexpr int k_sa_dist = 7;
 static constexpr int k_sa_mask = 8;
-static constexpr int k_sa_strand_diff = 11;
+static constexpr int k_sa_diff = 11;
 static constexpr int k_sa_percentile = 13;
 static constexpr int k_sa_qvalue = 15;
 static constexpr int k_sa_info = 16;
-static constexpr int k_sa_lr_bg = 17;
-static constexpr int k_sa_lr_ub = 18;
+static constexpr int k_sa_lrb = 17;
+static constexpr int k_sa_lru = 18;
 
 // Strand-agnostic output: 16 columns (15 tabs); trailing three are info/lr_bg/lr_ub
 static constexpr int k_ag_cols = 16;
@@ -92,7 +92,7 @@ static bool token_is_nan(const std::string& tok)
 
 struct qie_fixture_t
 {
-  sketch_sptr_t sketch;
+  Sketch sketch;
   qseq_sptr_t qs;
 
   static qie_fixture_t load(const std::string& ref_name, const std::string& query_name, bool strand_aware)
@@ -108,17 +108,12 @@ struct qie_fixture_t
       }
     }
 
-    const std::string sketch_path = sdir + ref_name + ".skc";
-    std::ifstream sketch_stream(sketch_path, std::ifstream::binary);
-    uint32_t nsketches = 0;
-    sketch_stream.read(reinterpret_cast<char*>(&nsketches), sizeof(uint32_t));
-
     qie_fixture_t fx;
-    fx.sketch = std::make_shared<Sketch>(sketch_path);
-    fx.sketch->load_from_offset(sketch_stream, 0);
-    sketch_stream.close();
+    // Sketch keeps the mapping alive; SketchFile is only needed for open().
+    fx.sketch = SketchFile(sdir + ref_name + ".skc").open(0);
 
-    fx.qs = std::make_shared<QSeq>(GENOMES_DIR + query_name + ".fna.gz");
+    // One batch holding the whole query.
+    fx.qs = std::make_shared<QSeq>(GENOMES_DIR + query_name + ".fna.gz", UINT64_MAX);
     while (fx.qs->read_next_batch()) {}
     return fx;
   }
@@ -126,10 +121,10 @@ struct qie_fixture_t
 
 static std::string run_qie(const qie_fixture_t& fx, params_t<double> params)
 {
-  params.canonical = fx.sketch->is_canonical();
-  QIE<double> qie(params, fx.sketch, fx.sketch->get_lshf_sptr(), fx.qs->get_batch_v());
+  params.canonical = fx.sketch.is_canonical();
+  QIE<double> qie(params, fx.sketch, fx.sketch.get_lshf_sptr(), fx.qs->get_batch_v());
   std::ostringstream sout;
-  qie.map_sequences(sout, fx.sketch->get_rname());
+  qie.map_sequences(sout, fx.sketch.get_rname());
   return sout.str();
 }
 
@@ -183,24 +178,7 @@ static bool all_dist_nan(const std::string& s, int dist_col, int cols)
   return true;
 }
 
-static bool has_background_gap_sa(const std::string& s)
-{
-  std::istringstream iss(s);
-  std::string line;
-  while (std::getline(iss, line)) {
-    if (line.empty()) continue;
-    const auto fields = split_tsv(line);
-    if (static_cast<int>(fields.size()) != k_sa_cols) continue;
-    if (fields[k_sa_mask] == "0") {
-      const bool is_full_query =
-        (fields[k_sa_interval_start] == "1") && (fields[k_sa_interval_end] == fields[k_sa_seq_len]);
-      if (!is_full_query) return true;
-    }
-  }
-  return false;
-}
-
-static bool has_background_gap_ag(const std::string& s)
+static bool has_gap_ag(const std::string& s)
 {
   std::istringstream iss(s);
   std::string line;
@@ -216,7 +194,7 @@ static bool has_background_gap_ag(const std::string& s)
   return false;
 }
 
-static void check_ag_column_contract(const std::string& output, const std::string& ref_name)
+static void check_ag_cols(const std::string& output, const std::string& ref_name)
 {
   std::istringstream iss(output);
   std::string line;
@@ -311,7 +289,7 @@ TEST_CASE("known pair: three operating modes, strand-aware" * doctest::skip(!tes
       if (static_cast<int>(fields.size()) != k_sa_cols) continue;
       if (fields[k_sa_mask] == "0") {
         const bool is_full_query =
-          (fields[k_sa_interval_start] == "1") && (fields[k_sa_interval_end] == fields[k_sa_seq_len]);
+          (fields[k_sa_start] == "1") && (fields[k_sa_end] == fields[k_sa_len]);
         if (!is_full_query) return true;
       }
     }
@@ -358,7 +336,7 @@ TEST_CASE("known pair: three operating modes, strand-aware" * doctest::skip(!tes
       if (line.empty()) continue;
       const auto fields = split_tsv(line);
       if (static_cast<int>(fields.size()) != k_sa_cols) continue;
-      CHECK((fields[k_sa_is_rc] == "0" || fields[k_sa_is_rc] == "1"));
+      CHECK((fields[k_sa_rc] == "0" || fields[k_sa_rc] == "1"));
     }
   };
 
@@ -370,11 +348,11 @@ TEST_CASE("known pair: three operating modes, strand-aware" * doctest::skip(!tes
   CHECK(any_finite_col(out_cont, k_sa_percentile));
   CHECK(any_finite_col(out_enum, k_sa_qvalue));
   CHECK(any_finite_col(out_cont, k_sa_qvalue));
-  CHECK(any_finite_col(out_enum, k_sa_strand_diff));
-  CHECK(any_finite_col(out_cont, k_sa_strand_diff));
+  CHECK(any_finite_col(out_enum, k_sa_diff));
+  CHECK(any_finite_col(out_cont, k_sa_diff));
   CHECK(any_finite_col(out_cont, k_sa_info));
-  CHECK(any_finite_col(out_cont, k_sa_lr_bg));
-  CHECK(any_finite_col(out_cont, k_sa_lr_ub));
+  CHECK(any_finite_col(out_cont, k_sa_lrb));
+  CHECK(any_finite_col(out_cont, k_sa_lru));
 
   // Continuous mode only emits interval records (no background gaps).
   CHECK_FALSE(has_background_gap(out_cont));
@@ -389,7 +367,7 @@ TEST_CASE("known pair: three operating modes, strand-aware" * doctest::skip(!tes
 TEST_CASE("known pair: three operating modes, strand-agnostic" * doctest::skip(!test_data_available())) {
   const auto fx = qie_fixture_t::load("G000341695", "G000025025", false);
   REQUIRE(!fx.qs->is_empty());
-  REQUIRE(fx.sketch->is_canonical());
+  REQUIRE(fx.sketch.is_canonical());
 
   const params_t<double> p_lite(0.1, 4, 9900, 10000.0, 0, 0, true, true);
   const params_t<double> p_enum_test(0.1, 4, 9900, 10000.0, 0, 200, true, true);
@@ -406,8 +384,8 @@ TEST_CASE("known pair: three operating modes, strand-agnostic" * doctest::skip(!
   check_output_shape(out_lite, false);
   check_output_shape(out_enum, false);
   check_output_shape(out_cont, false);
-  check_ag_column_contract(out_cont, "G000341695");
-  check_ag_column_contract(out_enum, "G000341695");
+  check_ag_cols(out_cont, "G000341695");
+  check_ag_cols(out_enum, "G000341695");
 
   CHECK(all_dist_nan(out_lite, k_ag_dist, k_ag_cols));
   CHECK(any_finite_col(out_enum, k_ag_dist, k_ag_cols));
@@ -417,8 +395,8 @@ TEST_CASE("known pair: three operating modes, strand-agnostic" * doctest::skip(!
   CHECK(any_finite_col(out_enum, k_ag_qvalue, k_ag_cols));
   CHECK(any_finite_col(out_cont, k_ag_qvalue, k_ag_cols));
 
-  CHECK_FALSE(has_background_gap_ag(out_cont));
-  CHECK_FALSE(has_background_gap_ag(out_lite));
+  CHECK_FALSE(has_gap_ag(out_cont));
+  CHECK_FALSE(has_gap_ag(out_lite));
 
   const int n_lite = count_lines(out_lite);
   const int n_cont = count_lines(out_cont);
@@ -428,7 +406,7 @@ TEST_CASE("known pair: three operating modes, strand-agnostic" * doctest::skip(!
 TEST_CASE("strand-agnostic mode shape and significance" * doctest::skip(!test_data_available())) {
   const auto fx = qie_fixture_t::load("G000341695", "G000025025", false);
   REQUIRE(!fx.qs->is_empty());
-  REQUIRE(fx.sketch->is_canonical());
+  REQUIRE(fx.sketch.is_canonical());
 
   const params_t<double> p_cont(0.1, 4, 9900, 33.0, 0, 200, true, false);
   const params_t<double> p_enum(0.1, 4, 9900, 10000.0, 0, 200, true, true);
@@ -458,7 +436,7 @@ TEST_CASE("strand-agnostic mode shape and significance" * doctest::skip(!test_da
 }
 
 TEST_CASE("SA vs AG same pair both produce output" * doctest::skip(!test_data_available())) {
-  const auto fx_sa = qie_fixture_t::load("G000341695", "G000025025", true);
+  auto fx_sa = qie_fixture_t::load("G000341695", "G000025025", true);
   const auto fx_ag = qie_fixture_t::load("G000341695", "G000025025", false);
   REQUIRE(!fx_sa.qs->is_empty());
   REQUIRE(!fx_ag.qs->is_empty());
@@ -482,11 +460,11 @@ TEST_CASE("QIE with multiple thresholds (cm512_t), strand-aware" * doctest::skip
   dths[4] = 0.25; dths[5] = 0.30; dths[6] = 0.35; dths[7] = 0.40;
 
   params_t<cm512_t> params(dths, 4, 9900, 10000.0, 0, 200, true, true);
-  params.canonical = fx.sketch->is_canonical();
-  QIE<cm512_t> qie(params, fx.sketch, fx.sketch->get_lshf_sptr(), fx.qs->get_batch_v());
+  params.canonical = fx.sketch.is_canonical();
+  QIE<cm512_t> qie(params, fx.sketch, fx.sketch.get_lshf_sptr(), fx.qs->get_batch_v());
 
   std::ostringstream sout;
-  qie.map_sequences(sout, fx.sketch->get_rname());
+  qie.map_sequences(sout, fx.sketch.get_rname());
   const std::string output = sout.str();
 
   CHECK(!output.empty());
@@ -496,18 +474,18 @@ TEST_CASE("QIE with multiple thresholds (cm512_t), strand-aware" * doctest::skip
 TEST_CASE("QIE with multiple thresholds (cm512_t), strand-agnostic" * doctest::skip(!test_data_available())) {
   const auto fx = qie_fixture_t::load("G000341695", "G000025025", false);
   REQUIRE(!fx.qs->is_empty());
-  REQUIRE(fx.sketch->is_canonical());
+  REQUIRE(fx.sketch.is_canonical());
 
   cm512_t dths{};
   dths[0] = 0.05; dths[1] = 0.10; dths[2] = 0.15; dths[3] = 0.20;
   dths[4] = 0.25; dths[5] = 0.30; dths[6] = 0.35; dths[7] = 0.40;
 
   params_t<cm512_t> params(dths, 4, 9900, 10000.0, 0, 200, true, true);
-  params.canonical = fx.sketch->is_canonical();
-  QIE<cm512_t> qie(params, fx.sketch, fx.sketch->get_lshf_sptr(), fx.qs->get_batch_v());
+  params.canonical = fx.sketch.is_canonical();
+  QIE<cm512_t> qie(params, fx.sketch, fx.sketch.get_lshf_sptr(), fx.qs->get_batch_v());
 
   std::ostringstream sout;
-  qie.map_sequences(sout, fx.sketch->get_rname());
+  qie.map_sequences(sout, fx.sketch.get_rname());
   const std::string output = sout.str();
 
   CHECK(!output.empty());
@@ -515,24 +493,26 @@ TEST_CASE("QIE with multiple thresholds (cm512_t), strand-agnostic" * doctest::s
 }
 
 TEST_CASE("canonicalize matches strand-agnostic sketch" * doctest::skip(!test_data_available())) {
-  const auto fx_sa = qie_fixture_t::load("G000341695", "G000025025", true);
+  auto fx_sa = qie_fixture_t::load("G000341695", "G000025025", true);
   const auto fx_ag = qie_fixture_t::load("G000341695", "G000025025", false);
 
-  REQUIRE_FALSE(fx_sa.sketch->is_canonical());
-  CHECK(fx_ag.sketch->is_canonical());
+  REQUIRE_FALSE(fx_sa.sketch.is_canonical());
+  CHECK(fx_ag.sketch.is_canonical());
 
-  fx_sa.sketch->canonicalize();
-  CHECK(fx_sa.sketch->is_canonical());
+  fx_sa.sketch.canonicalize();
+  CHECK(fx_sa.sketch.is_canonical());
 
-  const auto sa = fx_sa.sketch->get_sfhm_sptr();
-  const auto ag = fx_ag.sketch->get_sfhm_sptr();
-  REQUIRE(sa->get_nrows() == ag->get_nrows());
-  REQUIRE(sa->get_nkmers() == ag->get_nkmers());
-  for (uint32_t rix = 0; rix < ag->get_nrows(); ++rix) {
-    const enc_t* a1 = sa->bucket_ptr_start(rix);
-    const enc_t* a2 = sa->bucket_ptr_next(rix);
-    const enc_t* b1 = ag->bucket_ptr_start(rix);
-    const enc_t* b2 = ag->bucket_ptr_next(rix);
+  const Buckets& sa = fx_sa.sketch.get_buckets();
+  const Buckets& ag = fx_ag.sketch.get_buckets();
+  REQUIRE(sa.get_nrows() == ag.get_nrows());
+  REQUIRE(sa.get_nkmers() == ag.get_nkmers());
+  REQUIRE(sa.get_nnonempty() == ag.get_nnonempty());
+  for (uint32_t rix = 0; rix < ag.get_nrows(); ++rix) {
+    const enc_t *a1 = nullptr, *a2 = nullptr, *b1 = nullptr, *b2 = nullptr;
+    const bool sa_has = sa.range(rix, a1, a2);
+    const bool ag_has = ag.range(rix, b1, b2);
+    REQUIRE(sa_has == ag_has);
+    if (!ag_has) continue;
     CHECK((a2 - a1) == (b2 - b1));
     for (; a1 < a2; ++a1, ++b1) CHECK(*a1 == *b1);
   }

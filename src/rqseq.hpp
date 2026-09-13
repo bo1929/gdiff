@@ -63,11 +63,15 @@ extern "C"
 #include "kseq.h"
 }
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-compare"
+#pragma GCC diagnostic ignored "-Wunused-function"
 KSEQ_INIT(gzFile, gzread)
+#pragma GCC diagnostic pop
 
 struct hmer_t
 {
-  uint64_t x, y, z;
+  uint64_t x = 0, y = 0, z = 0;
 };
 
 class RSeq : public HandlerURL
@@ -77,10 +81,12 @@ public:
   ~RSeq();
   bool set_curr_seq();
   bool read_next_seq();
-  double get_cardinality() const;
-  double get_rho() const;
-  template<typename T>
-  void extract_mers(vvec<T>& table);
+  // HLL estimate of the number of distinct canonical k-mers seen so far.
+  [[nodiscard]] double get_card_est() const { return csk.estimate(); }
+  [[nodiscard]] const char* get_name() const { return name; }
+  [[nodiscard]] uint64_t get_len() const { return len; }
+  // Append the selected minimizers of the current sequence as packed keys.
+  void extract_mers(vec<uint64_t>& keys);
 
 private:
   gzFile gfile;
@@ -90,14 +96,13 @@ private:
   uint8_t w;
   uint32_t frac_th;
   bool canonical;
-  char* cseq;
-  char* name;
-  uint64_t len;
+  char* cseq = nullptr;
+  char* name = nullptr;
+  uint64_t len = 0;
   lshf_sptr_t lshf;
   uint64_t mask_bp = 0;
   uint64_t mask_lr = 0;
   hll::HyperLogLog csk;
-  hll::HyperLogLog isk;
   std::filesystem::path input_path;
 };
 
@@ -108,11 +113,14 @@ struct qseq_t
   str seq;
 };
 
+constexpr uint64_t qseq_bpmax_default = uint64_t(64) << 20;
+
 class QSeq : public HandlerURL
 {
 public:
-  QSeq(const str& input);
+  explicit QSeq(const str& input, uint64_t max_batch_bases = qseq_bpmax_default);
   ~QSeq();
+  // Append up to one batch of sequences; false once the input is exhausted.
   bool read_next_batch();
   void clear();
   bool is_empty();
@@ -126,6 +134,7 @@ private:
   vec<qseq_t> batch_v;
   uint64_t cbatch_size = 0;
   uint64_t rbatch_size = 512;
+  uint64_t max_batch_bases;
   std::filesystem::path input_path;
 };
 

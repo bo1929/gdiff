@@ -46,10 +46,20 @@ inline char report_strand(const bool is_rc, const double d_diff) noexcept
 
 inline bool is_valid_distance(const double d) noexcept { return std::isfinite(d) && d >= d_lb && d < d_ub - eps; }
 
+// Linear-interpolation quantile of a sorted vector; NaN when empty.
+inline double linear_quantile(const vec<double>& v, const double p)
+{
+  if (v.empty()) return nanx();
+  if (v.size() == 1) return v.front();
+  const double ix = p * static_cast<double>(v.size() - 1);
+  const size_t lo = static_cast<size_t>(std::floor(ix));
+  const size_t hi = static_cast<size_t>(std::ceil(ix));
+  return v[lo] + (ix - static_cast<double>(lo)) * (v[hi] - v[lo]);
+}
+
 inline double validate_distance(const double d) noexcept { return is_valid_distance(d) ? d : nanx(); }
 
-// Per-window HD counts (single strand / canonical): scan aggregator and
-// DIM/HDHist extract sink. No fw/rc split.
+// Per-window HD counts (canonical / one strand). No fw/rc split.
 struct window_counts_t
 {
   vec<uint64_t> hist_v;
@@ -212,8 +222,7 @@ struct record_t
   }
 };
 
-// Breakpoints of an extracted interval
-// 1-based half-open bin range [a_bin, b_bin) with the threshold that covers it.
+// 1-based half-open bin range [a_bin, b_bin) plus the covering threshold.
 struct bp_t
 {
   uint64_t a_bin;
@@ -222,9 +231,6 @@ struct bp_t
 };
 
 // 1-based inclusive bp coordinates of the bin range [bin_iv.a, bin_iv.b).
-// The end always covers the full span of the last k-mer: bins [a, b) cover mer
-// starts [(a-1)<<bin_shift, (b-1)<<bin_shift), so the last covered mer starts
-// at ((b-1)<<bin_shift)-1 and its k-mer ends at min((b-1)<<bin_shift, enmers)+k-1.
 inline interval_t get_coordinates(const interval_t& bin_iv, uint64_t bin_shift, uint64_t enmers, uint32_t k)
 {
   const uint64_t a = ((bin_iv.a - 1) << bin_shift) + 1;

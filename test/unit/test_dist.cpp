@@ -22,7 +22,7 @@ static llh_sptr_t<double> make_map_llhf()
   return std::make_shared<LLH<double>>(27, 11, 0.5, 4, 0.1);
 }
 
-static void inject_hits_all_bins(DIM<double>& dim, uint64_t nbins, uint32_t hdist = 0, int reps = 4)
+static void inject_hits(DIM<double>& dim, uint64_t nbins, uint32_t hdist = 0, int reps = 4)
 {
   for (uint64_t i = 0; i < nbins; ++i) {
     for (int r = 0; r < reps; ++r) {
@@ -36,52 +36,26 @@ static void sample_background(DIM<double>& dim, vec<sample_t>& out, uint64_t nwi
   out = dim.sample_random_intervals(nwin_bins, bix);
 }
 
-// Minimal sketch file (same layout as test_sketch.cpp) for DistanceSampler tests.
-static sketch_sptr_t load_tiny_sketch(bool canonical = true)
+// Tiny sketch: one encoding in each of the first three buckets of a 4-row table.
+static Sketch make_tiny_sketch(bool canonical = true)
 {
-  const auto path = std::filesystem::temp_directory_path() / "test_distance_sampler.skc";
-  const uint8_t k = 27, w = 33, h = 11;
-  auto lshf_obj = std::make_shared<LSHF>(k, h);
-  auto ppos = lshf_obj->get_ppos_v();
-  auto npos = lshf_obj->get_npos_v();
+  const uint8_t k = 27, h = 11;
+  LSHF lshf(k, h);
 
-  {
-    std::ofstream sout(path, std::ofstream::binary);
-    uint32_t nsketches = 1;
-    sout.write(reinterpret_cast<const char*>(&nsketches), sizeof(uint32_t));
-    const str rid = "tiny.skc";
-    uint64_t rid_len = rid.size();
-    sout.write(reinterpret_cast<const char*>(&rid_len), sizeof(uint64_t));
-    sout.write(rid.data(), rid_len);
-    uint64_t timestamp = 1;
-    sout.write(reinterpret_cast<const char*>(&timestamp), sizeof(uint64_t));
-    sout.write(reinterpret_cast<const char*>(&k), sizeof(uint8_t));
-    sout.write(reinterpret_cast<const char*>(&w), sizeof(uint8_t));
-    sout.write(reinterpret_cast<const char*>(&h), sizeof(uint8_t));
-    sout.write(reinterpret_cast<const char*>(&canonical), sizeof(bool));
-    uint32_t nrows = 4;
-    sout.write(reinterpret_cast<const char*>(&nrows), sizeof(uint32_t));
-    sout.write(reinterpret_cast<const char*>(ppos.data()), h * sizeof(uint8_t));
-    sout.write(reinterpret_cast<const char*>(npos.data()), (k - h) * sizeof(uint8_t));
-    double rho = 0.8;
-    sout.write(reinterpret_cast<const char*>(&rho), sizeof(double));
-    uint64_t nkmers = 3;
-    sout.write(reinterpret_cast<const char*>(&nkmers), sizeof(uint64_t));
-    enc_t enc_data[3] = {100, 200, 300};
-    sout.write(reinterpret_cast<const char*>(enc_data), 3 * sizeof(enc_t));
-    sout.write(reinterpret_cast<const char*>(&nrows), sizeof(uint32_t));
-    inc_t inc_data[4] = {1, 2, 3, 3};
-    sout.write(reinterpret_cast<const char*>(inc_data), 4 * sizeof(inc_t));
-  }
+  sketch_config_t cfg;
+  cfg.k = k;
+  cfg.w = 33;
+  cfg.h = h;
+  cfg.canonical = canonical;
+  cfg.nrows = 4;
+  cfg.ppos = lshf.get_ppos_v();
+  cfg.npos = lshf.get_npos_v();
 
-  auto sketch = std::make_shared<Sketch>(path);
-  std::ifstream stream(path, std::ifstream::binary);
-  uint32_t ns = 0;
-  stream.read(reinterpret_cast<char*>(&ns), sizeof(uint32_t));
-  sketch->load_from_offset(stream, static_cast<uint64_t>(stream.tellg()));
-  stream.close();
-  std::filesystem::remove(path);
-  return sketch;
+  vec<uint64_t> keys{pack_key(0, 100), pack_key(1, 200), pack_key(2, 300)};
+  Buckets buckets;
+  buckets.build(cfg.nrows, std::move(keys));
+
+  return Sketch(cfg, "tiny", std::move(buckets), 3, 0.8);
 }
 
 } // namespace
@@ -95,7 +69,7 @@ TEST_CASE("sample_random_intervals collects windows from hit-rich query") {
   auto params = make_params(20);
   auto llhf = make_map_llhf();
   DIM<double> dim(params, llhf, 64, 64);
-  inject_hits_all_bins(dim, 64);
+  inject_hits(dim, 64);
   dim.compute_prefhistsum();
 
   vec<sample_t> bg_samples;
@@ -129,7 +103,7 @@ TEST_CASE("sample_random_intervals returns distinct exact-length windows") {
   auto params = make_params(20);
   auto llhf = make_map_llhf();
   DIM<double> dim(params, llhf, 32, 32);
-  inject_hits_all_bins(dim, 32);
+  inject_hits(dim, 32);
   dim.compute_prefhistsum();
 
   vec<sample_t> bg_samples;
@@ -147,7 +121,7 @@ TEST_CASE("sample_random_intervals skips when window exceeds query bins") {
   auto params = make_params(20);
   auto llhf = make_map_llhf();
   DIM<double> dim(params, llhf, 2, 2);
-  inject_hits_all_bins(dim, 2, 0, 2);
+  inject_hits(dim, 2, 0, 2);
   dim.compute_prefhistsum();
 
   vec<sample_t> bg_samples;
@@ -161,7 +135,7 @@ TEST_CASE("sample_random_intervals excludes windows crossing skipped bins") {
 
   auto params = make_params(64);
   DIM<double> dim(params, make_map_llhf(), 16, 16);
-  inject_hits_all_bins(dim, 16);
+  inject_hits(dim, 16);
   dim.skip_mer(7);
   dim.compute_prefhistsum();
 
@@ -179,7 +153,7 @@ TEST_CASE("test_significance scores a single record") {
   auto params = make_params(20);
   auto llhf = make_map_llhf();
   DIM<double> dim(params, llhf, 64, 64);
-  inject_hits_all_bins(dim, 64);
+  inject_hits(dim, 64);
   dim.compute_prefhistsum();
 
   vec<sample_t> bg_samples;
@@ -212,7 +186,7 @@ TEST_CASE("benjamini_hochberg_correction assigns qvalues per strand") {
   auto params = make_params(20);
   auto llhf = make_map_llhf();
   DIM<double> dim(params, llhf, 64, 64);
-  inject_hits_all_bins(dim, 64);
+  inject_hits(dim, 64);
   dim.compute_prefhistsum();
 
   vec<sample_t> bg_samples;
@@ -251,7 +225,7 @@ TEST_CASE("overlapping background windows on same query are excluded from scorin
   auto params = make_params(20);
   auto llhf = make_map_llhf();
   DIM<double> dim(params, llhf, 64, 64);
-  inject_hits_all_bins(dim, 64);
+  inject_hits(dim, 64);
   dim.compute_prefhistsum();
 
   vec<sample_t> bg_samples;
@@ -426,7 +400,7 @@ TEST_CASE("canonical records use one-sided test when d_diff is NaN") {
   auto params = make_params(20);
   auto llhf = make_map_llhf();
   DIM<double> dim(params, llhf, 64, 64);
-  inject_hits_all_bins(dim, 64);
+  inject_hits(dim, 64);
   dim.compute_prefhistsum();
 
   vec<sample_t> bg_samples;
@@ -457,7 +431,7 @@ TEST_CASE("reference strand d_diff zero uses two-sided test") {
   auto params = make_params(20);
   auto llhf = make_map_llhf();
   DIM<double> dim(params, llhf, 64, 64);
-  inject_hits_all_bins(dim, 64);
+  inject_hits(dim, 64);
   dim.compute_prefhistsum();
 
   vec<sample_t> bg_samples;
@@ -485,7 +459,7 @@ TEST_CASE("query strand uses one-sided test") {
   auto params = make_params(20);
   auto llhf = make_map_llhf();
   DIM<double> dim(params, llhf, 64, 64);
-  inject_hits_all_bins(dim, 64);
+  inject_hits(dim, 64);
   dim.compute_prefhistsum();
 
   vec<sample_t> bg_samples;
@@ -542,8 +516,8 @@ TEST_CASE("samples each valid start at most once and keeps finite distances") {
   seed = 42;
   init_thread_rng(0);
 
-  const sketch_sptr_t sketch = load_tiny_sketch(true);
-  const uint32_t k = sketch->get_lshf_sptr()->get_k();
+  const Sketch sketch = make_tiny_sketch(true);
+  const uint32_t k = sketch.get_lshf_sptr()->get_k();
   constexpr uint64_t tau = 50;
   constexpr uint64_t sample_size = 40;
   // Long enough for full windows: L >= nwinmers + k - 1 with bin_shift=0.
@@ -586,8 +560,8 @@ TEST_CASE("skips all sequences shorter than the window") {
   seed = 1;
   init_thread_rng(0);
 
-  const sketch_sptr_t sketch = load_tiny_sketch(true);
-  const uint32_t k = sketch->get_lshf_sptr()->get_k();
+  const Sketch sketch = make_tiny_sketch(true);
+  const uint32_t k = sketch.get_lshf_sptr()->get_k();
   vec<qseq_t> batch_v{{"tiny", str(k + 5, 'A')}};
 
   ThreadPool pool(1);
@@ -604,8 +578,8 @@ TEST_CASE("bin_shift rounds window length up to whole bins") {
   seed = 2;
   init_thread_rng(0);
 
-  const sketch_sptr_t sketch = load_tiny_sketch(true);
-  const uint32_t k = sketch->get_lshf_sptr()->get_k();
+  const Sketch sketch = make_tiny_sketch(true);
+  const uint32_t k = sketch.get_lshf_sptr()->get_k();
   constexpr uint64_t tau = 50;
   constexpr uint64_t bin_shift = 2; // bin_size = 4
   // tau_bin = ceil(50/4) = 13, nwinmers = 52
@@ -630,8 +604,8 @@ TEST_CASE("per-sequence sampling applies sample_size to each eligible query") {
   seed = 8;
   init_thread_rng(0);
 
-  const sketch_sptr_t sketch = load_tiny_sketch(true);
-  const uint32_t k = sketch->get_lshf_sptr()->get_k();
+  const Sketch sketch = make_tiny_sketch(true);
+  const uint32_t k = sketch.get_lshf_sptr()->get_k();
   constexpr uint64_t tau = 30;
   constexpr uint64_t sample_size = 8;
   vec<qseq_t> batch_v{{"q0", str(tau + k + 20, 'A')}, {"q1", str(tau + k + 30, 'C')}};
@@ -651,8 +625,8 @@ TEST_CASE("canonical samples always report strand '.'") {
   seed = 3;
   init_thread_rng(0);
 
-  const sketch_sptr_t sketch = load_tiny_sketch(true);
-  const uint32_t k = sketch->get_lshf_sptr()->get_k();
+  const Sketch sketch = make_tiny_sketch(true);
+  const uint32_t k = sketch.get_lshf_sptr()->get_k();
   constexpr uint64_t tau = 40;
   vec<qseq_t> batch_v{{"q0", str(tau + k + 10, 'A')}};
 
@@ -668,8 +642,8 @@ TEST_CASE("non-canonical samples report +, -, or .") {
   seed = 4;
   init_thread_rng(0);
 
-  const sketch_sptr_t sketch = load_tiny_sketch(false);
-  const uint32_t k = sketch->get_lshf_sptr()->get_k();
+  const Sketch sketch = make_tiny_sketch(false);
+  const uint32_t k = sketch.get_lshf_sptr()->get_k();
   constexpr uint64_t tau = 40;
   vec<qseq_t> batch_v{{"q0", str(tau + k + 10, 'A')}};
 

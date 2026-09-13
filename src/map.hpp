@@ -16,7 +16,7 @@ class QIE
   static constexpr size_t WIDTH = std::is_same_v<T, double> ? 1 : RWIDTH;
 
 public:
-  QIE(const params_t<T>& params, const sketch_sptr_t& sketch, const lshf_sptr_t& lshf, const vec<qseq_t>& batch_v);
+  QIE(const params_t<T>& params, const Sketch& sketch, const lshf_sptr_t& lshf, const vec<qseq_t>& batch_v);
   void map_sequences(std::ostream& sout, const str& rname);
 
   uint64_t get_nunmapped() const { return nunmapped; }
@@ -30,7 +30,7 @@ private:
   void report_contiguous(std::ostream& sout, const str& rname) const;
 
   const params_t<T>& params;
-  const sketch_sptr_t sketch;
+  const Sketch& sketch;
   const lshf_sptr_t lshf;
   const vec<qseq_t>& batch_v;
   const uint32_t k;

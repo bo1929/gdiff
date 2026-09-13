@@ -11,14 +11,7 @@
 #include <thread>
 #include <vector>
 
-// Minimal persistent thread pool for coarse-grained parallel-for sections.
-//
-// Implementation of parallel_for(n, chunk, fn) is synchronous:
-// It invokes fn(i) exactly once for each i in [0, n) using dynamic block scheduling.
-// The return happens only after all invocations have completed.
-// Hence, the invocation is finished when no worker still references the task.
-// The calling (coordinator) thread participates in the work.
-// Not re-entrant: fn must not call parallel_for and must be driven from a coordinator thread.
+// Synchronous parallel_for: coordinator participates; fn must not re-enter.
 class ThreadPool
 {
 public:
@@ -59,10 +52,7 @@ public:
     }
     chunk = std::max<uint64_t>(chunk, 1);
 
-    // Keep fn alive for late workers: task_fn is a shared_ptr member, and each
-    // worker copies it under the lock before drain. The old pointer-to-stack
-    // design raced when the coordinator finished all indices before a worker
-    // woke and then destroyed the local std::function.
+    // Hold fn so late workers cannot see a destroyed stack function.
     auto held = std::make_shared<std::function<void(uint64_t)>>(fn);
     next.store(0, std::memory_order_relaxed);
     remaining.store(n, std::memory_order_relaxed);
@@ -76,10 +66,7 @@ public:
     }
     cv.notify_all();
     drain(n, chunk, *held);
-    // remaining == 0: every index claimed and processed.
-    // acks == nworkers: every worker has observed this generation and finished
-    // its drain (possibly a no-op). This closes the wake-after-finish race
-    // that used to leave workers dereferencing a destroyed task_fn.
+    // Wait until all indices are done and every worker has drained this generation.
     while (remaining.load(std::memory_order_acquire) != 0 || acks.load(std::memory_order_acquire) < nworkers)
       std::this_thread::yield();
   }

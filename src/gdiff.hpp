@@ -13,7 +13,7 @@
 #include "sketch.hpp"
 #include "CLI11.hpp"
 
-#define VERSION "v0.0.1"
+#define VERSION "v0.1.0"
 #define PRINT_VERSION std::cerr << "gdiff version: " << VERSION << std::endl;
 
 extern uint32_t num_threads;

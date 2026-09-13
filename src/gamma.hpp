@@ -11,8 +11,7 @@
 #include <boost/math/distributions/gamma.hpp>
 #include "stils.hpp"
 
-// Gamma distribution model.
-// Fitting uses 2D Nelder-Mead over (log shape, log scale).
+// Gamma model fitted by 2D Nelder-Mead over (log shape, log scale).
 class GammaModel
 {
 public:
@@ -86,8 +85,7 @@ public:
     return boost::math::quantile(boost::math::gamma_distribution<double, hpolicy>(shape, scale), p);
   }
 
-  // Moment-based estimate (mean^2/var, var/mean); used as a fallback when the
-  // Nelder-Mead fit fails.
+  // Moment estimate (mean^2/var, var/mean); fallback when Nelder-Mead fails.
   [[nodiscard]] static params_t moments_estimate(const std::vector<double>& x_v) { return init_from_moments(x_v); }
 
   // Drop non-finite samples and floor values below `floor` (typically d_eps).
@@ -151,8 +149,7 @@ public:
     return std::isfinite(objective) && validate_params(gp) ? gp : params_t{NaN, NaN};
   }
 
-  // Median of the latent Gamma distribution in (lower, upper) by binary
-  // search; NaN when the median is above upper or degenerate.
+  // Latent-gamma median in (lower, upper) by binary search; NaN if none.
   [[nodiscard]] static double median_from_params(const params_t& gp, double lower, double upper)
   {
     if (!validate_params(gp) || !(upper > lower)) return NaN;
@@ -233,8 +230,7 @@ private:
     return q;
   }
 
-  // Sort a 3-element simplex (S, F) so that F[0] <= F[1] <= F[2].
-  // Optimal 3-element sort network (3 conditional swaps, no branches on average).
+  // Sort a 3-element simplex so that F[0] <= F[1] <= F[2].
   static void sort3(std::array<coord_t, 3>& S, std::array<double, 3>& F)
   {
     if (F[0] > F[1]) {
@@ -251,9 +247,7 @@ private:
     }
   }
 
-  // 2D Nelder-Mead in (log shape, log scale), takes linear-space parameters.
-  // Stops when both objective spread and simplex diameter fall below tolerance.
-  // The diameter check catches flat-likelihood drift that the objective only misses.
+  // 2D Nelder-Mead in (log shape, log scale); stops on objective spread and diameter.
   template<typename Obj>
   [[nodiscard]] static params_t
   bivariate_nelder_mead(params_t p0, Obj&& obj, const Config& cfg, double* obj_out = nullptr, int* niter_out = nullptr)

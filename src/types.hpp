@@ -8,20 +8,16 @@
 #include <string>
 #include <utility>
 #include <vector>
-// #include "btree.h"
-// #include "phmap.h"
 
 #define RWIDTH 8
 
 class RSeq;
 class QSeq;
 class LSHF;
-class SDHM;
-class SFHM;
+class Buckets;
 class Sketch;
+class SketchFile;
 
-// using inc_t = uint32_t; // This might be just OK
-using inc_t = uint64_t;
 using enc_t = uint32_t;
 using str = std::string;
 using strstream = std::stringstream;
@@ -43,9 +39,6 @@ using xy_t = std::pair<double, double>;
 using rseq_sptr_t = std::shared_ptr<RSeq>;
 using qseq_sptr_t = std::shared_ptr<QSeq>;
 using lshf_sptr_t = std::shared_ptr<LSHF>;
-using sdhm_sptr_t = std::shared_ptr<SDHM>;
-using sfhm_sptr_t = std::shared_ptr<SFHM>;
-using sketch_sptr_t = std::shared_ptr<Sketch>;
 
 template<typename T, size_t WIDTH>
 using arr = std::array<T, WIDTH>;

@@ -1,66 +1,92 @@
 #ifndef _HM_HPP
 #define _HM_HPP
 
-#include <fstream>
 #include "msg.hpp"
 #include "types.hpp"
+#include <ostream>
+#include <utility>
 
-class SDHM
+inline uint64_t pack_key(uint32_t bix, enc_t enc) noexcept
 {
-  friend class SFHM;
-  friend class Sketch;
+  return (static_cast<uint64_t>(bix) << 32) | static_cast<uint64_t>(enc);
+}
 
-public:
-  void fill_table(uint32_t nrows, const rseq_sptr_t& rs);
-  void make_unique();
-  void sort_columns();
-  uint64_t get_nmers() const;
+inline uint32_t key_bix(uint64_t key) noexcept { return static_cast<uint32_t>(key >> 32); }
 
-protected:
-  uint64_t nkmers = 0;
-  vvec<enc_t> enc_vvec;
-};
+inline enc_t key_enc(uint64_t key) noexcept { return static_cast<enc_t>(key & 0xffffffffull); }
 
-class SFHM
+class Buckets
 {
-  friend class SDHM;
-
 public:
-  SFHM(const sdhm_sptr_t& source);
-  SFHM() = default;
-  ~SFHM();
-  void save(std::ostream& sketch_stream);
-  void load(std::ifstream& sketch_stream);
-  // Copy SFHM payload from a memory cursor (e.g. mmap). Advances p.
-  void load_mem(const char*& p, const char* end);
-  // Zero-copy view into an external buffer (e.g. mmap) at cursor p. Advances p.
-  // The caller must keep the underlying memory alive for the SFHM's lifetime
-  // (e.g., hold a shared_ptr<Sketch2::MappedFile>). No vectors are allocated.
-  void view_mem(const char*& p, const char* end);
-  bool is_view() const noexcept { return view_mode_; }
-  uint64_t get_nkmers() const { return nkmers; }
-  uint32_t get_nrows() const { return nrows; }
-  std::vector<enc_t>::const_iterator bucket_iter_start(uint32_t rix);
-  std::vector<enc_t>::const_iterator bucket_iter_next(uint32_t rix);
-  const enc_t* bucket_ptr_start(uint32_t rix) const noexcept;
-  const enc_t* bucket_ptr_next(uint32_t rix) const noexcept;
-  // Prefetch the inc_v cache line that holds the bucket boundaries for rix
-  void prefetch_inc(uint32_t rix) const noexcept;
-  // Requires inc_v[rix] to already be in cache (call after prefetch_inc has resolved)
-  void prefetch_enc(uint32_t rix) const noexcept;
-  // Mark bit i if bucket i is nonempty. bits must hold ceil(nbits/64) words.
-  void fill_nonempty_bitmap(uint64_t* bits, uint32_t nbits) const noexcept;
+  Buckets() = default;
+  Buckets(const Buckets&) = delete;
+  Buckets& operator=(const Buckets&) = delete;
+  Buckets(Buckets&& other) noexcept { steal(std::move(other)); }
+  Buckets& operator=(Buckets&& other) noexcept
+  {
+    if (this != &other) steal(std::move(other));
+    return *this;
+  }
+
+  void build(uint32_t nrows, vec<uint64_t>&& keys);
+  void save(std::ostream& os) const;
+  void view(const char*& p, const char* end, uint32_t nrows);
+  static const char* skip(const char* p, const char* end);
+  static uint64_t byte_size(uint64_t nkmers, uint64_t nnonempty, uint32_t nrows);
+
+  // Entry range of bucket bix; false when out of range or empty.
+  bool range(uint32_t bix, const enc_t*& beg, const enc_t*& end) const noexcept
+  {
+    if (bix >= nrows) return false;
+    const uint64_t word = bitmap[bix >> 6];
+    const uint64_t bit = uint64_t(1) << (bix & 63);
+    if (!(word & bit)) return false;
+    const uint32_t rank =
+      blockrank[bix >> 6] + static_cast<uint32_t>(__builtin_popcountll(word & (bit - 1)));
+    beg = enc + start[rank];
+    end = enc + start[rank + 1];
+    return true;
+  }
+
+  void prefetch(uint32_t bix) const noexcept
+  {
+    if (bix >= nrows) return;
+    __builtin_prefetch(&bitmap[bix >> 6], 0, 3);
+    __builtin_prefetch(&blockrank[bix >> 6], 0, 3);
+  }
+
+  bool nonempty(uint32_t bix) const noexcept
+  {
+    if (bix >= nrows) return false;
+    return (bitmap[bix >> 6] >> (bix & 63)) & 1ull;
+  }
+
+  [[nodiscard]] uint64_t get_nkmers() const noexcept { return nkmers; }
+  [[nodiscard]] uint64_t get_nnonempty() const noexcept { return nnonempty; }
+  [[nodiscard]] uint32_t get_nrows() const noexcept { return nrows; }
+  [[nodiscard]] bool empty() const noexcept { return bitmap == nullptr; }
 
 private:
-  // Inc/enc arrays are either owned (inc_v/enc_v) or a borrowed view into a
-  // live external buffer (inc_ptr/enc_ptr, view_mode_==true).
+  // Point the accessors at either the owned vectors or the borrowed buffer.
+  void bind_owned() noexcept;
+  void steal(Buckets&& other) noexcept;
+
   uint32_t nrows = 0;
   uint64_t nkmers = 0;
-  const inc_t* inc_view = nullptr;
-  const enc_t* enc_view = nullptr;
-  bool view_mode_ = false;
-  vec<inc_t> inc_v;
+  uint64_t nnonempty = 0;
+  uint64_t nblocks = 0;
+  const uint64_t* bitmap = nullptr;
+  const uint32_t* blockrank = nullptr;
+  const uint32_t* start = nullptr;
+  const enc_t* enc = nullptr;
+  // Populated by build(); empty for a borrowed view.
+  vec<uint64_t> bitmap_v;
+  vec<uint32_t> blockrank_v;
+  vec<uint32_t> start_v;
   vec<enc_t> enc_v;
 };
+
+// Pad a stream to the next 8-byte boundary so views stay naturally aligned.
+void pad_to_8(std::ostream& os);
 
 #endif

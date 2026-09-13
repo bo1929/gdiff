@@ -157,8 +157,7 @@ TEST_CASE("compute_lr_ub is near zero at the max estimable distance") {
 TEST_CASE("get_fdc sign correctness") {
   // For positive extrema, fdc should reflect the direction of the first derivative
   LLH<double> llh(27, 11, 0.5, 4, 0.1);
-  // fdc_v[d] = sign * (d - k*D) / (D*S) where D=0.1, S=0.9
-  // For d=0: sign * (0 - 27*0.1)/(0.1*0.9) = sign * (-2.7)/(0.09) = sign * (-30)
+  // fdc_v[0] at D=0.1 is sign * (-30).
   double fdc0 = llh.get_fdc(0);
   CHECK(fdc0 < 0); // Negative because 0 < k*D for d=0
 }

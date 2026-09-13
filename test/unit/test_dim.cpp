@@ -74,7 +74,7 @@ static xy_t distance_bin_bounds(const llh_sptr_t<T>& llhf, size_t th_ix, double 
 
 // Mirrors QIE::extract_ordered_intervals and emit_record (1-based bin coords).
 template<typename T>
-vec<contig_slice_t> contiguous_slices_from_dim(DIM<T>& dim, const llh_sptr_t<T>& llhf, uint8_t th_bv, double d_q)
+vec<contig_slice_t> contig_slices(DIM<T>& dim, const llh_sptr_t<T>& llhf, uint8_t th_bv, double d_q)
 {
   static constexpr size_t W = std::is_same_v<T, double> ? 1 : RWIDTH;
   vec<contig_slice_t> out;
@@ -160,7 +160,7 @@ static void finish_dim_scan(DIM<T>& dim, const llh_sptr_t<T>& llhf, double d_q)
 }
 
 template<typename T>
-static double finish_dim_scan_auto(DIM<T>& dim, const llh_sptr_t<T>& llhf)
+static double finish_scan(DIM<T>& dim, const llh_sptr_t<T>& llhf)
 {
   dim.inclusive_scan();
   const double d_q = dim_query_mle(dim, llhf);
@@ -170,7 +170,7 @@ static double finish_dim_scan_auto(DIM<T>& dim, const llh_sptr_t<T>& llhf)
 }
 
 template<typename T>
-static void inject_up_down_up(DIM<T>& dim)
+static void inject_udu(DIM<T>& dim)
 {
   for (uint64_t i : {0u, 1u}) {
     dim.aggregate_mer(4, i);
@@ -283,8 +283,8 @@ TEST_CASE("randomized patterns: double, various tau") {
       }
     }
 
-    finish_dim_scan_auto(dim_mx, llhf);
-    finish_dim_scan_auto(dim_sx, llhf);
+    finish_scan(dim_mx, llhf);
+    finish_scan(dim_sx, llhf);
 
     for (uint64_t tau : {0u, 1u, 2u, 3u, 5u}) {
       if (tau >= nbins) continue;
@@ -322,8 +322,8 @@ TEST_CASE("randomized patterns: cm512_t, all lanes independent") {
       }
     }
 
-    finish_dim_scan_auto(dim_mx, llhf);
-    finish_dim_scan_auto(dim_sx, llhf);
+    finish_scan(dim_mx, llhf);
+    finish_scan(dim_sx, llhf);
 
     for (size_t ix = 0; ix < RWIDTH; ++ix) {
       for (uint64_t tau : {0u, 1u, 2u, 3u, 5u}) {
@@ -335,8 +335,7 @@ TEST_CASE("randomized patterns: cm512_t, all lanes independent") {
 }
 
 TEST_CASE("edge cases: early-return when fdps[nbins] < fdps[1]") {
-  // Uniform hdist=0 injections with positive threshold makes fdps monotonically
-  // decrease, triggering the early-return interval (1, nbins).
+  // Uniform hdist=0 with a positive threshold: early-return interval (1, nbins).
   auto [llhf, params] = make_test_params(0.1, 4, 2, 0);
   const uint64_t nbins = 15;
   DIM<double> dim_mx(params, llhf, nbins, nbins);
@@ -347,8 +346,8 @@ TEST_CASE("edge cases: early-return when fdps[nbins] < fdps[1]") {
     dim_sx.aggregate_mer(0, i);
   }
 
-  finish_dim_scan_auto(dim_mx, llhf);
-  finish_dim_scan_auto(dim_sx, llhf);
+  finish_scan(dim_mx, llhf);
+  finish_scan(dim_sx, llhf);
 
   for (uint64_t tau : {0u, 1u, 2u}) {
     compare_mx_sx(dim_mx, dim_sx, tau);
@@ -364,8 +363,8 @@ TEST_CASE("edge cases: full-range dip does not shortcut when nbins < 1 + tau") {
     dim_mx.aggregate_mer(0, i);
     dim_sx.aggregate_mer(0, i);
   }
-  finish_dim_scan_auto(dim_mx, llhf);
-  finish_dim_scan_auto(dim_sx, llhf);
+  finish_scan(dim_mx, llhf);
+  finish_scan(dim_sx, llhf);
   const uint64_t tau = 6; // 1 + tau > nbins: early shortcut must not emit (1, nbins)
   compare_mx_sx(dim_mx, dim_sx, tau);
   CHECK(dim_interval_at(dim_mx, 0, 0).a >= nbins);
@@ -398,8 +397,8 @@ TEST_CASE("edge cases: single-bin features") {
   for (int k = 0; k < 5; ++k) { dim_mx.aggregate_mer(4, 3); dim_sx.aggregate_mer(4, 3); }
   for (int k = 0; k < 5; ++k) { dim_mx.aggregate_mer(0, 8); dim_sx.aggregate_mer(0, 8); }
 
-  finish_dim_scan_auto(dim_mx, llhf);
-  finish_dim_scan_auto(dim_sx, llhf);
+  finish_scan(dim_mx, llhf);
+  finish_scan(dim_sx, llhf);
 
   for (uint64_t tau : {0u, 1u, 2u, 3u}) {
     compare_mx_sx(dim_mx, dim_sx, tau);
@@ -419,8 +418,8 @@ TEST_CASE("edge cases: alternating pattern") {
     dim_sx.aggregate_mer(hd, i);
   }
 
-  finish_dim_scan_auto(dim_mx, llhf);
-  finish_dim_scan_auto(dim_sx, llhf);
+  finish_scan(dim_mx, llhf);
+  finish_scan(dim_sx, llhf);
 
   for (uint64_t tau : {0u, 1u, 2u, 3u, 5u}) {
     compare_mx_sx(dim_mx, dim_sx, tau);
@@ -447,7 +446,7 @@ TEST_CASE("merge when chi-square below threshold") {
       d.aggregate_mer(0, i);
       d.aggregate_mer(0, i);
     }
-    finish_dim_scan_auto(d, llhf);
+    finish_scan(d, llhf);
     d.extract_intervals_mx(0, 1, nbins);
     d.expand_intervals(chisq_th);
     uint64_t n = 0;
@@ -667,7 +666,7 @@ TEST_CASE("SIMD DIM produces valid intervals") {
     }
   }
 
-  finish_dim_scan_auto(dim, llhf);
+  finish_scan(dim, llhf);
 
   // Extract intervals for each threshold
   for (size_t ix = 0; ix < 8; ++ix) {
@@ -708,14 +707,14 @@ static vec<contig_slice_t> run_pipeline(DIM<T>& dim, const llh_sptr_t<T>& llhf, 
       dim.expand_intervals(33.0, ix);
     }
   }
-  return contiguous_slices_from_dim(dim, llhf, th_bv, d_q);
+  return contig_slices(dim, llhf, th_bv, d_q);
 }
 
 TEST_CASE("th_bv=0 returns no segments") {
   auto params = params_t<double>(0.1, 4, 2, 33.0, 0, 1000, true, false);
   auto llhf = std::make_shared<LLH<double>>(27, 11, 0.5, 4, 0.1);
   DIM<double> dim(params, llhf, 10, 100);
-  auto segs = contiguous_slices_from_dim(dim, llhf, 0, nanx());
+  auto segs = contig_slices(dim, llhf, 0, nanx());
   CHECK(segs.empty());
 }
 
@@ -725,8 +724,7 @@ TEST_CASE("low threshold below d_q: matched interval brackets (prev, t]") {
   const uint64_t nbins = 10;
   DIM<double> dim(params, llhf, nbins, nbins);
 
-  // up-down-up prefix-sum pattern: hdist=4 (fdc>0) in bins 0-1,
-  // hdist=0 (fdc<0) in bins 3-4, hdist=4 in bins 6-7.
+  // up-down-up: hdist=4 in 0-1, hdist=0 in 3-4, hdist=4 in 6-7.
   for (uint64_t i : {0u, 1u}) {
     dim.aggregate_mer(4, i); dim.aggregate_mer(4, i);
   }
@@ -865,8 +863,7 @@ TEST_CASE("no intervals -> one intact segment (endpoints only)") {
   const uint64_t nbins = 8;
   DIM<double> dim(params, llhf, nbins, nbins);
 
-  // No k-mer hits -> flat prefix sum -> extract_intervals finds nothing.
-  // build_records_from_boundaries still reports [1, nbins+1) once for full-query MLE.
+  // No hits: extract finds nothing; the full-query fallback still reports [1, nbins+1).
 
   auto segs = run_pipeline(dim, llhf, 1);
   REQUIRE(segs.size() == 1);
@@ -1071,7 +1068,7 @@ TEST_CASE("apply_threshold_signs: flip when t exceeds d_q changes intervals") {
   auto params = params_t<double>(0.1, 4, 2, 33.0, 0, 1000, true, false);
   auto llhf = std::make_shared<LLH<double>>(27, 11, 0.5, 4, 0.1);
   const uint64_t nbins = 10;
-  const auto inject = [](DIM<double>& dim) { inject_up_down_up(dim); };
+  const auto inject = [](DIM<double>& dim) { inject_udu(dim); };
 
   const auto iv_flip = collect_intervals_double(params, llhf, nbins, 0.05, inject);
   const auto iv_no_flip = collect_intervals_double(params, llhf, nbins, 0.5, inject);
@@ -1087,14 +1084,14 @@ TEST_CASE("set_query_distance must be called once per inclusive_scan") {
   const uint64_t nbins = 10;
 
   DIM<double> dim_once(params, llhf, nbins, nbins);
-  inject_up_down_up(dim_once);
+  inject_udu(dim_once);
   finish_dim_scan(dim_once, llhf, 0.05);
   dim_once.extract_intervals_mx(1, 1, nbins);
   dim_once.expand_intervals(33.0);
   const auto iv_once = dim_once.get_intervals_v(0);
 
   DIM<double> dim_twice(params, llhf, nbins, nbins);
-  inject_up_down_up(dim_twice);
+  inject_udu(dim_twice);
   dim_twice.inclusive_scan();
   dim_twice.set_query_distance(0.05);
   dim_twice.set_query_distance(0.05);
@@ -1117,7 +1114,7 @@ TEST_CASE("cm512_t: per-lane flip depends on threshold vs d_q") {
 
   auto collect_lane = [&](size_t ix, double d_q) {
     DIM<cm512_t> dim(params, llhf, nbins, nbins);
-    inject_up_down_up(dim);
+    inject_udu(dim);
     finish_dim_scan(dim, llhf, d_q);
     dim.extract_intervals_mx(1, 1, nbins, ix);
     dim.expand_intervals(33.0, ix);
@@ -1139,10 +1136,10 @@ TEST_CASE("skipping set_query_distance differs from production scan") {
   const uint64_t nbins = 10;
 
   const auto iv_prod = collect_intervals_double(
-    params, llhf, nbins, 0.05, [](DIM<double>& dim) { inject_up_down_up(dim); });
+    params, llhf, nbins, 0.05, [](DIM<double>& dim) { inject_udu(dim); });
 
   DIM<double> dim_skip(params, llhf, nbins, nbins);
-  inject_up_down_up(dim_skip);
+  inject_udu(dim_skip);
   dim_skip.inclusive_scan();
   dim_skip.extrema_scan();
   dim_skip.extract_intervals_mx(1, 1, nbins);
@@ -1211,8 +1208,7 @@ TEST_CASE("skip_mer splits extraction at the flagged bin") {
     covers_gap = covers_gap || (iv.a <= 11 && 11 <= iv.b);
   CHECK(covers_gap);
 
-  // Skip at 0-based bin 10 (1-based bin 11): no interval crosses it,
-  // both sides still yield intervals, and mx/sx agree.
+  // Skip at 0-based bin 10: no interval crosses it; mx/sx agree.
   for (bool use_sx : {false, true}) {
     DIM<double> dim(params, llhf, nbins, nbins);
     inject(dim);

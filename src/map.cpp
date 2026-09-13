@@ -22,14 +22,14 @@ namespace {
 } // namespace
 
 template<typename T>
-QIE<T>::QIE(const params_t<T>& params, const sketch_sptr_t& sketch, const lshf_sptr_t& lshf, const vec<qseq_t>& batch_v)
+QIE<T>::QIE(const params_t<T>& params, const Sketch& sketch, const lshf_sptr_t& lshf, const vec<qseq_t>& batch_v)
   : params(params)
   , sketch(sketch)
   , lshf(lshf)
   , batch_v(batch_v)
   , k(lshf->get_k())
   , h(lshf->get_h())
-  , llhf(std::make_shared<LLH<T>>(k, h, sketch->get_rho(), params.hdist_th, params.dist_th))
+  , llhf(std::make_shared<LLH<T>>(k, h, sketch.get_rho(), params.hdist_th, params.dist_th))
 {
   enum_only = params.enum_only;
   skip_test = (params.sample_size == 0);
@@ -86,7 +86,7 @@ void QIE<T>::map_sequences(std::ostream& sout, const str& rname)
 
     if (params.canonical) {
       DIM<T> dim(params, llhf, nbins, enmers);
-      auto ctx = make_scan_ctx(*sketch, params.bin_shift, params.hdist_th);
+      auto ctx = make_scan_ctx(sketch, params.bin_shift, params.hdist_th);
       scan_mers_range<false>(ctx, cseq, 0, enmers, dim_agg_t<T>{dim, nullptr});
       dim.inclusive_scan();
 
@@ -120,7 +120,7 @@ void QIE<T>::map_sequences(std::ostream& sout, const str& rname)
       DIM<T> dim_fw(params, llhf, nbins, enmers);
       DIM<T> dim_rc(params, llhf, nbins, enmers);
       scan_mers_range<true>(
-        make_scan_ctx(*sketch, params.bin_shift, params.hdist_th), cseq, 0, enmers, dim_agg_t<T>{dim_fw, &dim_rc});
+        make_scan_ctx(sketch, params.bin_shift, params.hdist_th), cseq, 0, enmers, dim_agg_t<T>{dim_fw, &dim_rc});
 
       for (auto* dim : {&dim_fw, &dim_rc}) {
         dim->inclusive_scan();
@@ -171,8 +171,7 @@ void QIE<T>::map_sequences(std::ostream& sout, const str& rname)
   if (!skip_test) {
     gamma_fit_t fit;
     for (auto& r : records_v) {
-      // Intact (full-query) rows have no length-matched background on their own
-      // query, so the null would be degenerate; leave percentile/qvalue as NaN.
+      // Full-query rows have no length-matched null; leave percentile/qvalue as NaN.
       if (r.is_intact()) continue;
       test_significance(r, samples_v, params.sample_size, batch_v[r.bix].qid, &fit);
     }
@@ -245,8 +244,7 @@ void QIE<T>::extract_ordered_intervals(DIM<T>& dim, bool is_rc, uint64_t tau_eff
       // No intervals extracted; report the full query.
       emit_record(dim, 1, nbins + 1, size_t(-1), is_rc, d_q_bg);
     } else {
-      // Report one background record per maximal skip-free segment (b_bin exclusive).
-      // Segments must meet the same minimum length (tau_eff + 1 bins) as extracted intervals.
+      // One record per skip-free segment of at least tau_eff + 1 bins.
       uint64_t a = 1;
       for (uint64_t x = 1; x <= nbins; ++x) {
         if (dim.is_skip(x)) {
@@ -413,16 +411,15 @@ void MapSC::map()
 {
   set_precision(*output_stream, 5);
 
-  qseq_sptr_t qs = std::make_shared<QSeq>(target_path);
+  qseq_sptr_t qs = std::make_shared<QSeq>(target_path, std::numeric_limits<uint64_t>::max());
 
-  // read_next_batch returns false on EOF *after* appending the final partial
-  // batch, so count from the accumulated vector rather than the loop iterations.
+  // read_next_batch appends the last batch before returning false.
   while (qs->read_next_batch()) {
   }
   total_qseq = qs->get_batch_v().size();
 
-  const vec<uint64_t> sketch_offsets = read_sketch_offsets(sketch_path);
-  const uint32_t nsketches = static_cast<uint32_t>(sketch_offsets.size());
+  const SketchFile file(sketch_path);
+  const uint32_t nsketches = file.size();
   const uint32_t nthreads = std::max(1u, std::min(num_threads, nsketches));
   cerr_msg("Processing ", nsketches, " sketches w/ ", nthreads, " thread(s)...");
 
@@ -435,25 +432,22 @@ void MapSC::map()
   pool.parallel_for(nsketches, 1, [&](const uint64_t i) {
     // Each sketch gets its own RNG stream: results are independent of scheduling.
     init_thread_rng(static_cast<uint32_t>(i) + 1);
-    // Each task opens its own file handle so no stream sharing occurs
-    std::ifstream sketch_stream(sketch_path, std::ifstream::binary);
-    sketch_sptr_t sketch = std::make_shared<Sketch>(sketch_path);
-    sketch->load_from_offset(sketch_stream, sketch_offsets[i]);
-    sketch_stream.close();
-    bool canonical = sketch->is_canonical();
+    // Every record views the container's single shared mapping.
+    const Sketch sketch = file.open(static_cast<uint32_t>(i), SketchPart::Buckets);
+    const bool canonical = sketch.is_canonical();
 
     strstream sout;
     set_precision(sout, 5);
     if (thresholds_v.size() == 1) {
       params_t<double> params(thresholds_v.front(), hdist_th, tau, chisq, bin_shift, sample_size, canonical, enum_only);
-      QIE<double> qie(params, sketch, sketch->get_lshf_sptr(), qs->get_batch_v());
-      qie.map_sequences(sout, sketch->get_rname());
+      QIE<double> qie(params, sketch, sketch.get_lshf_sptr(), qs->get_batch_v());
+      qie.map_sequences(sout, sketch.get_rname());
       nunmapped_v[i] = qie.get_nunmapped();
     } else {
       params_t<cm512_t> params({0}, hdist_th, tau, chisq, bin_shift, sample_size, canonical, enum_only);
       std::copy(thresholds_v.begin(), thresholds_v.end(), params.dist_th.begin());
-      QIE<cm512_t> qie(params, sketch, sketch->get_lshf_sptr(), qs->get_batch_v());
-      qie.map_sequences(sout, sketch->get_rname());
+      QIE<cm512_t> qie(params, sketch, sketch.get_lshf_sptr(), qs->get_batch_v());
+      qie.map_sequences(sout, sketch.get_rname());
       nunmapped_v[i] = qie.get_nunmapped();
     }
 

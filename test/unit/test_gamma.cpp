@@ -8,7 +8,7 @@
 namespace {
 
 // Tighter NM settings for recovery checks (still matches production code paths).
-GammaModel::Config strict_fit_from_samples_cfg()
+GammaModel::Config strict_fit_cfg()
 {
   GammaModel::Config cfg{};
   cfg.tol = 1e-10;
@@ -41,7 +41,7 @@ TEST_CASE("recovers known Gamma(2, 0.05) parameters from raw draws") {
   std::vector<double> samples(5500);
   for (auto& s : samples) s = dist(rng);
 
-  auto result = GammaModel::fit_from_samples(samples, strict_fit_from_samples_cfg());
+  auto result = GammaModel::fit_from_samples(samples, strict_fit_cfg());
   check_gamma_recovery(shape_true, scale_true, result, 0.15);
 }
 
@@ -53,7 +53,7 @@ TEST_CASE("recovers Gamma(5, 0.02) parameters from raw draws") {
   std::vector<double> samples(6500);
   for (auto& s : samples) s = dist(rng);
 
-  auto result = GammaModel::fit_from_samples(samples, strict_fit_from_samples_cfg());
+  auto result = GammaModel::fit_from_samples(samples, strict_fit_cfg());
   check_gamma_recovery(shape_true, scale_true, result, 0.15);
 }
 
@@ -88,7 +88,7 @@ TEST_CASE("tiny input converges without crashing") {
 TEST_CASE("fit_from_samples(d_v, cfg) respects custom quantile targets") {
   constexpr double shape_true = 4.0;
   constexpr double scale_true = 0.03;
-  GammaModel::Config cfg = strict_fit_from_samples_cfg();
+  GammaModel::Config cfg = strict_fit_cfg();
   cfg.quantile_probs = {0.1, 0.5, 0.9};
 
   std::mt19937_64 rng(55);
@@ -133,7 +133,7 @@ TEST_CASE("recovers Gamma(1.5, 0.08) from raw draws") {
   std::vector<double> samples(5500);
   for (auto& s : samples) s = dist(rng);
 
-  auto r = GammaModel::fit_from_samples(samples, strict_fit_from_samples_cfg());
+  auto r = GammaModel::fit_from_samples(samples, strict_fit_cfg());
   check_gamma_recovery(shape_true, scale_true, r, 0.18);
 }
 

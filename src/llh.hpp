@@ -22,8 +22,8 @@ public:
   const T extrema;
   std::vector<uint64_t> binom_coef_k;
   std::vector<uint64_t> binom_coef_hnk;
-  std::vector<double> binom_coef_k_d;
-  std::vector<double> binom_coef_hnk_d;
+  std::vector<double> dcoef_k;
+  std::vector<double> dcoef_hnk;
 
   LLH(uint32_t k, uint32_t h, double rho, uint32_t hdist_th, T extrema, bool compute_derivatives = true)
     : k(k)
@@ -47,8 +47,8 @@ public:
       vc = (vc * (nh - d + 1)) / d;
       binom_coef_hnk[d] = binom_coef_k[d] - vc;
     }
-    binom_coef_k_d.assign(binom_coef_k.begin(), binom_coef_k.end());
-    binom_coef_hnk_d.assign(binom_coef_hnk.begin(), binom_coef_hnk.end());
+    dcoef_k.assign(binom_coef_k.begin(), binom_coef_k.end());
+    dcoef_hnk.assign(binom_coef_hnk.begin(), binom_coef_hnk.end());
 
     if (!compute_derivatives) return;
 
@@ -157,9 +157,9 @@ public:
     for (uint32_t d = 0; d <= k; ++d) {
       if (d <= hdist_th) {
         lsum -= (logdn + (d * logdp)) * vv[d];
-        lv_m += binom_coef_hnk_d[d] * powdc;
+        lv_m += dcoef_hnk[d] * powdc;
       } else {
-        lv_m += powdc * binom_coef_k_d[d];
+        lv_m += powdc * dcoef_k[d];
       }
       powdc *= ratioD;
     }
@@ -167,8 +167,7 @@ public:
     return lsum - (std::log((rho * lv_m) + 1.0 - rho) * uu);
   }
 
-  // Analytic observed Fisher information:
-  // I(D) = -d^2/dD^2 log L(D) (the negative log-likelihood evaluated at the given D)
+  // Observed Fisher information I(D) = -d^2/dD^2 log L(D).
   double compute_fisher_info(const uint64_t* v_r, uint64_t u_r, double D) const
   {
     double ll_dd = 0.0;
@@ -179,8 +178,7 @@ public:
     return -ll_dd;
   }
 
-  // Returns NaN when there are no k-mer hits.
-  // The distance is undefined, instead of relying on a plateau MLE.
+  // NaN when there are no k-mer hits (distance undefined).
   double mle(const uint64_t* v_r, uint64_t u_r, double* nll_min = nullptr) const
   {
     uint64_t t = 0;
@@ -277,9 +275,7 @@ inline double likelihood_ratio_statistic(const double nll_ref, const double nll_
   return 2.0 * std::max(0.0, nll_ref - nll_mle);
 }
 
-// Weakest detectable match pattern: one hit at hdist_th, all other observed
-// k-mers are misses. Its MLE is the largest distance the model can estimate for
-// a sketch given n_total observed k-mers.
+// Weakest detectable match: one hit at hdist_th, rest misses. Largest estimable d.
 template<typename T>
 inline double max_estimable_distance(const LLH<T>& llhf, uint64_t n_total, double* nll_min = nullptr)
 {
@@ -292,10 +288,7 @@ inline double max_estimable_distance(const LLH<T>& llhf, uint64_t n_total, doubl
   return llhf.mle(v.data(), n_total - 1, nll_min);
 }
 
-// Likelihood-ratio of the window MLE distance vs the sketch's max estimable
-// distance, evaluated on the extreme match counts that define that ceiling.
-// Large values mean d is well below the detection limit; near 0 means d is
-// indistinguishable from the weakest detectable homology.
+// LR of d vs the sketch's max estimable distance on the ceiling match counts.
 template<typename T>
 inline double compute_lr_ub(const LLH<T>& llhf, double d, uint64_t n_total)
 {

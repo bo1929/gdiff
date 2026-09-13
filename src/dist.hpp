@@ -3,9 +3,10 @@
 
 #include "CLI11.hpp"
 #include "llh.hpp"
-#include "stils.hpp"
+#include "sym.hpp"
 #include "rqseq.hpp"
 #include "sketch.hpp"
+#include "stils.hpp"
 #include "tpool.hpp"
 #include <filesystem>
 #include <fstream>
@@ -13,18 +14,34 @@
 
 std::pair<double, char> select_strand_distance(double d_fw, double d_rc);
 
-// Linear-interpolation quantile of a sorted, non-empty vector.
-double linear_quantile(const vec<double>& v, double p);
-
 xy_t bracket_distance(double d, const vec<double>& th_v);
 
 // Shared binning validation for map/dist/detect w.r.t. its length.
 bool validate_binning(uint64_t bin_shift, uint64_t tau);
 
+// One direction: per-window rows plus its summary. `samples` needs --output-samples.
+struct dir_result_t
+{
+  vec<dpoint_t> rows;
+  double d_median = nanx();
+  uint64_t n_valid = 0;
+  uint64_t n_unmapped = 0;
+  str samples;
+};
+
+// Score a query's stored windows against a reference's buckets.
+dir_result_t run_direction(const Sketch& query,
+                           const Sketch& reference,
+                           const str& dir_label,
+                           uint32_t hdist_th,
+                           uint64_t nmers_limit,
+                           bool output_samples);
+
+// The FASTA-side query path; sketch-side queries use run_direction instead.
 class DistanceSampler
 {
 public:
-  DistanceSampler(const sketch_sptr_t& sketch,
+  DistanceSampler(const Sketch& sketch,
                   const vec<qseq_t>& batch_v,
                   uint64_t tau,
                   uint64_t bin_shift,
@@ -33,6 +50,9 @@ public:
   void run_per_sequence(uint64_t sample_size, bool keep_counts, ThreadPool& pool);
   void collect_distances(vec<double>& d_v) const;
   void collect_distances(vec<vec<double>>& d_vvec) const;
+  // Per-window (d, lr_ub) rows for reconciliation; requires keep_counts.
+  void collect_samples(vec<dpoint_t>& rows) const;
+  void collect_samples(vec<vec<dpoint_t>>& rows_per_seq) const;
 
   template<typename Fn>
   void for_each_sample(Fn&& fn) const
@@ -43,10 +63,9 @@ public:
     }
   }
 
-  // When keep_counts was enabled and the sample has a valid distance, hist/u are
-  // the selected-strand counts; otherwise hist is nullptr.
+  // hist/u are the selected-strand counts, or hist is null without keep_counts.
   template<typename Fn>
-  void for_each_sample_counts(Fn&& fn) const
+  void for_each_counts(Fn&& fn) const
   {
     for (const auto& sch : schemes_v) {
       for (uint64_t s = 0; s < sch.nsamples; ++s) {
@@ -79,7 +98,12 @@ private:
     vec<uint64_t> hist_v;
     vec<uint64_t> u_v;
 
-    scheme_t(uint64_t bix, uint64_t nsamples, uint64_t enmers, uint64_t nbins, vec<uint64_t> starts_v, bool keep_counts)
+    scheme_t(uint64_t bix,
+             uint64_t nsamples,
+             uint64_t enmers,
+             uint64_t nbins,
+             vec<uint64_t> starts_v,
+             bool keep_counts)
       : bix(bix)
       , nsamples(nsamples)
       , enmers(enmers)
@@ -97,8 +121,9 @@ private:
   void build_for_all(uint64_t sample_size, bool keep_counts);
   void build_per_sequence(uint64_t sample_size, bool keep_counts);
   void evaluate(ThreadPool& pool);
+  dpoint_t sample_row(const scheme_t& sch, uint64_t s) const;
 
-  sketch_sptr_t sketch;
+  const Sketch& sketch;
   const vec<qseq_t>& batch_v;
   bool canonical;
   uint32_t hdist_th;
@@ -118,19 +143,54 @@ public:
   explicit DistSC(CLI::App& sc);
   bool validate_configuration();
   void dist();
-  void sample_distances(const sketch_sptr_t& sketch, const vec<qseq_t>& batch_v, strstream& sout, ThreadPool& pool);
 
 private:
-  str target_path;
-  std::filesystem::path sketch_path;
+  // One record of one container, resolved from a positional or a list file.
+  struct member_t
+  {
+    const SketchFile* file = nullptr;
+    uint32_t rec = 0;
+    str rname;
+  };
+
+  // An unordered pair scheduled as two directional jobs.
+  struct pair_t
+  {
+    uint32_t a = 0;
+    uint32_t b = 0;
+    dir_result_t ab;
+    dir_result_t ba;
+  };
+
+  void resolve_source(const std::filesystem::path& path, vec<uint32_t>& out);
+  const SketchFile* file_for(const std::filesystem::path& path);
+  // Sketch-vs-sketch: all unordered pairs within one set, or the cross product.
+  void dist_sketches();
+  // FASTA query: forward samples the query, reverse uses its in-memory sketch.
+  void dist_fasta();
+  void write_pair_row(std::ostream& os, const pair_t& pr, const str& name_a, const str& name_b);
+  void emit_header(std::ostream& os) const;
+
+  vec<std::unique_ptr<SketchFile>> files; // stable addresses
+  vec<member_t> members;
+  vec<uint32_t> set_a;
+  vec<uint32_t> set_b;
+  std::filesystem::path set_a_path;
+  std::filesystem::path set_b_path;
+  std::filesystem::path query_list_path;
+  std::filesystem::path reference_list_path;
   std::filesystem::path output_path;
   std::ofstream output_file;
   std::ostream* output_stream = &std::cout;
   bool output_samples = false;
+  bool symmetric = true;
+  bool no_header = false;
   uint64_t tau = 0;
-  uint64_t sample_size = 200;
+  uint64_t sample_size = 0;
   uint64_t bin_shift = 0;
   uint32_t hdist_th = 4;
+  double lr_th = lr_th_default;
+  double min_portion = min_portion_default;
 };
 
 #endif

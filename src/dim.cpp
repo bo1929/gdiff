@@ -108,10 +108,7 @@ void HDHist::extract_histogram(const uint64_t a, const uint64_t b, vec<uint64_t>
   assert(a <= b && b <= nbins);
   const uint32_t W = hdist_th + 1;
   assert(W <= RWIDTH && W <= hdist_bound + 1);
-  // Copy into 8-lane scratch first. A direct mm512_maskz_loadu on &hist_v[row*W]
-  // is unsafe when W < 8: SIMDe's non-native path (and some native masked loads
-  // near a page boundary) still touch a full 64-byte vector and can SEGV on the
-  // last prefix-sum rows.
+  // Copy into 8-lane scratch; a masked load of W < 8 can fault near a page end.
   alignas(64) uint64_t hb[RWIDTH] = {};
   alignas(64) uint64_t ha[RWIDTH] = {};
   std::memcpy(hb, &hist_v[b * W], W * sizeof(uint64_t));
@@ -156,8 +153,9 @@ DIM<T>::DIM(const params_t<T>& params, const llh_sptr_t<T>& llhf, uint64_t nbins
   , nmers(nmers)
   , keep_hist(!params.enum_only || params.sample_size > 0)
 {
-  fdc_v.resize(nbins);
-  sdc_v.resize(nbins);
+  // Extra slot so inclusive_scan can prefix-sum in place. Aggregation uses [0, nbins).
+  fdc_v.resize(nbins + 1);
+  sdc_v.resize(nbins + 1);
   thneg_v.fill(false);
   thrank_v.resize(WIDTH);
   for (size_t i = 0; i < WIDTH; ++i)
@@ -260,36 +258,40 @@ void DIM<T>::skip_mer(const uint64_t i)
   has_skips = true;
 }
 
+// In-place prefix sum: C[0]=0, C[i]=C[i-1]+c[i-1].
 template<typename T>
 void DIM<T>::inclusive_scan()
 {
   assert(nbins > 0);
   const uint64_t s = nbins + 1;
+  assert(fdc_v.size() == s && sdc_v.size() == s);
 
-  fdps_v.resize(s);
-  sdps_v.resize(s);
+  std::move_backward(fdc_v.begin(), fdc_v.end() - 1, fdc_v.end());
+  std::move_backward(sdc_v.begin(), sdc_v.end() - 1, sdc_v.end());
 
   if constexpr (std::is_same_v<T, double>) {
-    fdps_v[0] = 0.0;
-    sdps_v[0] = 0.0;
+    fdc_v[0] = 0.0;
+    sdc_v[0] = 0.0;
     for (uint64_t i = 1; i < s; ++i) {
-      fdps_v[i] = fdps_v[i - 1] + fdc_v[i - 1];
-      sdps_v[i] = sdps_v[i - 1] + sdc_v[i - 1];
+      fdc_v[i] += fdc_v[i - 1];
+      sdc_v[i] += sdc_v[i - 1];
     }
   } else {
-    fdps_v[0].fill(0.0);
-    sdps_v[0].fill(0.0);
+    fdc_v[0].fill(0.0);
+    sdc_v[0].fill(0.0);
     simde__m512d fdps_acc = simde_mm512_setzero_pd();
     simde__m512d sdps_acc = simde_mm512_setzero_pd();
     for (uint64_t i = 1; i < s; ++i) {
-      const simde__m512d fdc = simde_mm512_loadu_pd(fdc_v[i - 1].data());
-      const simde__m512d sdc = simde_mm512_loadu_pd(sdc_v[i - 1].data());
-      fdps_acc = simde_mm512_add_pd(fdps_acc, fdc);
-      sdps_acc = simde_mm512_add_pd(sdps_acc, sdc);
-      simde_mm512_storeu_pd(fdps_v[i].data(), fdps_acc);
-      simde_mm512_storeu_pd(sdps_v[i].data(), sdps_acc);
+      fdps_acc = simde_mm512_add_pd(fdps_acc, simde_mm512_loadu_pd(fdc_v[i].data()));
+      sdps_acc = simde_mm512_add_pd(sdps_acc, simde_mm512_loadu_pd(sdc_v[i].data()));
+      simde_mm512_storeu_pd(fdc_v[i].data(), fdps_acc);
+      simde_mm512_storeu_pd(sdc_v[i].data(), sdps_acc);
     }
   }
+  fdps_v = std::move(fdc_v);
+  sdps_v = std::move(sdc_v);
+  vec<T>().swap(fdc_v);
+  vec<T>().swap(sdc_v);
 }
 
 template<typename T>
@@ -326,17 +328,7 @@ void DIM<T>::extrema_scan()
   }
 }
 
-// Find maximal intervals [a, b] within [lix, rix] where the prefix sum drops below a prior maximum.
-//
-// Conditions for a valid interval (a, b):
-//   1. a is a strict prefix maximum:  fdps[a] > fdpmax[a-1]
-//   2. b is right-maximal:            fdsmin[b] < fdps[a] but fdsmin[b+1] >= fdps[a]
-//   3. Minimum length:                b >= a + tau
-//   4. Negative sum:                  fdps[b] < fdps[a]
-//   5. Left-maximal (non-redundant):  fdps[b] >= fdpmax[a-1]
-//   6. b not claimed by earlier a:    b != b_prev
-//
-// Early return: if prefix sum ends below where it started (fdps[rix] < fdps[lix]), the entire [lix, rix] is one interval.
+// Maximal [a,b] in [lix,rix] where the prefix sum drops below a prior maximum.
 template<typename T>
 void DIM<T>::extract_intervals_mx(const uint64_t tau, const uint64_t lix, const uint64_t rix, const size_t ix)
 {
@@ -408,9 +400,7 @@ void DIM<T>::extract_intervals_sx(const uint64_t tau, const uint64_t lix, const 
 template<typename T>
 void DIM<T>::extract_sx(const uint64_t tau, const uint64_t lix, const uint64_t rix, const size_t ix)
 {
-  // Every valid right endpoint b* is a suffix minimum of fdps_v
-  // Suffix minimum values are strictly increasing left-to-right,
-  // Hence, the pointer into the list is monotone across record highs which is O(k) total
+  // Valid right endpoints are suffix minima; the pointer is monotone (O(k) total).
   const uint64_t gap_len = rix - lix + 1;
   if (gap_len >= 1 + tau && at(fdps_v[rix], ix) < at(fdps_v[lix], ix)) {
     intervals_v[ix].emplace_back(lix, rix);

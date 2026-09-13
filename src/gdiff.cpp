@@ -2,40 +2,66 @@
 
 void MergeSC::merge()
 {
-  cerr_msg("Preparing to merge ", paths_v.size(), " sketch file(s)");
+  cerr_msg("Merging ", paths_v.size(), " sketch file(s)");
+
+  // Re-index rather than concatenate: records move, absolute offsets are rewritten.
+  vec<std::unique_ptr<SketchFile>> inputs;
+  uint64_t nsketches = 0;
+  for (const str& path : paths_v) {
+    inputs.push_back(std::make_unique<SketchFile>(path));
+    const SketchFile& in = *inputs.back();
+    if (!in.get_config().compatible_with(inputs.front()->get_config())) {
+      error_exit("Cannot merge sketches with different configurations: " + path);
+    }
+    if (in.get_config().win_repr != inputs.front()->get_config().win_repr) {
+      error_exit("Cannot merge sketches with different --window-repr: " + path);
+    }
+    nsketches += in.size();
+  }
+  if (nsketches == 0) error_exit("Nothing to merge: the inputs hold no records");
 
   std::ofstream sout(sketch_path, std::ofstream::binary);
-  check_fstream(sout, "Cannot open output file", sketch_path);
+  check_fstream(sout, "Cannot open output file", sketch_path.string());
+  write_sketch_header(sout, inputs.front()->get_config(), nsketches);
+  const std::streampos index_pos = sout.tellp();
+  vec<record_entry_t> entries(nsketches);
+  sout.write(reinterpret_cast<const char*>(entries.data()),
+             static_cast<std::streamsize>(sizeof(record_entry_t) * nsketches));
 
-  // Writing a placeholder
-  uint32_t total_sketches = 0;
-  sout.write(reinterpret_cast<const char*>(&total_sketches), sizeof(uint32_t));
+  vec<char> buffer;
+  uint64_t pos = static_cast<uint64_t>(sout.tellp());
+  uint64_t out_ix = 0;
+  for (size_t fi = 0; fi < inputs.size(); ++fi) {
+    std::ifstream sin(paths_v[fi], std::ifstream::binary);
+    check_fstream(sin, "Cannot open sketch file", paths_v[fi]);
+    for (const record_entry_t& e : inputs[fi]->get_index().records) {
+      buffer.resize(static_cast<size_t>(e.len));
+      sin.seekg(static_cast<std::streamoff>(e.offset));
+      sin.read(buffer.data(), static_cast<std::streamsize>(e.len));
+      check_fstream(sin, "Failed to read a sketch record", paths_v[fi]);
 
-  constexpr size_t buffer_size = 10 * 1024 * 1024;
-  std::vector<char> buffer(buffer_size);
-
-  for (size_t i = 0; i < paths_v.size(); ++i) {
-    std::ifstream sin;
-    sin.rdbuf()->pubsetbuf(buffer.data(), buffer_size);
-    sin.open(paths_v[i], std::ifstream::binary);
-    check_fstream(sin, "Cannot open sketch file", paths_v[i]);
-
-    uint32_t nsketches = 0;
-    sin.read(reinterpret_cast<char*>(&nsketches), sizeof(uint32_t));
-    total_sketches += nsketches;
-
-    sout << sin.rdbuf();
-    sin.close();
+      record_entry_t& out = entries[out_ix++];
+      out.offset = pos;
+      out.len = e.len;
+      out.buckets_off = pos + (e.buckets_off - e.offset);
+      out.buckets_len = e.buckets_len;
+      if (e.windows_len) {
+        out.windows_off = pos + (e.windows_off - e.offset);
+        out.windows_len = e.windows_len;
+      }
+      sout.write(buffer.data(), static_cast<std::streamsize>(e.len));
+      pos += e.len;
+    }
   }
 
-  // Seek back and patch the real count into the header
-  sout.seekp(0, std::ios::beg);
-  sout.write(reinterpret_cast<const char*>(&total_sketches), sizeof(uint32_t));
-
-  check_fstream(sout, "Failed to write the merged sketch file!", sketch_path);
+  sout.seekp(index_pos);
+  sout.write(reinterpret_cast<const char*>(entries.data()),
+             static_cast<std::streamsize>(sizeof(record_entry_t) * nsketches));
+  sout.seekp(0, std::ios::end);
+  check_fstream(sout, "Failed to write the merged sketch file", sketch_path.string());
   sout.close();
 
-  cerr_msg("Merged sketch saved to ", sketch_path.string(), " with ", total_sketches, " sketch(es)");
+  cerr_msg("Merged sketch saved to ", sketch_path.string(), " with ", nsketches, " record(s)");
 }
 
 MergeSC::MergeSC(CLI::App& sc)
@@ -46,68 +72,47 @@ MergeSC::MergeSC(CLI::App& sc)
 
 void InfoSC::info()
 {
-  std::ifstream stream(sketch_path, std::ifstream::binary);
-  check_fstream(stream, "Cannot open sketch file: ", sketch_path.string());
+  const SketchFile file(sketch_path);
+  const sketch_config_t& cfg = file.get_config();
 
-  uint32_t nsketches = 0;
-  stream.read(reinterpret_cast<char*>(&nsketches), sizeof(uint32_t));
+  std::cout << "File:               " << sketch_path.string() << "\n";
+  std::cout << "Records:            " << file.size() << "\n";
+  std::cout << "k (mer len):        " << static_cast<int>(cfg.k) << "\n";
+  std::cout << "w (win len):        " << static_cast<int>(cfg.w) << "\n";
+  std::cout << "h (LSH pos):        " << static_cast<int>(cfg.h) << "\n";
+  std::cout << "canonical:          " << (cfg.canonical ? "true" : "false") << "\n";
+  std::cout << "nrows:              " << cfg.nrows << "\n";
+  std::cout << "frac:               " << cfg.frac << "\n";
+  std::cout << "-l (window len):    " << cfg.tau << "\n";
+  std::cout << "--sample-size:      " << cfg.sample_size << "\n";
+  std::cout << "--window-repr:      " << (cfg.win_repr == WinRepr::Pool ? "pool" : "seq") << "\n";
+  std::cout << "seed:               " << cfg.seed << "\n";
 
-  std::cout << "File:             " << sketch_path.string() << "\n";
-  std::cout << "Number of sketches: " << nsketches << "\n";
-
-  for (uint32_t i = 0; i < nsketches; ++i) {
-    uint64_t rid_len = 0;
-    stream.read(reinterpret_cast<char*>(&rid_len), sizeof(uint64_t));
-    std::string rname(rid_len, '\0');
-    stream.read(&rname[0], static_cast<std::streamsize>(rid_len));
-
-    uint64_t timestamp = 0;
-    stream.read(reinterpret_cast<char*>(&timestamp), sizeof(uint64_t));
-
-    uint8_t k = 0, w = 0, h = 0;
-    uint32_t nrows = 0;
-    bool canonical = false;
-    stream.read(reinterpret_cast<char*>(&k), sizeof(uint8_t));
-    stream.read(reinterpret_cast<char*>(&w), sizeof(uint8_t));
-    stream.read(reinterpret_cast<char*>(&h), sizeof(uint8_t));
-    stream.read(reinterpret_cast<char*>(&canonical), sizeof(bool));
-    stream.read(reinterpret_cast<char*>(&nrows), sizeof(uint32_t));
-
-    stream.seekg(static_cast<std::streamoff>(h) + static_cast<std::streamoff>(k - h), std::ios::cur);
-
-    double rho = 0.0;
-    stream.read(reinterpret_cast<char*>(&rho), sizeof(double));
-
-    uint64_t nkmers = 0;
-    stream.read(reinterpret_cast<char*>(&nkmers), sizeof(uint64_t));
-    stream.seekg(static_cast<std::streamoff>(nkmers) * static_cast<std::streamoff>(sizeof(enc_t)), std::ios::cur);
-    uint32_t sfhm_nrows = 0;
-    stream.read(reinterpret_cast<char*>(&sfhm_nrows), sizeof(uint32_t));
-    stream.seekg(static_cast<std::streamoff>(sfhm_nrows) * static_cast<std::streamoff>(sizeof(inc_t)), std::ios::cur);
-
-    std::time_t ts = static_cast<std::time_t>(timestamp);
-    std::string ts_str = std::ctime(&ts);
+  for (uint32_t i = 0; i < file.size(); ++i) {
+    const Sketch sk = file.open(i, SketchPart::All);
+    std::time_t ts = static_cast<std::time_t>(sk.get_timestamp());
+    str ts_str = std::ctime(&ts);
     if (!ts_str.empty() && ts_str.back() == '\n') ts_str.pop_back();
 
-    std::cout << "\n[Sketch " << (i + 1) << "/" << nsketches << "]\n";
-    std::cout << "  Name:        " << rname << "\n";
-    std::cout << "  Date:        " << ts_str << "\n";
-    std::cout << "  k (mer len): " << static_cast<int>(k) << "\n";
-    std::cout << "  w (win len): " << static_cast<int>(w) << "\n";
-    std::cout << "  h (LSH pos): " << static_cast<int>(h) << "\n";
-    std::cout << "  canonical:   " << (canonical ? "true" : "false") << "\n";
-    std::cout << "  nrows:       " << nrows << "\n";
-    std::cout << "  frac:        " << static_cast<double>(nrows) / static_cast<double>(uint64_t(1) << (2 * h)) << "\n";
-    std::cout << "  rho:         " << rho << "\n";
-    std::cout << "  k-mers:      " << nkmers << "\n";
+    std::cout << "\n[Record " << (i + 1) << "/" << file.size() << "]\n";
+    std::cout << "  Name:             " << sk.get_rname() << "\n";
+    std::cout << "  Date:             " << ts_str << "\n";
+    std::cout << "  Genome length:    " << sk.get_genome_bp() << "\n";
+    std::cout << "  Valid bases:      " << sk.get_nvalid_bases() << "\n";
+    std::cout << "  k-mers:           " << sk.get_nkmers() << "\n";
+    std::cout << "  card_est:         " << sk.get_card_est() << "\n";
+    std::cout << "  rho:              " << sk.get_rho() << "\n";
+    std::cout << "  Nonempty buckets: " << sk.get_buckets().get_nnonempty() << "\n";
+    std::cout << "  Windows:          " << sk.get_wins().size() << "\n";
+    const record_entry_t& e = file.get_index().records[i];
+    std::cout << "  Bucket bytes:     " << e.buckets_len << "\n";
+    std::cout << "  Window bytes:     " << e.windows_len << "\n";
   }
-
-  stream.close();
 }
 
 InfoSC::InfoSC(CLI::App& sc)
 {
-  sc.add_option("-i,--sketch-path", sketch_path, "Sketch file (single or multi) to inspect")
+  sc.add_option("-i,--sketch-path", sketch_path, "Sketch file to inspect")
     ->required()
     ->check(CLI::ExistingFile);
 }
