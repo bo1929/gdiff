@@ -41,8 +41,7 @@ public:
     const uint64_t word = bitmap[bix >> 6];
     const uint64_t bit = uint64_t(1) << (bix & 63);
     if (!(word & bit)) return false;
-    const uint32_t rank =
-      blockrank[bix >> 6] + static_cast<uint32_t>(__builtin_popcountll(word & (bit - 1)));
+    const uint32_t rank = blockrank[bix >> 6] + static_cast<uint32_t>(__builtin_popcountll(word & (bit - 1)));
     beg = enc + start[rank];
     end = enc + start[rank + 1];
     return true;

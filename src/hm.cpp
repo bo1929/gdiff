@@ -2,8 +2,7 @@
 #include <algorithm>
 #include <cstring>
 
-namespace
-{
+namespace {
 
   constexpr uint64_t round_up_8(uint64_t x) noexcept { return (x + 7) & ~uint64_t(7); }
 
@@ -22,8 +21,7 @@ namespace
   void write_section(std::ostream& os, const vec<T>& v)
   {
     if (!v.empty()) {
-      os.write(reinterpret_cast<const char*>(v.data()),
-               static_cast<std::streamsize>(v.size() * sizeof(T)));
+      os.write(reinterpret_cast<const char*>(v.data()), static_cast<std::streamsize>(v.size() * sizeof(T)));
     }
     pad_to_8(os);
   }
@@ -112,8 +110,7 @@ void Buckets::build(uint32_t nrows_arg, vec<uint64_t>&& keys)
 uint64_t Buckets::byte_size(uint64_t nkmers, uint64_t nnonempty, uint32_t nrows)
 {
   const uint64_t nblocks = (static_cast<uint64_t>(nrows) + 63) / 64;
-  return 24 + nblocks * 8 + round_up_8(nblocks * 4) + round_up_8((nnonempty + 1) * 4) +
-         round_up_8(nkmers * 4);
+  return 24 + nblocks * 8 + round_up_8(nblocks * 4) + round_up_8((nnonempty + 1) * 4) + round_up_8(nkmers * 4);
 }
 
 void Buckets::save(std::ostream& os) const

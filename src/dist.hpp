@@ -30,22 +30,14 @@ struct dir_result_t
 };
 
 // Score a query's stored windows against a reference's buckets.
-dir_result_t run_direction(const Sketch& query,
-                           const Sketch& reference,
-                           const str& dir_label,
-                           uint32_t hdist_th,
-                           uint64_t nmers_limit,
-                           bool output_samples);
+dir_result_t
+run_direction(const Sketch& query, const Sketch& reference, uint32_t hdist_th, uint64_t nmers_limit, bool output_samples);
 
 // The FASTA-side query path; sketch-side queries use run_direction instead.
 class DistanceSampler
 {
 public:
-  DistanceSampler(const Sketch& sketch,
-                  const vec<qseq_t>& batch_v,
-                  uint64_t tau,
-                  uint64_t bin_shift,
-                  uint32_t hdist_th);
+  DistanceSampler(const Sketch& sketch, const vec<qseq_t>& batch_v, uint64_t tau, uint64_t bin_shift, uint32_t hdist_th);
   void run_for_all(uint64_t sample_size, bool keep_counts, ThreadPool& pool);
   void run_per_sequence(uint64_t sample_size, bool keep_counts, ThreadPool& pool);
   void collect_distances(vec<double>& d_v) const;
@@ -98,12 +90,7 @@ private:
     vec<uint64_t> hist_v;
     vec<uint64_t> u_v;
 
-    scheme_t(uint64_t bix,
-             uint64_t nsamples,
-             uint64_t enmers,
-             uint64_t nbins,
-             vec<uint64_t> starts_v,
-             bool keep_counts)
+    scheme_t(uint64_t bix, uint64_t nsamples, uint64_t enmers, uint64_t nbins, vec<uint64_t> starts_v, bool keep_counts)
       : bix(bix)
       , nsamples(nsamples)
       , enmers(enmers)

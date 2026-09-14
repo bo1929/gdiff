@@ -736,10 +736,10 @@ void Detector::report_stats(const thcfg_t& thresholds,
 }
 
 void Detector::run(std::ostream& out,
-                  ThreadPool& pool,
-                  const vec<dpoint_t>& rev_rows,
-                  const double lr_th,
-                  const double min_portion)
+                   ThreadPool& pool,
+                   const vec<dpoint_t>& rev_rows,
+                   const double lr_th,
+                   const double min_portion)
 {
   // Scalar LLH for the threshold screen and the per-interval estimates.
   const LLH<double> llhf(sketch.get_k(), sketch.get_h(), sketch.get_rho(), hdist_th, 0.0, false);
@@ -769,8 +769,7 @@ void Detector::run(std::ostream& out,
     sampler.collect_samples(rows_per_seq);
     fit_v.resize(batch_v.size());
     for (size_t bix = 0; bix < batch_v.size(); ++bix) {
-      const sym_est_t est =
-        sym_estimate(sym_merge(rows_per_seq[bix], rev_rows), lr_th, min_portion);
+      const sym_est_t est = sym_estimate(sym_merge(rows_per_seq[bix], rev_rows), lr_th, min_portion);
       fit_v[bix] = est.null_d_v;
     }
   } else {
@@ -822,17 +821,14 @@ DetectSC::DetectSC(CLI::App& sc)
               "Build the background null from both directions (default) or from the query side only");
   sc.add_option("--lr-th", lr_th, "Likelihood-ratio cut for the symmetric reconciliation filter [3.841]")
     ->check(CLI::NonNegativeNumber);
-  sc.add_option("--min-portion",
-                min_portion,
-                "Use the filtered null only if this fraction of windows survives --lr-th [0.66]")
+  sc.add_option(
+      "--min-portion", min_portion, "Use the filtered null only if this fraction of windows survives --lr-th [0.66]")
     ->check(CLI::Range(0.0, 1.0));
   sc.add_flag("--low-memory",
               low_memory,
               "Derive interval extrema on the fly instead of precomputing them: "
               "two fewer whole-query arrays, at some time cost");
-  sc.add_option("--batch-bases",
-                batch_bases,
-                "Query bases held in memory at once; 0 loads the whole query [0]")
+  sc.add_option("--batch-bases", batch_bases, "Query bases held in memory at once; 0 loads the whole query [0]")
     ->check(CLI::NonNegativeNumber);
   sc.add_option("--fit-quantiles", fit_quantiles, "Three central quantile probabilities for the gamma fit [0.2 0.4 0.6]")
     ->expected(3);
@@ -921,11 +917,8 @@ void DetectSC::detect()
     }
     const lshf_sptr_t lshf = std::make_shared<LSHF>(cfg.ppos, cfg.npos);
     built_sketch_t built = build_buckets(target_path, lshf, cfg.w, cfg.nrows, cfg.canonical);
-    query_sketch = Sketch(cfg,
-                          std::filesystem::path(target_path).filename().string(),
-                          std::move(built.buckets),
-                          built.nkmers,
-                          built.rho);
+    query_sketch =
+      Sketch(cfg, std::filesystem::path(target_path).filename().string(), std::move(built.buckets), built.nkmers, built.rho);
     if (per_sequence) {
       warn_msg("--per-sequence with symmetric detection: the reverse sample is genome-level, "
                "so every sequence is reconciled against the same one");
@@ -936,7 +929,7 @@ void DetectSC::detect()
     const Sketch sketch = file.open(i, symmetric ? SketchPart::All : SketchPart::Buckets);
     vec<dpoint_t> rev_rows;
     if (symmetric) {
-      rev_rows = run_direction(sketch, query_sketch, "ba", hdist_th, cfg.tau, false).rows;
+      rev_rows = run_direction(sketch, query_sketch, hdist_th, cfg.tau, false).rows;
     }
     Detector detector(sketch,
                       batch_v,

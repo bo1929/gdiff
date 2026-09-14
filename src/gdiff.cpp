@@ -112,9 +112,7 @@ void InfoSC::info()
 
 InfoSC::InfoSC(CLI::App& sc)
 {
-  sc.add_option("-i,--sketch-path", sketch_path, "Sketch file to inspect")
-    ->required()
-    ->check(CLI::ExistingFile);
+  sc.add_option("-i,--sketch-path", sketch_path, "Sketch file to inspect")->required()->check(CLI::ExistingFile);
 }
 
 int main(int argc, char** argv)

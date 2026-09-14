@@ -98,14 +98,8 @@ struct hash_pool_t
 
   [[nodiscard]] bool is_view() const noexcept { return hashes_view != nullptr; }
   [[nodiscard]] uint64_t size() const noexcept { return is_view() ? n_view : hashes.size(); }
-  [[nodiscard]] const uint64_t* hashes_ptr() const noexcept
-  {
-    return is_view() ? hashes_view : hashes.data();
-  }
-  [[nodiscard]] const uint16_t* win_ix_ptr() const noexcept
-  {
-    return is_view() ? win_ix_view : win_ix.data();
-  }
+  [[nodiscard]] const uint64_t* hashes_ptr() const noexcept { return is_view() ? hashes_view : hashes.data(); }
+  [[nodiscard]] const uint16_t* win_ix_ptr() const noexcept { return is_view() ? win_ix_view : win_ix.data(); }
 };
 
 // Concatenated 2-bit bases; base_off[i] is window i's bit-pair offset.
@@ -133,18 +127,12 @@ struct seq_pack_t
   }
 
   [[nodiscard]] bool is_view() const noexcept { return base_off_view != nullptr; }
-  [[nodiscard]] const uint64_t* packed_ptr() const noexcept
-  {
-    return is_view() ? packed_view : packed.data();
-  }
+  [[nodiscard]] const uint64_t* packed_ptr() const noexcept { return is_view() ? packed_view : packed.data(); }
   [[nodiscard]] const uint64_t* nmask_ptr() const noexcept
   {
     return is_view() ? nmask_view : (nmask.empty() ? nullptr : nmask.data());
   }
-  [[nodiscard]] const uint64_t* base_off_ptr() const noexcept
-  {
-    return is_view() ? base_off_view : base_off.data();
-  }
+  [[nodiscard]] const uint64_t* base_off_ptr() const noexcept { return is_view() ? base_off_view : base_off.data(); }
   // Expand window wi into cseq as ACGT characters plus 'N' where masked.
   void unpack(uint64_t wi, str& cseq) const;
 };
@@ -301,9 +289,7 @@ private:
                               const Buckets& buckets,
                               const window_sample_t& sample);
   void write_windows(std::ostream& os, const window_sample_t& sample);
-  window_sample_t sample_windows(const str& input_path,
-                                 uint64_t& genome_bp,
-                                 uint64_t& nvalid_bases);
+  window_sample_t sample_windows(const str& input_path, uint64_t& genome_bp, uint64_t& nvalid_bases);
   sketch_config_t make_config(uint64_t timestamp) const;
 
   vec<str> paths_v;
@@ -324,10 +310,6 @@ struct built_sketch_t
   double rho = 1.0;
 };
 
-built_sketch_t build_buckets(const str& input_path,
-                             const lshf_sptr_t& lshf,
-                             uint8_t w,
-                             uint32_t nrows,
-                             bool canonical);
+built_sketch_t build_buckets(const str& input_path, const lshf_sptr_t& lshf, uint8_t w, uint32_t nrows, bool canonical);
 
 #endif

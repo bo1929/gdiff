@@ -3,8 +3,7 @@
 #include <algorithm>
 #include <cmath>
 
-namespace
-{
+namespace {
 
   // Ascending by d, NaN last.
   bool d_nan_last(const dpoint_t& lhs, const dpoint_t& rhs)
@@ -74,8 +73,7 @@ sym_est_t sym_estimate(const sym_merge_t& rc, const double lr_th, const double m
 
   est.n_total = unf_d.size();
   est.n_kept = fil_d.size();
-  const double portion =
-    est.n_total ? static_cast<double>(est.n_kept) / static_cast<double>(est.n_total) : 0.0;
+  const double portion = est.n_total ? static_cast<double>(est.n_kept) / static_cast<double>(est.n_total) : 0.0;
   const double unf_mean = est.n_total ? unf_sum / static_cast<double>(est.n_total) : nanx();
   const double fil_mean = est.n_kept ? fil_sum / static_cast<double>(est.n_kept) : nanx();
 

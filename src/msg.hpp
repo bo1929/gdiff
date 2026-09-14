@@ -27,10 +27,7 @@ inline std::string concat_msg(Args&&... args)
   std::exit(code);
 }
 
-inline void warn_msg(const std::string& msg)
-{
-  std::cerr << "[WARNING] " << msg << std::endl;
-}
+inline void warn_msg(const std::string& msg) { std::cerr << "[WARNING] " << msg << std::endl; }
 
 template<typename... Args>
 inline void warn_pmsg(const std::string& prefix, Args&&... args)

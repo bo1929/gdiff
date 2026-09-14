@@ -5,6 +5,7 @@
 #include <cstring>
 #include <fstream>
 #include <iomanip>
+// #include <limits>
 #include <numeric>
 #include <sstream>
 #include <sys/mman.h>
@@ -18,8 +19,7 @@
 
 extern uint32_t num_threads;
 
-namespace
-{
+namespace {
 
   LLH<double> make_llhf(const Sketch& sketch, uint32_t hdist_th)
   {
@@ -164,11 +164,9 @@ namespace
     const double frac = total_jobs ? static_cast<double>(done_jobs) / static_cast<double>(total_jobs) : 1.0;
     const int filled = static_cast<int>(frac * bar_width + 0.5);
     std::ostringstream os;
-    os << "\rpairs [" << str(static_cast<size_t>(filled), '#')
-       << str(static_cast<size_t>(bar_width - filled), '.') << "] " << std::setw(3)
-       << static_cast<int>(frac * 100.0 + 0.5) << "% (" << std::fixed << std::setprecision(1)
-       << 0.5 * static_cast<double>(done_jobs) << "/" << 0.5 * static_cast<double>(total_jobs) << ")"
-       << std::flush;
+    os << "\rpairs [" << str(static_cast<size_t>(filled), '#') << str(static_cast<size_t>(bar_width - filled), '.') << "] "
+       << std::setw(3) << static_cast<int>(frac * 100.0 + 0.5) << "% (" << std::fixed << std::setprecision(1)
+       << 0.5 * static_cast<double>(done_jobs) << "/" << 0.5 * static_cast<double>(total_jobs) << ")" << std::flush;
     std::cerr << os.str();
   }
 
@@ -193,12 +191,8 @@ std::pair<double, char> select_strand_distance(const double d_fw, const double d
   return {d_rc, '-'};
 }
 
-dir_result_t run_direction(const Sketch& query,
-                           const Sketch& reference,
-                           const str& dir_label,
-                           uint32_t hdist_th,
-                           uint64_t nmers_limit,
-                           bool output_samples)
+dir_result_t
+run_direction(const Sketch& query, const Sketch& reference, uint32_t hdist_th, uint64_t nmers_limit, bool output_samples)
 {
   if (!query.get_config().compatible_with(reference.get_config())) {
     error_exit(concat_msg("Incompatible sketch pair: ",
@@ -285,20 +279,22 @@ dir_result_t run_direction(const Sketch& query,
   if (output_samples) {
     strstream ss;
     set_precision(ss, 5);
+    // set_precision(ss, std::numeric_limits<double>::max_digits10);
     for (size_t wix = 0; wix < nwins; ++wix) {
       const row_t& row = rows_v[wix];
       double lr_bg = nanx();
       if (is_valid_distance(out.rows[wix].d) && is_valid_distance(out.d_median)) {
-        lr_bg = likelihood_ratio_statistic(llhf.nll(out.d_median, row.hist, row.u),
-                                           llhf.nll(out.rows[wix].d, row.hist, row.u));
+        lr_bg =
+          likelihood_ratio_statistic(llhf.nll(out.d_median, row.hist, row.u), llhf.nll(out.rows[wix].d, row.hist, row.u));
       }
       write_tsv(ss,
-                dir_label,
+                "gdiff",
+                query.get_rname(),
+                reference.get_rname(),
                 wins[wix].qid,
                 wins[wix].start + 1,
                 wins[wix].end + query.get_k() - 1,
                 row.strand,
-                query.get_rname(),
                 reference.get_rname(),
                 out.rows[wix].d,
                 lr_bg,
@@ -530,9 +526,8 @@ void DistSC::resolve_source(const std::filesystem::path& path, vec<uint32_t>& ou
   if (is_sketch_file(path)) {
     const SketchFile* file = file_for(path);
     for (uint32_t rec = 0; rec < file->size(); ++rec) {
-      auto it = std::find_if(members.begin(), members.end(), [&](const member_t& m) {
-        return m.file == file && m.rec == rec;
-      });
+      auto it =
+        std::find_if(members.begin(), members.end(), [&](const member_t& m) { return m.file == file && m.rec == rec; });
       if (it != members.end()) {
         out.push_back(static_cast<uint32_t>(it - members.begin()));
         continue;
@@ -581,7 +576,8 @@ void DistSC::emit_header(std::ostream& os) const
 {
   if (no_header) return;
   if (output_samples) {
-    write_tsv(os, "dir", "qid", "start", "end", "strand", "query", "reference", "d", "lr_bg", "lr_ub") << '\n';
+    write_tsv(os, "config", "genome_a", "genome_b", "qid", "start", "end", "strand", "reference", "d", "lr_bg", "lr_ub")
+      << '\n';
   } else if (symmetric) {
     write_tsv(os,
               "genome_a",
@@ -704,9 +700,7 @@ void DistSC::dist_sketches()
     jobs.push_back({p, pairs[p].a, pairs[p].b, false});
     if (symmetric) jobs.push_back({p, pairs[p].b, pairs[p].a, true});
   }
-  std::stable_sort(jobs.begin(), jobs.end(), [](const job_t& x, const job_t& y) {
-    return x.ref_ix < y.ref_ix;
-  });
+  std::stable_sort(jobs.begin(), jobs.end(), [](const job_t& x, const job_t& y) { return x.ref_ix < y.ref_ix; });
 
   const uint64_t total_jobs = jobs.size();
   uint64_t done_jobs = 0;
@@ -721,12 +715,7 @@ void DistSC::dist_sketches()
     const Sketch ref_buckets = ref.file->open(ref.rec, SketchPart::Buckets);
     pool.parallel_for(batch_end - batch_start, 1, [&](uint64_t i) {
       const job_t& job = jobs[batch_start + static_cast<size_t>(i)];
-      dir_result_t r = run_direction(windows[job.query_ix],
-                                     ref_buckets,
-                                     job.ba ? "ba" : "ab",
-                                     hdist_th,
-                                     tau,
-                                     output_samples);
+      dir_result_t r = run_direction(windows[job.query_ix], ref_buckets, hdist_th, tau, output_samples);
       pair_t& pr = pairs[job.pair_ix];
       if (job.ba)
         pr.ba = std::move(r);
@@ -778,11 +767,8 @@ void DistSC::dist_fasta()
     }
     const lshf_sptr_t lshf = std::make_shared<LSHF>(cfg.ppos, cfg.npos);
     built_sketch_t built = build_buckets(set_a_path.string(), lshf, cfg.w, cfg.nrows, cfg.canonical);
-    query_sketch = Sketch(cfg,
-                          std::filesystem::path(set_a_path).filename().string(),
-                          std::move(built.buckets),
-                          built.nkmers,
-                          built.rho);
+    query_sketch =
+      Sketch(cfg, std::filesystem::path(set_a_path).filename().string(), std::move(built.buckets), built.nkmers, built.rho);
   }
 
   std::ostream& os = *output_stream;
@@ -800,7 +786,7 @@ void DistSC::dist_fasta()
     vec<dpoint_t> fwd_rows;
     vec<double> fwd_d;
     strstream fwd_samples;
-    if (output_samples) set_precision(fwd_samples, 5);
+    if (output_samples) set_precision(fwd_samples, std::numeric_limits<double>::max_digits10);
     {
       QSeq qs(set_a_path.string());
       bool more = true;
@@ -815,35 +801,31 @@ void DistSC::dist_fasta()
           const vec<qseq_t>& batch_v = qs.get_batch_v();
           const uint64_t nwinmers = sampler.get_nwinmers();
           const uint32_t k = reference.get_k();
-          sampler.for_each_counts([&](uint64_t bix,
-                                             uint64_t enmers,
-                                             uint64_t start_bin,
-                                             double d,
-                                             char strand,
-                                             const uint64_t* hist,
-                                             uint64_t u) {
-            double lr_ub = nanx();
-            if (hist && is_valid_distance(d)) {
-              uint64_t n_total = u;
-              for (uint32_t di = 0; di <= hdist_th; ++di)
-                n_total += hist[di];
-              lr_ub = compute_lr_ub(sampler.get_llhf(), d, n_total);
-            }
-            const uint64_t jx = start_bin << bin_shift;
-            const uint64_t jy = std::min(jx + nwinmers, enmers);
-            write_tsv(fwd_samples,
-                      "ab",
-                      batch_v[bix].qid,
-                      jx + 1,
-                      jy + k - 1,
-                      strand,
-                      set_a_path.filename().string(),
-                      reference.get_rname(),
-                      d,
-                      nanx(),
-                      lr_ub)
-              << '\n';
-          });
+          sampler.for_each_counts(
+            [&](uint64_t bix, uint64_t enmers, uint64_t start_bin, double d, char strand, const uint64_t* hist, uint64_t u) {
+              double lr_ub = nanx();
+              if (hist && is_valid_distance(d)) {
+                uint64_t n_total = u;
+                for (uint32_t di = 0; di <= hdist_th; ++di)
+                  n_total += hist[di];
+                lr_ub = compute_lr_ub(sampler.get_llhf(), d, n_total);
+              }
+              const uint64_t jx = start_bin << bin_shift;
+              const uint64_t jy = std::min(jx + nwinmers, enmers);
+              write_tsv(fwd_samples,
+                        "gdiff",
+                        set_a_path.filename().string(),
+                        reference.get_rname(),
+                        batch_v[bix].qid,
+                        jx + 1,
+                        jy + k - 1,
+                        strand,
+                        reference.get_rname(),
+                        d,
+                        nanx(),
+                        lr_ub)
+                << '\n';
+            });
         }
       }
     }
@@ -858,7 +840,7 @@ void DistSC::dist_fasta()
 
     dir_result_t ba;
     if (symmetric) {
-      ba = run_direction(reference, query_sketch, "ba", hdist_th, tau, output_samples);
+      ba = run_direction(reference, query_sketch, hdist_th, tau, output_samples);
     }
 
     pair_t pr;
@@ -924,9 +906,8 @@ DistSC::DistSC(CLI::App& sc)
   sc.add_option("--query-list", query_list_path, "Query set as a list file (alternative to the first positional)")
     ->excludes("query-set")
     ->check(CLI::ExistingFile);
-  sc.add_option("--reference-list",
-                reference_list_path,
-                "Reference set as a list file (alternative to the second positional)")
+  sc.add_option(
+      "--reference-list", reference_list_path, "Reference set as a list file (alternative to the second positional)")
     ->excludes("reference-set")
     ->check(CLI::ExistingFile);
   sc.add_option("-l", tau, "Length of sampled windows in k-mers [the sketch's]")->check(CLI::PositiveNumber);
@@ -934,13 +915,10 @@ DistSC::DistSC(CLI::App& sc)
     ->check(CLI::PositiveNumber);
   sc.add_option("--hdist-th", hdist_th, "Maximum Hamming distance for a k-mer to match [4]")
     ->check(CLI::Range(0, static_cast<int>(hdist_bound)));
-  sc.add_option("--lr-th",
-                lr_th,
-                "Likelihood-ratio cut for the symmetric reconciliation filter [3.841]")
+  sc.add_option("--lr-th", lr_th, "Likelihood-ratio cut for the symmetric reconciliation filter [3.841]")
     ->check(CLI::NonNegativeNumber);
-  sc.add_option("--min-portion",
-                min_portion,
-                "Report the filtered mean only if this fraction of windows survives --lr-th [0.66]")
+  sc.add_option(
+      "--min-portion", min_portion, "Report the filtered mean only if this fraction of windows survives --lr-th [0.66]")
     ->check(CLI::Range(0.0, 1.0));
   sc.add_flag("--symmetric,!--no-symmetric",
               symmetric,

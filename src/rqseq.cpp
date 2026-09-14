@@ -86,8 +86,7 @@ void RSeq::extract_mers(vec<uint64_t>& keys)
     if (l < w) {
       continue;
     }
-    cminimizer = *std::min_element(
-      winenc_v.begin(), winenc_v.end(), [](hmer_t lhs, hmer_t rhs) { return lhs.z < rhs.z; });
+    cminimizer = *std::min_element(winenc_v.begin(), winenc_v.end(), [](hmer_t lhs, hmer_t rhs) { return lhs.z < rhs.z; });
     if (canonical) {
       uint64_t rcenc64_bp = revcomp_bp64(cminimizer.x, k);
       if (cminimizer.x < rcenc64_bp) {

@@ -51,7 +51,8 @@ public:
     auto m = std::make_shared<MappedFile>();
     m->fd = ::open(path.c_str(), O_RDONLY);
     if (m->fd < 0) error_exit("Cannot open sketch file: " + path.string());
-    struct stat st{};
+    struct stat st
+    {};
     if (fstat(m->fd, &st) != 0) error_exit("Cannot fstat sketch file: " + path.string());
     m->len = static_cast<size_t>(st.st_size);
     if (m->len == 0) error_exit("Empty sketch file: " + path.string());
@@ -66,8 +67,7 @@ private:
   size_t len = 0;
 };
 
-namespace
-{
+namespace {
 
   constexpr uint64_t round_up_8(uint64_t x) noexcept { return (x + 7) & ~uint64_t(7); }
 
@@ -188,8 +188,7 @@ namespace
         const uint32_t bix_fw = lshf.compute_hash_bp(enc_bp);
         if (bix_fw < nrows) out_fw.push_back(pack_key(bix_fw, lshf.drop_ppos_lr(enc_lr)));
         const uint32_t bix_rc = lshf.compute_hash_bp(rc_bp);
-        if (bix_rc < nrows)
-          out_rc.push_back(pack_key(bix_rc, lshf.drop_ppos_lr(bp64_to_lr64(rc_bp))));
+        if (bix_rc < nrows) out_rc.push_back(pack_key(bix_rc, lshf.drop_ppos_lr(bp64_to_lr64(rc_bp))));
       } else {
         uint32_t bix;
         enc_t enc;
@@ -212,9 +211,7 @@ namespace
     if (n <= 1) return;
     vec<uint32_t> order(n);
     std::iota(order.begin(), order.end(), uint32_t(0));
-    std::sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) {
-      return pool.hashes[a] < pool.hashes[b];
-    });
+    std::sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) { return pool.hashes[a] < pool.hashes[b]; });
     vec<uint64_t> hashes(n);
     vec<uint16_t> win_ix(n);
     for (size_t i = 0; i < n; ++i) {
@@ -321,12 +318,8 @@ SketchFile::SketchFile(std::filesystem::path path)
   const uint32_t version = read_pod<uint32_t>(p, end, "version");
   if (magic != GDSK_MAGIC) error_exit("Not a gdiff sketch file: " + this->path.string());
   if (version != GDSK_VERSION) {
-    error_exit(concat_msg("Sketch format version ",
-                          version,
-                          " != ",
-                          GDSK_VERSION,
-                          "; re-run `gdiff sketch`: ",
-                          this->path.string()));
+    error_exit(
+      concat_msg("Sketch format version ", version, " != ", GDSK_VERSION, "; re-run `gdiff sketch`: ", this->path.string()));
   }
   const uint64_t nsketches = read_pod<uint64_t>(p, end, "nsketches");
 
@@ -473,8 +466,7 @@ void read_path_list(const std::filesystem::path& list_path, vec<str>& paths, vec
   }
 }
 
-built_sketch_t
-build_buckets(const str& input_path, const lshf_sptr_t& lshf, uint8_t w, uint32_t nrows, bool canonical)
+built_sketch_t build_buckets(const str& input_path, const lshf_sptr_t& lshf, uint8_t w, uint32_t nrows, bool canonical)
 {
   built_sketch_t out;
   RSeq rs(input_path, lshf, w, nrows, canonical);
@@ -583,8 +575,7 @@ sketch_config_t SketchSC::make_config(uint64_t timestamp) const
   return cfg;
 }
 
-window_sample_t
-SketchSC::sample_windows(const str& input_path, uint64_t& genome_bp, uint64_t& nvalid_bases)
+window_sample_t SketchSC::sample_windows(const str& input_path, uint64_t& genome_bp, uint64_t& nvalid_bases)
 {
   const uint64_t xtau = tau + k - 1;
   const uint64_t u64m = std::numeric_limits<uint64_t>::max();
@@ -701,9 +692,7 @@ SketchSC::sample_windows(const str& input_path, uint64_t& genome_bp, uint64_t& n
   if (win_repr == WinRepr::Pool) {
     sort_pool(sample.pool_fw);
     sort_pool(sample.pool_rc);
-  } else if (std::all_of(sample.packs.nmask.begin(), sample.packs.nmask.end(), [](uint64_t x) {
-               return x == 0;
-             })) {
+  } else if (std::all_of(sample.packs.nmask.begin(), sample.packs.nmask.end(), [](uint64_t x) { return x == 0; })) {
     // No ambiguous base anywhere: drop the mask instead of storing zeros.
     sample.packs.nmask.clear();
   }
@@ -737,8 +726,7 @@ void write_sketch_header(std::ostream& os, const sketch_config_t& cfg, uint64_t 
 void SketchSC::write_file_header(std::ostream& os, uint64_t nsketches)
 {
   const uint64_t now =
-    std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch())
-      .count();
+    std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
   write_sketch_header(os, make_config(now), nsketches);
 }
 
@@ -819,12 +807,8 @@ void SketchSC::process()
 
   const uint64_t nsketches = paths_v.size();
   const uint32_t nthreads = std::max(1u, num_threads);
-  cerr_msg("Sketching ",
-           nsketches,
-           " file(s) w/ ",
-           nthreads,
-           " thread(s), windows=",
-           win_repr == WinRepr::Pool ? "pool" : "seq");
+  cerr_msg(
+    "Sketching ", nsketches, " file(s) w/ ", nthreads, " thread(s), windows=", win_repr == WinRepr::Pool ? "pool" : "seq");
 
   std::ofstream sketch_stream(sketch_path, std::ofstream::binary);
   check_fstream(sketch_stream, "Cannot open output sketch file", sketch_path.string());
@@ -857,12 +841,10 @@ void SketchSC::process()
       uint64_t genome_bp = 0, nvalid_bases = 0;
       window_sample_t sample = sample_windows(input_path, genome_bp, nvalid_bases);
 
-      str rname = (i < rnames_v.size() && !rnames_v[i].empty())
-                    ? rnames_v[i]
-                    : std::filesystem::path(input_path).filename().string();
+      str rname =
+        (i < rnames_v.size() && !rnames_v[i].empty()) ? rnames_v[i] : std::filesystem::path(input_path).filename().string();
       const uint64_t timestamp =
-        std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch())
-          .count();
+        std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
       pending[i].rel = write_record(pending[i].bytes,
                                     rname,
                                     timestamp,
@@ -917,15 +899,13 @@ SketchSC::SketchSC(CLI::App& sc)
   sc.add_option("-h,--num-positions", h, "Number of positions for the LSH [k-16]")->check(CLI::PositiveNumber);
   sc.add_option("--frac", frac, "Keep a k-mer if LSH(x) < frac * 2^(2h); i.e., subsampling ratio [1.0]")
     ->check(CLI::Range(std::numeric_limits<double>::min(), 1.0));
-  sc.add_flag("--strand-agnostic,!--strand-aware",
-              canonical,
-              "A (canonical) strand-agnostic (default) or strand-aware sketch");
+  sc.add_flag(
+    "--strand-agnostic,!--strand-aware", canonical, "A (canonical) strand-agnostic (default) or strand-aware sketch");
   sc.add_option("-l", tau, "Length of sampled windows in k-mers [500]")->check(CLI::PositiveNumber);
-  sc.add_option("--sample-size", sample_size, "Windows sampled across each genome [1000]")
-    ->check(CLI::Range(1, 65535));
+  sc.add_option("--sample-size", sample_size, "Windows sampled across each genome [1000]")->check(CLI::Range(1, 65535));
   sc.add_option("--window-repr", win_repr, "How to store sampled windows: pool (fast) or seq (compact) [pool]")
-    ->transform(CLI::CheckedTransformer(std::map<str, WinRepr>{{"pool", WinRepr::Pool}, {"seq", WinRepr::Seq}},
-                                        CLI::ignore_case));
+    ->transform(
+      CLI::CheckedTransformer(std::map<str, WinRepr>{{"pool", WinRepr::Pool}, {"seq", WinRepr::Seq}}, CLI::ignore_case));
   sc.callback([&]() {
     if (!(sc.count("-w") + sc.count("--win-len"))) {
       w = k + 6;

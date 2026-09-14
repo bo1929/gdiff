@@ -9,8 +9,7 @@
 #include <limits>
 #include <vector>
 
-namespace hll
-{
+namespace hll {
 
   class HyperLogLog
   {
@@ -31,8 +30,7 @@ namespace hll
       const uint32_t ix = static_cast<uint32_t>(hash >> q);
       const uint64_t suffix = hash << p;
       // clzll(0) is undefined; an all-zero suffix means the maximal rank.
-      const uint8_t rank =
-        suffix ? static_cast<uint8_t>(__builtin_clzll(suffix) + 1) : static_cast<uint8_t>(q + 1);
+      const uint8_t rank = suffix ? static_cast<uint8_t>(__builtin_clzll(suffix) + 1) : static_cast<uint8_t>(q + 1);
       if (rank > registers[ix]) registers[ix] = rank;
     }
 
