@@ -715,7 +715,8 @@ void DistSC::dist_sketches()
     const Sketch ref_buckets = ref.file->open(ref.rec, SketchPart::Buckets);
     pool.parallel_for(batch_end - batch_start, 1, [&](uint64_t i) {
       const job_t& job = jobs[batch_start + static_cast<size_t>(i)];
-      dir_result_t r = run_direction(windows[job.query_ix], ref_buckets, hdist_th, tau, output_samples);
+      const uint32_t hd = hdist_given ? hdist_th : hdist_th_for(ref_buckets.get_nvalid_bases());
+      dir_result_t r = run_direction(windows[job.query_ix], ref_buckets, hd, tau, output_samples);
       pair_t& pr = pairs[job.pair_ix];
       if (job.ba)
         pr.ba = std::move(r);
@@ -913,8 +914,11 @@ DistSC::DistSC(CLI::App& sc)
   sc.add_option("-l", tau, "Length of sampled windows in k-mers [the sketch's]")->check(CLI::PositiveNumber);
   sc.add_option("--sample-size", sample_size, "Windows sampled from a FASTA query [the sketch's]")
     ->check(CLI::PositiveNumber);
-  sc.add_option("--hdist-th", hdist_th, "Maximum Hamming distance for a k-mer to match [4]")
-    ->check(CLI::Range(0, static_cast<int>(hdist_bound)));
+  sc.add_option("--hdist-th",
+                hdist_th,
+                "Maximum Hamming distance for a k-mer to match [2 if sketch valid bases > 50 Mbp, else 3]")
+    ->check(CLI::Range(0, static_cast<int>(hdist_bound)))
+    ->each([&](const str&) { hdist_given = true; });
   sc.add_option("--lr-th", lr_th, "Likelihood-ratio cut for the symmetric reconciliation filter [3.841]")
     ->check(CLI::NonNegativeNumber);
   sc.add_option(

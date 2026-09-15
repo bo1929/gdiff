@@ -9,6 +9,9 @@
 #include <utility>
 
 static constexpr uint32_t hdist_bound = 7;
+static constexpr uint64_t hdist_large_bp = 50ull * 1000 * 1000; // 50 Mbp of valid bases
+
+inline uint32_t hdist_th_for(uint64_t nvalid_bases) noexcept { return nvalid_bases > hdist_large_bp ? 2u : 3u; }
 
 static constexpr double d_ub = 1.0;
 static constexpr double d_lb = 0.0;

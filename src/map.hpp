@@ -67,7 +67,8 @@ private:
   std::filesystem::path output_path;
   std::ofstream output_file;
   std::ostream* output_stream = &std::cout;
-  uint32_t hdist_th = 4;
+  uint32_t hdist_th = 3;
+  bool hdist_given = false;
   uint64_t tau = 1;
   uint64_t bin_shift = 0;
   double chisq = 33.00051; // chi-square(1) survival ~1e-8

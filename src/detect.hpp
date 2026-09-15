@@ -195,7 +195,8 @@ private:
   uint64_t tau = 0;
   uint64_t sample_size = 1000;
   uint64_t bin_shift = 0;
-  uint32_t hdist_th = 4;
+  uint32_t hdist_th = 3;
+  bool hdist_given = false;
   double chisq = 33.00051; // chi-square(1) survival ~1e-8
   vec<double> levels;
   vec<double> fit_quantiles;
