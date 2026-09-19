@@ -1,46 +1,47 @@
 #include "gdiff.hpp"
+#include "roll.hpp"
 
 void MergeSC::merge()
 {
-  cerr_msg("Merging ", paths_v.size(), " sketch file(s)");
+  cerr_msg("Merging ", paths_v.size(), " container(s)");
 
-  // Re-index rather than concatenate: records move, absolute offsets are rewritten.
-  vec<std::unique_ptr<SketchFile>> inputs;
+  // Re-index rather than concatenate: sketches move, absolute offsets are rewritten.
+  vec<std::unique_ptr<Container>> inputs_v;
   uint64_t nsketches = 0;
   for (const str& path : paths_v) {
-    inputs.push_back(std::make_unique<SketchFile>(path));
-    const SketchFile& in = *inputs.back();
-    if (!in.get_config().compatible_with(inputs.front()->get_config())) {
+    inputs_v.push_back(std::make_unique<Container>(path));
+    const Container& in = *inputs_v.back();
+    if (!compatible_configs(in.get_config(), inputs_v.front()->get_config())) {
       error_exit("Cannot merge sketches with different configurations: " + path);
     }
-    if (in.get_config().win_repr != inputs.front()->get_config().win_repr) {
-      error_exit("Cannot merge sketches with different --window-repr: " + path);
+    if (in.get_config().keep_seq != inputs_v.front()->get_config().keep_seq) {
+      error_exit("Cannot merge sketches with different --keep-seq: " + path);
     }
     nsketches += in.size();
   }
-  if (nsketches == 0) error_exit("Nothing to merge: the inputs hold no records");
+  if (nsketches == 0) error_exit("Nothing to merge: the inputs hold no sketches");
 
   std::ofstream sout(sketch_path, std::ofstream::binary);
   check_fstream(sout, "Cannot open output file", sketch_path.string());
-  write_sketch_header(sout, inputs.front()->get_config(), nsketches);
+  write_container_header(sout, inputs_v.front()->get_config(), nsketches);
   const std::streampos index_pos = sout.tellp();
-  vec<record_entry_t> entries(nsketches);
-  sout.write(reinterpret_cast<const char*>(entries.data()),
-             static_cast<std::streamsize>(sizeof(record_entry_t) * nsketches));
+  vec<sketch_entry_t> entries_v(nsketches);
+  sout.write(reinterpret_cast<const char*>(entries_v.data()),
+             static_cast<std::streamsize>(sizeof(sketch_entry_t) * nsketches));
 
-  vec<char> buffer;
+  vec<char> buffer_v;
   uint64_t pos = static_cast<uint64_t>(sout.tellp());
   uint64_t out_ix = 0;
-  for (size_t fi = 0; fi < inputs.size(); ++fi) {
+  for (size_t fi = 0; fi < inputs_v.size(); ++fi) {
     std::ifstream sin(paths_v[fi], std::ifstream::binary);
-    check_fstream(sin, "Cannot open sketch file", paths_v[fi]);
-    for (const record_entry_t& e : inputs[fi]->get_index().records) {
-      buffer.resize(static_cast<size_t>(e.len));
+    check_fstream(sin, "Cannot open container", paths_v[fi]);
+    for (const sketch_entry_t& e : inputs_v[fi]->get_entries()) {
+      buffer_v.resize(static_cast<size_t>(e.len));
       sin.seekg(static_cast<std::streamoff>(e.offset));
-      sin.read(buffer.data(), static_cast<std::streamsize>(e.len));
-      check_fstream(sin, "Failed to read a sketch record", paths_v[fi]);
+      sin.read(buffer_v.data(), static_cast<std::streamsize>(e.len));
+      check_fstream(sin, "Failed to read a sketch", paths_v[fi]);
 
-      record_entry_t& out = entries[out_ix++];
+      sketch_entry_t& out = entries_v[out_ix++];
       out.offset = pos;
       out.len = e.len;
       out.buckets_off = pos + (e.buckets_off - e.offset);
@@ -49,34 +50,34 @@ void MergeSC::merge()
         out.windows_off = pos + (e.windows_off - e.offset);
         out.windows_len = e.windows_len;
       }
-      sout.write(buffer.data(), static_cast<std::streamsize>(e.len));
+      sout.write(buffer_v.data(), static_cast<std::streamsize>(e.len));
       pos += e.len;
     }
   }
 
   sout.seekp(index_pos);
-  sout.write(reinterpret_cast<const char*>(entries.data()),
-             static_cast<std::streamsize>(sizeof(record_entry_t) * nsketches));
+  sout.write(reinterpret_cast<const char*>(entries_v.data()),
+             static_cast<std::streamsize>(sizeof(sketch_entry_t) * nsketches));
   sout.seekp(0, std::ios::end);
-  check_fstream(sout, "Failed to write the merged sketch file", sketch_path.string());
+  check_fstream(sout, "Failed to write the merged container", sketch_path.string());
   sout.close();
 
-  cerr_msg("Merged sketch saved to ", sketch_path.string(), " with ", nsketches, " record(s)");
+  cerr_msg("Merged sketch saved to ", sketch_path.string(), " with ", nsketches, " sketch(es)");
 }
 
 MergeSC::MergeSC(CLI::App& sc)
 {
-  sc.add_option("-i,--sketch-paths", paths_v, "Input sketch files to merge")->required()->check(CLI::ExistingFile);
-  sc.add_option("-o,--output-path", sketch_path, "Path to store the merged sketch file")->required();
+  sc.add_option("-i,--sketch-paths", paths_v, "Input containers to merge")->required()->check(CLI::ExistingFile);
+  sc.add_option("-o,--output-path", sketch_path, "Path to store the merged container")->required();
 }
 
 void InfoSC::info()
 {
-  const SketchFile file(sketch_path);
+  const Container file(sketch_path);
   const sketch_config_t& cfg = file.get_config();
 
   std::cout << "File:               " << sketch_path.string() << "\n";
-  std::cout << "Records:            " << file.size() << "\n";
+  std::cout << "Sketches:           " << file.size() << "\n";
   std::cout << "k (mer len):        " << static_cast<int>(cfg.k) << "\n";
   std::cout << "w (win len):        " << static_cast<int>(cfg.w) << "\n";
   std::cout << "h (LSH pos):        " << static_cast<int>(cfg.h) << "\n";
@@ -85,26 +86,26 @@ void InfoSC::info()
   std::cout << "frac:               " << cfg.frac << "\n";
   std::cout << "-l (window len):    " << cfg.tau << "\n";
   std::cout << "--sample-size:      " << cfg.sample_size << "\n";
-  std::cout << "--window-repr:      " << (cfg.win_repr == WinRepr::Pool ? "pool" : "seq") << "\n";
+  std::cout << "--keep-seq:         " << (cfg.keep_seq ? "true" : "false") << "\n";
   std::cout << "seed:               " << cfg.seed << "\n";
 
   for (uint32_t i = 0; i < file.size(); ++i) {
-    const Sketch sk = file.open(i, SketchPart::All);
+    const Sketch sk = file.open(i, SketchLoad::All);
     std::time_t ts = static_cast<std::time_t>(sk.get_timestamp());
     str ts_str = std::ctime(&ts);
     if (!ts_str.empty() && ts_str.back() == '\n') ts_str.pop_back();
 
-    std::cout << "\n[Record " << (i + 1) << "/" << file.size() << "]\n";
+    std::cout << "\n[Sketch " << (i + 1) << "/" << file.size() << "]\n";
     std::cout << "  Name:             " << sk.get_rname() << "\n";
     std::cout << "  Date:             " << ts_str << "\n";
-    std::cout << "  Genome length:    " << sk.get_genome_bp() << "\n";
-    std::cout << "  Valid bases:      " << sk.get_nvalid_bases() << "\n";
+    std::cout << "  Genome length:    " << sk.get_ntotal_bp() << "\n";
+    std::cout << "  Valid bases:      " << sk.get_nvalid_bp() << "\n";
     std::cout << "  k-mers:           " << sk.get_nkmers() << "\n";
-    std::cout << "  card_est:         " << sk.get_card_est() << "\n";
+    std::cout << "  card:              " << sk.get_card() << "\n";
     std::cout << "  rho:              " << sk.get_rho() << "\n";
     std::cout << "  Nonempty buckets: " << sk.get_buckets().get_nnonempty() << "\n";
-    std::cout << "  Windows:          " << sk.get_wins().size() << "\n";
-    const record_entry_t& e = file.get_index().records[i];
+    std::cout << "  Windows:          " << sk.get_windows().wins_v.size() << "\n";
+    const sketch_entry_t& e = file.get_entry(i);
     std::cout << "  Bucket bytes:     " << e.buckets_len << "\n";
     std::cout << "  Window bytes:     " << e.windows_len << "\n";
   }
@@ -112,7 +113,7 @@ void InfoSC::info()
 
 InfoSC::InfoSC(CLI::App& sc)
 {
-  sc.add_option("-i,--sketch-path", sketch_path, "Sketch file to inspect")->required()->check(CLI::ExistingFile);
+  sc.add_option("-i,--sketch-path", sketch_path, "Container to inspect")->required()->check(CLI::ExistingFile);
 }
 
 int main(int argc, char** argv)
@@ -125,8 +126,7 @@ int main(int argc, char** argv)
   app.set_help_flag("--help");
   app.fallthrough();
 
-  bool verbose = false;
-  app.add_flag("--verbose,!--no-verbose", verbose, "Increased verbosity and progress report");
+  app.add_flag("--verbose,!--no-verbose", verbose, "Report progress even when stderr is not a terminal");
   app.require_subcommand();
   app.add_option("--seed", seed, "Random seed for the LSH and other parts that require randomness [0]");
   app.callback([&]() { init_thread_rng(0); });
@@ -134,10 +134,11 @@ int main(int argc, char** argv)
 
   auto& sc_sketch = *app.add_subcommand("sketch", "Create sketches from FASTA/FASTQ files");
   auto& sc_map = *app.add_subcommand("map", "Map queries and extract distance-based patterns from sketches");
-  auto& sc_dist = *app.add_subcommand("dist", "Sample query regions and summarize MLE distances");
+  auto& sc_dist = *app.add_subcommand("dist", "Summarize MLE distances between sketches");
   auto& sc_detect = *app.add_subcommand("detect", "Fit a background distance distribution and detect outlier regions");
-  auto& sc_merge = *app.add_subcommand("merge", "Merge multiple sketches into a single sketch file");
-  auto& sc_info = *app.add_subcommand("info", "Show metadata for all sketches in a sketch file");
+  auto& sc_merge = *app.add_subcommand("merge", "Merge containers into one");
+  auto& sc_info = *app.add_subcommand("info", "Show metadata for all sketches in a container");
+  auto& sc_roll = *app.add_subcommand("roll", "Roll a window over query sequences and report per-window MLE distances");
 
   SketchSC gdiff_sketch(sc_sketch);
   MapSC gdiff_map(sc_map);
@@ -145,8 +146,10 @@ int main(int argc, char** argv)
   DetectSC gdiff_detect(sc_detect);
   MergeSC gdiff_merge(sc_merge);
   InfoSC gdiff_info(sc_info);
+  RollSC gdiff_roll(sc_roll);
 
   CLI11_PARSE(app, argc, argv);
+  str invocation;
   for (int i = 0; i < argc; ++i) {
     invocation += str(argv[i]) + " ";
   }
@@ -154,11 +157,9 @@ int main(int argc, char** argv)
     invocation.pop_back();
   }
 
-  auto tstart = std::chrono::system_clock::now();
-  std::time_t tstart_f = std::chrono::system_clock::to_time_t(tstart);
-  str invocation_str = "Invocation: " + invocation + "\n";
-  std::cerr << invocation_str;
-  std::cerr << std::ctime(&tstart_f);
+  const auto tstart = std::chrono::system_clock::now();
+  const std::time_t tstart_f = std::chrono::system_clock::to_time_t(tstart);
+  std::cerr << "Invocation: " << invocation << '\n' << std::ctime(&tstart_f);
 
   auto run_timed = [&](const char* done_msg, auto&& work) {
     const auto t0 = std::chrono::system_clock::now();
@@ -187,7 +188,7 @@ int main(int argc, char** argv)
   }
 
   if (sc_dist.parsed()) {
-    cerr_msg("Sampling query regions and calculating distances...");
+    cerr_msg("Comparing sketches and calculating distances...");
     run_timed("Done calculating distances, elapsed: ", [&]() { gdiff_dist.dist(); });
   }
 
@@ -198,6 +199,11 @@ int main(int argc, char** argv)
 
   if (sc_info.parsed()) {
     gdiff_info.info();
+  }
+
+  if (sc_roll.parsed()) {
+    cerr_msg("Rolling windows and calculating local distances...");
+    run_timed("Done rolling windows, elapsed: ", [&]() { gdiff_roll.roll(); });
   }
 
   auto tend = std::chrono::system_clock::now();

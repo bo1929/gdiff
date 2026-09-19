@@ -2,7 +2,6 @@
 #define _SCAN_HPP
 
 #include "dim.hpp"
-#include "stils.hpp"
 #include "sketch.hpp"
 #include <cstdint>
 #include <limits>
@@ -26,80 +25,73 @@ struct scan_ctx_t
   uint64_t mask_lr;
   uint64_t bin_shift;
   uint32_t hdist_th;
-  uint32_t tolerance_len; // N-runs longer than this break intervals
+  uint32_t tol_len; // N-runs longer than this break intervals
 };
 
 inline scan_ctx_t make_scan_ctx(const Sketch& sketch, uint64_t bin_shift, uint32_t hdist_th)
 {
   const LSHF* lshf = sketch.get_lshf_sptr().get();
   const uint32_t k = lshf->get_k();
-  const uint64_t u64max = std::numeric_limits<uint64_t>::max();
-  return {lshf,
-          &sketch.get_buckets(),
-          k,
-          u64max >> ((32 - k) * 2),
-          ((u64max >> (64 - k)) << 32) + ((u64max << 32) >> (64 - k)),
-          bin_shift,
-          hdist_th,
-          k};
+  const lsh_masks_t masks = get_lsh_masks(k);
+  return {lshf, &sketch.get_buckets(), k, masks.bp, masks.lr, bin_shift, hdist_th, k};
 }
 
-constexpr size_t scan_block = 64;
-
-// C: canonical vs per-strand. Agg: hit/miss aggregator.
-template<bool C, typename Agg>
-inline void scan_mers_range(const scan_ctx_t& ctx, const char* cseq, const uint64_t j0, const uint64_t j1, Agg&& agg)
+// Canonical: one key per k-mer (true) vs strand-aware fw+rc (false). Agg: hit/miss aggregator.
+template<bool Canonical, typename Agg>
+inline void scan_mers_range(const scan_ctx_t& ctx, const char* cseq, uint64_t j0, uint64_t j1, Agg&& agg)
 {
   const uint32_t k = ctx.k;
   const uint64_t i1 = j1 + k - 1;
   const LSHF* lshf = ctx.lshf;
   const Buckets* buckets = ctx.buckets;
   uint64_t l = 0;
-  uint64_t n_run = 0; // consecutive ambiguous bases so far
+  uint64_t n_skip = 0; // length of the current consecutive ambiguous base run
   uint64_t enc_lr = 0, enc_bp = 0;
   size_t n = 0;
-  uint64_t b_bin[scan_block];
-  uint32_t b_bix[2][scan_block];
-  enc_t b_enc[2][scan_block];
+
+  constexpr size_t bufmer_count = 64;
+  uint64_t bufbin[bufmer_count];
+  uint32_t bufbix[2][bufmer_count];
+  enc_t bufenc[2][bufmer_count];
 
   auto flush = [&]() {
     // Phase A: prefetch the occupancy lines for the whole block.
     for (size_t s = 0; s < n; ++s) {
-      buckets->prefetch(b_bix[0][s]);
-      if constexpr (C) buckets->prefetch(b_bix[1][s]);
+      buckets->prefetch(bufbix[0][s]);
+      if constexpr (!Canonical) buckets->prefetch(bufbix[1][s]);
     }
     // Phase B: resolve bucket bounds (now cache-warm) and prefetch enc lines.
-    const enc_t* beg[2][scan_block];
-    const enc_t* end[2][scan_block];
+    const enc_t* ix_start[2][bufmer_count];
+    const enc_t* ix_end[2][bufmer_count];
     for (size_t s = 0; s < n; ++s) {
-      if (!buckets->range(b_bix[0][s], beg[0][s], end[0][s])) {
-        beg[0][s] = end[0][s] = nullptr;
+      if (!buckets->range(bufbix[0][s], ix_start[0][s], ix_end[0][s])) {
+        ix_start[0][s] = ix_end[0][s] = nullptr;
       } else {
-        __builtin_prefetch(beg[0][s], 0, 0);
+        __builtin_prefetch(ix_start[0][s], 0, 0);
       }
-      if constexpr (C) {
-        if (!buckets->range(b_bix[1][s], beg[1][s], end[1][s])) {
-          beg[1][s] = end[1][s] = nullptr;
+      if constexpr (!Canonical) {
+        if (!buckets->range(bufbix[1][s], ix_start[1][s], ix_end[1][s])) {
+          ix_start[1][s] = ix_end[1][s] = nullptr;
         } else {
-          __builtin_prefetch(beg[1][s], 0, 0);
+          __builtin_prefetch(ix_start[1][s], 0, 0);
         }
       }
     }
     // Phase C: scan buckets and agg observed k-mers (hits and misses).
     for (size_t s = 0; s < n; ++s) {
-      if (beg[0][s] != nullptr) {
-        const uint32_t hdist = bucket_hdist_min(beg[0][s], end[0][s], b_enc[0][s]);
-        agg(b_bin[s], hdist, false);
+      if (ix_start[0][s] != nullptr) {
+        const uint32_t hdist = bucket_hdist_min(ix_start[0][s], ix_end[0][s], bufenc[0][s]);
+        agg(bufbin[s], hdist, false);
       } else {
         // Out-of-range (--frac) or empty bucket: not in the sketch, a miss.
-        agg(b_bin[s], ctx.hdist_th + 1, false);
+        agg(bufbin[s], ctx.hdist_th + 1, false);
       }
-      if constexpr (C) {
-        if (beg[1][s] != nullptr) {
-          const uint32_t hdist = bucket_hdist_min(beg[1][s], end[1][s], b_enc[1][s]);
-          agg(b_bin[s], hdist, true);
+      if constexpr (!Canonical) {
+        if (ix_start[1][s] != nullptr) {
+          const uint32_t hdist = bucket_hdist_min(ix_start[1][s], ix_end[1][s], bufenc[1][s]);
+          agg(bufbin[s], hdist, true);
         } else {
-          agg(b_bin[s], ctx.hdist_th + 1, true);
+          agg(bufbin[s], ctx.hdist_th + 1, true);
         }
       }
     }
@@ -109,10 +101,10 @@ inline void scan_mers_range(const scan_ctx_t& ctx, const char* cseq, const uint6
   for (uint64_t i = j0; i < i1; ++i) {
     if (__builtin_expect(SEQ_NT4_TABLE[static_cast<uint8_t>(cseq[i])] >= 4, 0)) {
       l = 0;
-      if (++n_run > ctx.tolerance_len) agg.skip_mer(i >> ctx.bin_shift);
+      if (++n_skip > ctx.tol_len) agg.skip_mer(i >> ctx.bin_shift);
       continue;
     }
-    n_run = 0;
+    n_skip = 0;
     ++l;
     if (l < k) continue;
     // i + 1 - k: i - k + 1 wraps on the first window of a sequence.
@@ -125,21 +117,21 @@ inline void scan_mers_range(const scan_ctx_t& ctx, const char* cseq, const uint6
     enc_bp &= ctx.mask_bp;
     enc_lr &= ctx.mask_lr;
     if (__builtin_expect(j >= j1, 0)) break;
-    const uint64_t rc_bp = revcomp_bp64(enc_bp, k);
-    if constexpr (C) {
-      b_bix[0][n] = lshf->compute_hash_bp(enc_bp);
-      b_bix[1][n] = lshf->compute_hash_bp(rc_bp);
-      b_enc[0][n] = lshf->drop_ppos_lr(enc_lr);
-      b_enc[1][n] = lshf->drop_ppos_lr(bp64_to_lr64(rc_bp));
-    } else if (rc_bp < enc_bp) {
-      b_bix[0][n] = lshf->compute_hash_bp(enc_bp);
-      b_enc[0][n] = lshf->drop_ppos_lr(enc_lr);
+    const uint64_t rcenc_bp = revcomp_bp64(enc_bp, k);
+    if constexpr (!Canonical) {
+      bufbix[0][n] = lshf->compute_hash_bp(enc_bp);
+      bufbix[1][n] = lshf->compute_hash_bp(rcenc_bp);
+      bufenc[0][n] = lshf->drop_ppos_lr(enc_lr);
+      bufenc[1][n] = lshf->drop_ppos_lr(bp64_to_lr64(rcenc_bp));
+    } else if (rcenc_bp < enc_bp) {
+      bufbix[0][n] = lshf->compute_hash_bp(enc_bp);
+      bufenc[0][n] = lshf->drop_ppos_lr(enc_lr);
     } else {
-      b_bix[0][n] = lshf->compute_hash_bp(rc_bp);
-      b_enc[0][n] = lshf->drop_ppos_lr(bp64_to_lr64(rc_bp));
+      bufbix[0][n] = lshf->compute_hash_bp(rcenc_bp);
+      bufenc[0][n] = lshf->drop_ppos_lr(bp64_to_lr64(rcenc_bp));
     }
-    b_bin[n] = j >> ctx.bin_shift;
-    if (++n == scan_block) flush();
+    bufbin[n] = j >> ctx.bin_shift;
+    if (++n == bufmer_count) flush();
   }
   if (n) flush();
 }

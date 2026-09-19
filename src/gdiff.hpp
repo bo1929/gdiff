@@ -17,7 +17,6 @@
 #define PRINT_VERSION std::cerr << "gdiff version: " << VERSION << std::endl;
 
 extern uint32_t num_threads;
-extern str invocation;
 
 class MergeSC
 {
@@ -27,7 +26,7 @@ public:
 
 private:
   std::filesystem::path sketch_path;
-  std::vector<str> paths_v;
+  vec<str> paths_v;
 };
 
 class InfoSC

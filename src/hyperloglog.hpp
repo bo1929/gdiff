@@ -14,7 +14,7 @@ namespace hll {
   class HyperLogLog
   {
   public:
-    static constexpr uint8_t min_precision = 4;
+    static constexpr uint8_t min_precision = 8;
     static constexpr uint8_t max_precision = 18;
 
     explicit HyperLogLog(uint8_t precision)
@@ -34,16 +34,6 @@ namespace hll {
       if (rank > registers[ix]) registers[ix] = rank;
     }
 
-    void merge(const HyperLogLog& other)
-    {
-      if (m != other.m) return;
-      for (uint32_t r = 0; r < m; ++r) {
-        registers[r] = std::max(registers[r], other.registers[r]);
-      }
-    }
-
-    void clear() noexcept { std::fill(registers.begin(), registers.end(), uint8_t(0)); }
-
     [[nodiscard]] double estimate() const
     {
       // Register-value multiplicities; values are in [0, q+1] by construction.
@@ -59,9 +49,6 @@ namespace hll {
       if (!(z > 0.0)) return 0.0;
       return alpha_inf * md * md / z;
     }
-
-    [[nodiscard]] uint32_t register_size() const noexcept { return m; }
-    [[nodiscard]] uint8_t precision() const noexcept { return p; }
 
   private:
     // 1 / (2 ln 2): the m -> infinity limit of the HLL bias constant.

@@ -2,11 +2,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 namespace {
 
-  // Ascending by d, NaN last.
-  bool d_nan_last(const dpoint_t& lhs, const dpoint_t& rhs)
+  bool order_finite_first(const ds_t& lhs, const ds_t& rhs)
   {
     const bool lnan = std::isnan(lhs.d);
     const bool rnan = std::isnan(rhs.d);
@@ -14,80 +14,76 @@ namespace {
     return lhs.d < rhs.d;
   }
 
+  std::pair<vec<ds_t>, uint64_t> merge_directions(vec<ds_t>& ab_v, vec<ds_t>& ba_v)
+  {
+    std::sort(ab_v.begin(), ab_v.end(), order_finite_first);
+    std::sort(ba_v.begin(), ba_v.end(), order_finite_first);
+
+    uint64_t n_na = 0;
+    const size_t nranks = std::max(ab_v.size(), ba_v.size());
+    vec<ds_t> ds_v;
+    ds_v.reserve(nranks);
+    for (size_t i = 0; i < nranks; ++i) {
+      const bool has_ab = i < ab_v.size() && !std::isnan(ab_v[i].d);
+      const bool has_ba = i < ba_v.size() && !std::isnan(ba_v[i].d);
+      if (has_ab && has_ba) {
+        ds_v.push_back(ab_v[i].d <= ba_v[i].d ? ab_v[i] : ba_v[i]);
+      } else if (has_ab) {
+        ds_v.push_back(ab_v[i]);
+      } else if (has_ba) {
+        ds_v.push_back(ba_v[i]);
+      } else {
+        ++n_na;
+      }
+    }
+    return {std::move(ds_v), n_na};
+  }
+
 } // namespace
 
-sym_merge_t sym_merge(vec<dpoint_t> ab, vec<dpoint_t> ba)
+summary_t summarize_symmetric(vec<ds_t> ab_v, vec<ds_t> ba_v, double lr_th, double min_portion)
 {
-  std::sort(ab.begin(), ab.end(), d_nan_last);
-  std::sort(ba.begin(), ba.end(), d_nan_last);
+  summary_t s;
+  const auto [ds_v, n_na] = merge_directions(ab_v, ba_v);
+  s.n_na = n_na;
 
-  sym_merge_t rc;
-  const size_t nmax = std::max(ab.size(), ba.size());
-  rc.rows.reserve(nmax);
-  for (size_t i = 0; i < nmax; ++i) {
-    const bool has_ab = i < ab.size() && !std::isnan(ab[i].d);
-    const bool has_ba = i < ba.size() && !std::isnan(ba[i].d);
-    if (has_ab && has_ba) {
-      rc.rows.push_back(ab[i].d <= ba[i].d ? ab[i] : ba[i]);
-    } else if (has_ab) {
-      rc.rows.push_back(ab[i]);
-    } else if (has_ba) {
-      rc.rows.push_back(ba[i]);
+  double bf_sum = 0.0, af_sum = 0.0;
+  vec<double> bf_d_v, af_d_v;
+  bf_d_v.reserve(ds_v.size());
+  af_d_v.reserve(ds_v.size());
+
+  for (const ds_t& ds : ds_v) {
+    if (ds.s == 0.0) ++s.n_ub;
+
+    bf_sum += ds.d;
+    bf_d_v.push_back(ds.d);
+    if (std::isnan(s.d_highest) || ds.d > s.d_highest) s.d_highest = ds.d;
+
+    // A missing likelihood-ratio bound carries no evidence, so it is rejected.
+    if (!std::isnan(ds.s) && ds.s > lr_th) {
+      af_sum += ds.d;
+      af_d_v.push_back(ds.d);
+      if (std::isnan(s.d_upper) || ds.d > s.d_upper) s.d_upper = ds.d;
     } else {
-      ++rc.n_na;
-    }
-  }
-  return rc;
-}
-
-sym_est_t sym_estimate(const sym_merge_t& rc, const double lr_th, const double min_portion)
-{
-  sym_est_t est;
-  est.num_na = rc.n_na;
-
-  double unf_sum = 0.0, fil_sum = 0.0;
-  vec<double> unf_d, fil_d;
-  unf_d.reserve(rc.rows.size());
-  fil_d.reserve(rc.rows.size());
-
-  for (const dpoint_t& row : rc.rows) {
-    if (std::isnan(row.d)) {
-      ++est.num_na;
-      continue;
-    }
-    if (row.lr_ub == 0.0) ++est.n_lr_zero;
-
-    unf_sum += row.d;
-    unf_d.push_back(row.d);
-    if (std::isnan(est.max_unfiltered) || row.d > est.max_unfiltered) est.max_unfiltered = row.d;
-
-    // Missing lr_ub is rejected.
-    if (!std::isnan(row.lr_ub) && row.lr_ub > lr_th) {
-      fil_sum += row.d;
-      fil_d.push_back(row.d);
-      if (std::isnan(est.max_distance) || row.d > est.max_distance) est.max_distance = row.d;
-    } else {
-      ++est.num_filtered;
+      ++s.n_filtered;
     }
   }
 
-  est.n_total = unf_d.size();
-  est.n_kept = fil_d.size();
-  const double portion = est.n_total ? static_cast<double>(est.n_kept) / static_cast<double>(est.n_total) : 0.0;
-  const double unf_mean = est.n_total ? unf_sum / static_cast<double>(est.n_total) : nanx();
-  const double fil_mean = est.n_kept ? fil_sum / static_cast<double>(est.n_kept) : nanx();
+  const size_t n_total = bf_d_v.size();
+  const size_t n_kept = af_d_v.size();
+  const double portion = n_total ? static_cast<double>(n_kept) / static_cast<double>(n_total) : 0.0;
+  const double bf_mean = n_total ? bf_sum / static_cast<double>(n_total) : nanx();
+  const double af_mean = n_kept ? af_sum / static_cast<double>(n_kept) : nanx();
 
-  est.used_filtered = portion > min_portion;
-  if (est.used_filtered) {
-    est.distance = fil_mean;
-    est.alternative_mean = unf_mean;
-    est.null_d_v = std::move(fil_d);
+  // The plain mean is always reported, so a caller can compare it with the filtered estimate.
+  s.d_mean = bf_mean;
+  if (portion > min_portion) {
+    s.d = af_mean;
+    s.d_v = std::move(af_d_v);
   } else {
-    est.distance = unf_mean;
-    est.alternative_mean = fil_mean;
-    est.null_d_v = std::move(unf_d);
+    s.d = bf_mean;
+    s.d_v = std::move(bf_d_v);
   }
-  // rc.rows is already ascending, so the retained subsequence is too.
-  est.median = linear_quantile(est.null_d_v, 0.5);
-  return est;
+  s.d_median = linear_quantile(s.d_v, 0.5);
+  return s;
 }

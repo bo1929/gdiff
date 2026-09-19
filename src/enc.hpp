@@ -3,10 +3,26 @@
 
 #include <cstdint>
 #include <array>
+#include <limits>
 
 extern const std::array<uint8_t, 128> SEQ_NT4_TABLE;
 extern const std::array<uint64_t, 4> NT4_LR_TABLE;
 extern const std::array<uint64_t, 4> NT4_BP_TABLE;
+
+// Position masks of a k-mer encoding:
+// `bp` selects the 2-bit base pairs, `lr` the 1-bit-per-position encoding.
+// Both also occupy the unused high positions.
+struct lsh_masks_t
+{
+  uint64_t bp;
+  uint64_t lr;
+};
+
+inline lsh_masks_t get_lsh_masks(uint32_t k)
+{
+  const uint64_t u64max = std::numeric_limits<uint64_t>::max();
+  return {u64max >> ((32 - k) * 2), ((u64max >> (64 - k)) << 32) + ((u64max << 32) >> (64 - k))};
+}
 
 inline void compute_encoding(const char* begin, const char* end, uint64_t& enc_lr, uint64_t& enc_bp)
 {
@@ -57,12 +73,6 @@ inline uint32_t hdist_lr64(uint64_t x, uint64_t y)
 {
   uint64_t z = x ^ y;
   return __builtin_popcount(z | (z >> 32));
-}
-
-inline uint32_t hdist_lr32(uint32_t x, uint32_t y)
-{
-  uint32_t z = x ^ y;
-  return __builtin_popcount((z | (z >> 16)) & 0x0000ffff);
 }
 
 inline uint32_t popcount_lr32(uint32_t z) { return __builtin_popcount((z | (z >> 16)) & 0x0000ffff); }

@@ -1,7 +1,6 @@
 #include "detect.hpp"
 
 #include <algorithm>
-#include <array>
 #include <cassert>
 #include <cmath>
 #include <limits>
@@ -11,19 +10,20 @@
 #include <sys/mman.h>
 
 #include "common.hpp"
-#include "dist.hpp"
+#include "tsv.hpp"
+#include "windows.hpp"
+#include "estimator.hpp"
 #include "msg.hpp"
 #include "random.hpp"
+#include "records.hpp"
 #include "scan.hpp"
-
-extern uint32_t num_threads;
 
 namespace {
 
   // Background window closest to a target distance; used for the threshold screen.
   struct median_window_t
   {
-    std::array<uint64_t, hdist_bound + 1> hist{};
+    arr<uint64_t, hdist_bound + 1> hist{};
     uint64_t u = 0;
     double dev = std::numeric_limits<double>::infinity();
     bool valid = false;
@@ -41,10 +41,10 @@ namespace {
   };
 
   // Per-query window whose distance is closest to that query's median.
-  vec<median_window_t> find_median_windows(const DistanceSampler& sampler, const vec<double>& dmed_v)
+  vec<median_window_t> find_median_windows(const WindowEstimator& estimator, const vec<double>& dmed_v)
   {
     vec<median_window_t> out_v(dmed_v.size());
-    sampler.for_each_counts([&](uint64_t bix, uint64_t, uint64_t, double d, char, const uint64_t* hist, uint64_t u) {
+    estimator.for_each_window([&](uint64_t bix, uint64_t, uint64_t, double d, char, const uint64_t* hist, uint64_t u) {
       if (bix >= dmed_v.size()) return;
       out_v[bix].consider(d, hist, u, dmed_v[bix]);
     });
@@ -52,17 +52,17 @@ namespace {
   }
 
   // Pooled-fit variant: one target median shared across all sampled windows.
-  median_window_t find_median_window(const DistanceSampler& sampler, double d_median)
+  median_window_t find_median_window(const WindowEstimator& estimator, double d_median)
   {
     median_window_t out;
     if (!is_valid_distance(d_median)) return out;
-    sampler.for_each_counts([&](uint64_t, uint64_t, uint64_t, double d, char, const uint64_t* hist, uint64_t u) {
+    estimator.for_each_window([&](uint64_t, uint64_t, uint64_t, double d, char, const uint64_t* hist, uint64_t u) {
       out.consider(d, hist, u, d_median);
     });
     return out;
   }
 
-  constexpr uint32_t lane_bit(size_t ix) { return uint32_t{1} << ix; }
+  constexpr mask_t lane_bit(size_t ix) { return mask_t{1} << ix; }
 
   // chi-square(1) 99% critical value; same cut dist uses for median filtering.
   constexpr double lr_th_99 = 6.63;
@@ -77,10 +77,7 @@ namespace {
 
   uint64_t window_n_total(const median_window_t& win, uint32_t hdist_th)
   {
-    uint64_t n = win.u;
-    for (uint32_t d = 0; d <= hdist_th; ++d)
-      n += win.hist[d];
-    return n;
+    return win.u + hist_total(win.hist.data(), hdist_th);
   }
 
   // Sample mean and sample standard deviation; NaN components when empty.
@@ -100,12 +97,12 @@ namespace {
   // SIMD params and LLH for one threshold set; shared across queries in pooled mode.
   struct detect_ctx_t
   {
-    params_t<cm512_t> params;
-    llh_sptr_t<cm512_t> llhf;
+    dim_params<cmlane_t> params;
+    LLH<cmlane_t> llhf;
 
-    detect_ctx_t(const arr<double, RWIDTH>& extrema,
+    detect_ctx_t(const arr<double, rwidth>& extrema,
                  uint32_t k,
-                 uint32_t h,
+                 uint32_t hpos,
                  double rho,
                  uint32_t hdist_th,
                  uint64_t tau,
@@ -113,7 +110,7 @@ namespace {
                  uint64_t bin_shift,
                  bool canonical)
       : params(extrema, hdist_th, tau, chisq, bin_shift, 0, canonical, false)
-      , llhf(std::make_shared<LLH<cm512_t>>(k, h, rho, hdist_th, extrema))
+      , llhf(k, hpos, rho, hdist_th, extrema)
     {
     }
   };
@@ -123,7 +120,7 @@ namespace {
   {
     uint64_t a_bin;
     uint64_t b_bin;
-    uint32_t mask;
+    mask_t mask;
     likelihood_estimate_t est;
   };
 
@@ -156,11 +153,8 @@ namespace {
   }
 
   // Drop high-side detection when a typical window cannot tell t_high from the median.
-  bool screen_high_side(const clvl_t& level,
-                        const LLH<double>& llhf,
-                        const uint64_t* win_hist,
-                        const uint64_t win_u,
-                        const double d_median)
+  bool
+  screen_high_side(const clvl_t& level, const LLH<double>& llhf, const uint64_t* win_hist, uint64_t win_u, double d_median)
   {
     if (win_hist == nullptr || win_u == 0 || !is_valid_distance(d_median)) return true;
     const double crit = GammaModel::quantile(1.0 - level.alpha, 0.5, 2.0); // chi-square(1) == Gamma(1/2, 2)
@@ -192,19 +186,15 @@ namespace {
                      const likelihood_estimate_t& est,
                      bool high_side,
                      const vec<double>& side_thresholds_v,
-                     uint32_t mask,
+                     mask_t mask,
                      double alpha)
   {
     const char* side = est.has_hits ? (high_side ? "high" : "low") : "unmapped";
     const xy_t d_range = bracket_distance(est.d, side_thresholds_v);
-    std::ostringstream d_bin;
-    d_bin.flags(os.flags());
-    d_bin.precision(os.precision());
-    d_bin << '(' << d_range.first << ", " << d_range.second << ')';
+    const bracket_t d_bin{d_range.first, d_range.second};
 
     if (canonical) {
-      write_tsv(
-        os, qid, L, seq_iv.a, seq_iv.b, rname, est.d, side, mask, alpha, d_bin.str(), d_q, est.I, est.lr_bg, est.lr_ub)
+      write_tsv(os, qid, L, seq_iv.a, seq_iv.b, rname, est.d, side, mask, alpha, d_bin, d_q, est.I, est.lr_bg, est.lr_ub)
         << '\n';
     } else {
       write_tsv(os,
@@ -219,7 +209,7 @@ namespace {
                 side,
                 mask,
                 alpha,
-                d_bin.str(),
+                d_bin,
                 d_q,
                 d_diff,
                 est.I,
@@ -233,16 +223,16 @@ namespace {
 
 Detector::Detector(const Sketch& sketch,
                    const vec<qseq_t>& batch_v,
-                   const uint64_t tau,
-                   const uint64_t bin_shift,
-                   const uint32_t hdist_th,
-                   const double chisq,
-                   const uint64_t sample_size,
-                   const vec<double>& levels,
-                   const vec<double>& fit_quantiles,
-                   const bool per_sequence,
-                   const bool low_memory,
-                   const uint32_t verbosity)
+                   uint64_t tau,
+                   uint64_t bin_shift,
+                   uint32_t hdist_th,
+                   double chisq,
+                   uint64_t sample_size,
+                   const vec<double>& levels_v,
+                   const vec<double>& fit_quantiles_v,
+                   bool per_sequence,
+                   bool low_memory,
+                   uint32_t verbosity)
   : sketch(sketch)
   , batch_v(batch_v)
   , tau(tau)
@@ -250,8 +240,8 @@ Detector::Detector(const Sketch& sketch,
   , hdist_th(hdist_th)
   , chisq(chisq)
   , sample_size(sample_size)
-  , levels(levels)
-  , fit_quantiles(fit_quantiles)
+  , levels_v(levels_v)
+  , fit_quantiles_v(fit_quantiles_v)
   , per_sequence(per_sequence)
   , low_memory(low_memory)
   , verbosity(verbosity)
@@ -264,18 +254,18 @@ bggamma_t Detector::fit(const vec<double>& d_v) const
   const auto prepared = GammaModel::prepare_samples(d_v, d_eps);
   fit.ndropped = prepared.ndropped;
   fit.nfloored = prepared.nfloored;
-  fit.nsamples = prepared.x.size();
-  if (prepared.x.size() < GammaModel::min_nsamples) return fit;
+  fit.nsamples = prepared.x_v.size();
+  if (prepared.x_v.size() < GammaModel::min_nsamples) return fit;
   if (fit.nfloored * 20 > fit.nsamples) {
     warn_msg(concat_msg(
       "more than 5% floored windows (", fit.nfloored, "/", fit.nsamples, "); low-side thresholds may be meaningless"));
   }
 
-  GammaModel::Config cfg{};
-  cfg.quantile_probs = {fit_quantiles[0], fit_quantiles[1], fit_quantiles[2]};
-  fit.params = GammaModel::fit_from_samples(prepared.x, cfg, &fit.objective, &fit.niter);
+  GammaModel::config_t cfg{};
+  cfg.quantile_probs = {fit_quantiles_v[0], fit_quantiles_v[1], fit_quantiles_v[2]};
+  fit.params = GammaModel::fit_from_samples(prepared.x_v, cfg, &fit.objective, &fit.niter);
   if (!GammaModel::validate_params(fit.params)) {
-    fit.params = GammaModel::moments_estimate(prepared.x);
+    fit.params = GammaModel::moments_estimate(prepared.x_v);
     if (!GammaModel::validate_params(fit.params)) return fit;
     // Diagnostics from the failed Nelder-Mead run do not describe this estimate.
     fit.objective = nanx();
@@ -299,18 +289,18 @@ bggamma_t Detector::fit(const vec<double>& d_v) const
 thcfg_t Detector::thresholds_for(const bggamma_t& fit,
                                  const LLH<double>& llhf,
                                  const uint64_t* win_hist,
-                                 const uint64_t win_u,
-                                 const double d_median,
-                                 const bool disable_high,
-                                 const bool disable_low) const
+                                 uint64_t win_u,
+                                 double d_median,
+                                 bool disable_high,
+                                 bool disable_low) const
 {
-  vec<double> sorted_levels = levels;
-  std::sort(sorted_levels.begin(), sorted_levels.end(), std::greater{});
+  vec<double> sorted_levels_v = levels_v;
+  std::sort(sorted_levels_v.begin(), sorted_levels_v.end(), std::greater{});
 
   thcfg_t thresholds;
-  vec<double> used;
-  used.reserve(2 * sorted_levels.size());
-  for (const double alpha : sorted_levels) {
+  vec<double> used_v;
+  used_v.reserve(2 * sorted_levels_v.size());
+  for (const double alpha : sorted_levels_v) {
     clvl_t level{alpha,
                  GammaModel::quantile(alpha / 2.0, fit.params.shape, fit.params.scale),
                  GammaModel::quantile(1.0 - alpha / 2.0, fit.params.shape, fit.params.scale),
@@ -328,33 +318,33 @@ thcfg_t Detector::thresholds_for(const bggamma_t& fit,
       warn_msg(concat_msg("level ", level.alpha, ": both sides disabled; dropping the level"));
       continue;
     }
-    const bool duplicate = std::any_of(used.begin(), used.end(), [&](double t) {
+    const bool duplicate = std::any_of(used_v.begin(), used_v.end(), [&](double t) {
       return (level.low && std::abs(t - level.t_low) < 1e-12) || (level.high && std::abs(t - level.t_high) < 1e-12);
     });
     if (duplicate) {
       warn_msg(concat_msg("duplicate thresholds at level ", level.alpha, " after clipping; dropping the level"));
       continue;
     }
-    if (level.low) used.push_back(level.t_low);
-    if (level.high) used.push_back(level.t_high);
-    thresholds.levels.push_back(level);
+    if (level.low) used_v.push_back(level.t_low);
+    if (level.high) used_v.push_back(level.t_high);
+    thresholds.levels_v.push_back(level);
   }
   if (!thresholds.empty()) thresholds.pack();
   return thresholds;
 }
 
-vec<thcfg_t> Detector::plan(const DistanceSampler& sampler,
-                            const vvec<double>& d_per_seq,
-                            const vvec<double>& fit_v,
-                            const LLH<double>& llhf) const
+vec<thcfg_t> Detector::plan_v(const WindowEstimator& estimator,
+                              const vvec<double>& d_per_seq_v,
+                              const vvec<double>& fit_v,
+                              const LLH<double>& llhf) const
 {
   const str& rname = sketch.get_rname();
   const size_t nseq = batch_v.size();
 
   uint64_t nmapped = 0;
-  for (const auto& d_v : d_per_seq)
+  for (const auto& d_v : d_per_seq_v)
     nmapped += d_v.size();
-  const uint64_t nunmapped = sampler.get_nsamples() - nmapped;
+  const uint64_t nunmapped = estimator.nwins() - nmapped;
 
   if (!per_sequence) {
     const bggamma_t bg = fit(fit_v.front());
@@ -369,7 +359,7 @@ vec<thcfg_t> Detector::plan(const DistanceSampler& sampler,
     }
 
     const double d_median = GammaModel::quantile(0.5, bg.params.shape, bg.params.scale);
-    const median_window_t win = find_median_window(sampler, d_median);
+    const median_window_t win = find_median_window(estimator, d_median);
     bool disable_high = false;
     if (win.valid) {
       double lr_ub = nanx();
@@ -403,7 +393,7 @@ vec<thcfg_t> Detector::plan(const DistanceSampler& sampler,
     thcfg_t thresholds =
       thresholds_for(bg, llhf, win.valid ? win.hist.data() : nullptr, win.u, d_median, disable_high, disable_low);
     if (thresholds.empty()) {
-      error_exit(concat_msg("no usable confidence levels for sketch ", rname));
+      error_exit(concat_msg("no usable confidence levels_v for sketch ", rname));
     }
     thresholds.set_median_window(win.valid ? win.hist.data() : nullptr, win.u, d_median);
 
@@ -416,23 +406,22 @@ vec<thcfg_t> Detector::plan(const DistanceSampler& sampler,
   }
 
   // Fit all sequences first, then pick each sequence's median-closest window.
-  const uint64_t bin_size = uint64_t(1) << bin_shift;
-  const uint64_t nwinmers = ((tau + bin_size - 1) >> bin_shift) << bin_shift;
+  const uint64_t nwinmers = ceil_bins(tau, bin_shift) << bin_shift;
   const uint64_t min_len = nwinmers + sketch.get_k() - 1;
 
-  vec<bggamma_t> fits(nseq);
+  vec<bggamma_t> fits_v(nseq);
   vec<double> dmed_v(nseq, nanx());
   for (size_t bix = 0; bix < nseq; ++bix) {
-    fits[bix] = fit(fit_v[bix]);
-    if (fits[bix].ok) dmed_v[bix] = GammaModel::quantile(0.5, fits[bix].params.shape, fits[bix].params.scale);
+    fits_v[bix] = fit(fit_v[bix]);
+    if (fits_v[bix].ok) dmed_v[bix] = GammaModel::quantile(0.5, fits_v[bix].params.shape, fits_v[bix].params.scale);
   }
-  const vec<median_window_t> win_v = find_median_windows(sampler, dmed_v);
+  const vec<median_window_t> win_v = find_median_windows(estimator, dmed_v);
 
-  vec<thcfg_t> sets(nseq);
+  vec<thcfg_t> sets_v(nseq);
   uint64_t nfit = 0;
   uint64_t nskipped = 0;
   for (size_t bix = 0; bix < nseq; ++bix) {
-    if (fits[bix].ok) {
+    if (fits_v[bix].ok) {
       const median_window_t& win = win_v[bix];
       bool disable_high = false;
       if (win.valid && median_floored(llhf, dmed_v[bix], window_n_total(win, hdist_th))) {
@@ -443,18 +432,18 @@ vec<thcfg_t> Detector::plan(const DistanceSampler& sampler,
         }
       }
       bool disable_low = false;
-      if (should_disable_low(fits[bix], dmed_v[bix])) {
+      if (should_disable_low(fits_v[bix], dmed_v[bix])) {
         disable_low = true;
         if (batch_v[bix].seq.size() >= min_len) {
           warn_pmsg(batch_v[bix].qid, "background too close for low-side detection; disabling low-side detection");
         }
       }
-      sets[bix] = thresholds_for(
-        fits[bix], llhf, win.valid ? win.hist.data() : nullptr, win.u, dmed_v[bix], disable_high, disable_low);
-      if (!sets[bix].empty()) sets[bix].set_median_window(win.valid ? win.hist.data() : nullptr, win.u, dmed_v[bix]);
+      sets_v[bix] = thresholds_for(
+        fits_v[bix], llhf, win.valid ? win.hist.data() : nullptr, win.u, dmed_v[bix], disable_high, disable_low);
+      if (!sets_v[bix].empty()) sets_v[bix].set_median_window(win.valid ? win.hist.data() : nullptr, win.u, dmed_v[bix]);
     }
-    if (sets[bix].empty() || sets[bix].nlevels() != levels.size()) {
-      sets[bix] = {};
+    if (sets_v[bix].empty() || sets_v[bix].nlevels() != levels_v.size()) {
+      sets_v[bix] = {};
       if (batch_v[bix].seq.size() >= min_len) {
         warn_pmsg(batch_v[bix].qid, "gamma fit failed or degenerate; detection skipped for this sequence");
         ++nskipped;
@@ -478,13 +467,13 @@ vec<thcfg_t> Detector::plan(const DistanceSampler& sampler,
              nmapped,
              ")");
   }
-  return sets;
+  return sets_v;
 }
 
-void Detector::extract_batch(const vec<thcfg_t>& sets,
-                             const bool per_sequence,
+void Detector::extract_batch(const vec<thcfg_t>& sets_v,
+                             bool per_sequence,
                              const LLH<double>& llhf,
-                             vec<lvlstat_t>& stats,
+                             vec<lvlstat_t>& stats_v,
                              uint64_t& unmapped_iv,
                              uint64_t& unmapped_bp,
                              strstream& sout,
@@ -495,25 +484,25 @@ void Detector::extract_batch(const vec<thcfg_t>& sets,
   const bool canonical = sketch.is_canonical();
   const str& rname = sketch.get_rname();
   const uint64_t bin_size = uint64_t(1) << bin_shift;
-  const uint64_t tau_bin = std::max<uint64_t>(1, (tau + bin_size - 1) >> bin_shift);
+  const uint64_t tau_bin = std::max<uint64_t>(1, ceil_bins(tau, bin_shift));
 
   const scan_ctx_t scan_ctx = make_scan_ctx(sketch, bin_shift, hdist_th);
 
   const size_t nseq = batch_v.size();
   vec<strstream> out_v(nseq);
-  vvec<lvlstat_t> stats_v(nseq);
+  vvec<lvlstat_t> stats_vvec(nseq);
   vec<uint64_t> unmapped_iv_v(nseq, 0);
   vec<uint64_t> unmapped_bp_v(nseq, 0);
 
   // Pooled mode shares one threshold set across all queries.
   std::optional<detect_ctx_t> pooled_ctx;
   if (!per_sequence) {
-    assert(!sets.empty() && !sets[0].empty());
-    pooled_ctx.emplace(sets[0].extrema, k, lshf->get_h(), sketch.get_rho(), hdist_th, tau, chisq, bin_shift, canonical);
+    assert(!sets_v.empty() && !sets_v[0].empty());
+    pooled_ctx.emplace(sets_v[0].extrema, k, lshf->get_h(), sketch.get_rho(), hdist_th, tau, chisq, bin_shift, canonical);
   }
 
-  auto process = [&](const uint64_t bix) {
-    const thcfg_t& thresholds = sets[per_sequence ? bix : 0];
+  auto process = [&](uint64_t bix) {
+    const thcfg_t& thresholds = sets_v[per_sequence ? bix : 0];
     if (thresholds.empty()) return;
 
     const char* cseq = batch_v[bix].seq.data();
@@ -523,7 +512,7 @@ void Detector::extract_batch(const vec<thcfg_t>& sets,
       return;
     }
     const uint64_t enmers = len - k + 1;
-    const uint64_t nbins = (enmers + bin_size - 1) >> bin_shift;
+    const uint64_t nbins = ceil_bins(enmers, bin_shift);
     if (nbins < 2) {
       warn_pmsg(batch_v[bix].qid, "skipped: fewer than two bins after binning ", "(len=", len, ", bin_size=", bin_size, ")");
       return;
@@ -540,21 +529,21 @@ void Detector::extract_batch(const vec<thcfg_t>& sets,
 
     strstream& os = out_v[bix];
     set_precision(os, 5);
-    stats_v[bix].assign(thresholds.nlanes(), {});
+    stats_vvec[bix].assign(thresholds.nlanes(), {});
 
-    DIM<cm512_t> dim_fw(ctx.params, ctx.llhf, nbins, enmers);
-    std::optional<DIM<cm512_t>> dim_rc;
+    DIM<cmlane_t> dim_fw(ctx.params, ctx.llhf, nbins, enmers);
+    std::optional<DIM<cmlane_t>> dim_rc;
     if (!canonical) dim_rc.emplace(ctx.params, ctx.llhf, nbins, enmers);
-    dim_agg_t<cm512_t> agg{dim_fw, canonical ? nullptr : &*dim_rc};
+    dim_agg_t<cmlane_t> agg{dim_fw, canonical ? nullptr : &*dim_rc};
     if (canonical)
-      scan_mers_range<false>(scan_ctx, cseq, 0, enmers, agg);
-    else
       scan_mers_range<true>(scan_ctx, cseq, 0, enmers, agg);
+    else
+      scan_mers_range<false>(scan_ctx, cseq, 0, enmers, agg);
 
     // Prefix sums, whole-query distance, then per-threshold extraction.
     struct strand_t
     {
-      DIM<cm512_t>* dim;
+      DIM<cmlane_t>* dim;
       bool is_rc;
       double d_q = nanx();
     };
@@ -567,10 +556,10 @@ void Detector::extract_batch(const vec<thcfg_t>& sets,
       strand.dim->compute_prefhistsum();
       // mx uses precomputed extrema; sx derives them per lane.
       if (!low_memory) strand.dim->extrema_scan();
-      vec<uint64_t> v_q;
+      vec<uint64_t> v_q_v;
       uint64_t u_q = 0, t_q = 0;
-      strand.dim->total_histogram(v_q, u_q, t_q);
-      strand.d_q = llhf.mle(v_q.data(), u_q);
+      strand.dim->total_histogram(v_q_v, u_q, t_q);
+      strand.d_q = llhf.mle(v_q_v.data(), u_q);
     }
     const double d_diff = canonical ? nanx() : strand_diff(strands[0].d_q, strands[1].d_q);
 
@@ -579,7 +568,7 @@ void Detector::extract_batch(const vec<thcfg_t>& sets,
     for (size_t ix = 0; ix < thresholds.nlanes(); ++ix) {
       if (!thresholds.lane_enabled(ix)) continue;
       for (size_t si = 0; si < nstrands; ++si) {
-        DIM<cm512_t>& dim = *strands[si].dim;
+        DIM<cmlane_t>& dim = *strands[si].dim;
         if (low_memory)
           dim.extract_intervals_sx(tau_eff, 1, nbins, ix);
         else
@@ -618,7 +607,7 @@ void Detector::extract_batch(const vec<thcfg_t>& sets,
     const uint64_t L = enmers + k - 1;
     for (size_t ix = 0; ix < thresholds.nlanes(); ++ix) {
       if (!thresholds.lane_enabled(ix)) continue;
-      const uint32_t bit = lane_bit(ix);
+      const mask_t bit = lane_bit(ix);
       const bool high_side = thresholds.is_high_side(ix);
       const vec<double>& side_thresholds_v = high_side ? thresholds.high_v : thresholds.low_v;
       for (size_t si = 0; si < nstrands; ++si) {
@@ -626,8 +615,8 @@ void Detector::extract_batch(const vec<thcfg_t>& sets,
           if ((c.mask & bit) == 0) continue;
           const interval_t seq_iv = get_coordinates({c.a_bin, c.b_bin}, bin_shift, enmers, k);
           if (c.est.has_hits) {
-            stats_v[bix][ix].nintervals += 1;
-            stats_v[bix][ix].bp_covered += seq_iv.b - seq_iv.a + 1;
+            stats_vvec[bix][ix].nintervals += 1;
+            stats_vvec[bix][ix].bp_covered += seq_iv.b - seq_iv.a + 1;
           }
           write_outlier(os,
                         batch_v[bix].qid,
@@ -654,10 +643,10 @@ void Detector::extract_batch(const vec<thcfg_t>& sets,
   unmapped_bp = 0;
   for (size_t bix = 0; bix < nseq; ++bix) {
     if (out_v[bix].tellp() > 0) sout << out_v[bix].rdbuf();
-    assert(stats_v[bix].size() <= stats.size());
-    for (size_t ix = 0; ix < stats_v[bix].size(); ++ix) {
-      stats[ix].nintervals += stats_v[bix][ix].nintervals;
-      stats[ix].bp_covered += stats_v[bix][ix].bp_covered;
+    assert(stats_vvec[bix].size() <= stats_v.size());
+    for (size_t ix = 0; ix < stats_vvec[bix].size(); ++ix) {
+      stats_v[ix].nintervals += stats_vvec[bix][ix].nintervals;
+      stats_v[ix].bp_covered += stats_vvec[bix][ix].bp_covered;
     }
     unmapped_iv += unmapped_iv_v[bix];
     unmapped_bp += unmapped_bp_v[bix];
@@ -666,10 +655,10 @@ void Detector::extract_batch(const vec<thcfg_t>& sets,
 
 void Detector::report_fit(const bggamma_t& fit,
                           const thcfg_t& thresholds,
-                          const double mean,
-                          const double sd,
-                          const uint64_t nunmapped,
-                          const uint64_t nmapped) const
+                          double mean,
+                          double sd,
+                          uint64_t nunmapped,
+                          uint64_t nmapped) const
 {
   const str& rname = sketch.get_rname();
   cerr_msg("[",
@@ -708,7 +697,7 @@ void Detector::report_fit(const bggamma_t& fit,
   if (std::isfinite(sym_distance)) {
     cerr_msg("[", rname, "] reconciled symmetric distance: ", sym_distance);
   }
-  for (const auto& level : thresholds.levels) {
+  for (const auto& level : thresholds.levels_v) {
     const str t_lo = level.low ? concat_msg(level.t_low) : str("skipped");
     const str t_hi = level.high ? concat_msg(level.t_high) : str("skipped");
     cerr_msg("[", rname, "] level ", level.alpha, ": t_low=", t_lo, " t_high=", t_hi);
@@ -716,85 +705,87 @@ void Detector::report_fit(const bggamma_t& fit,
 }
 
 void Detector::report_stats(const thcfg_t& thresholds,
-                            const vec<lvlstat_t>& stats,
-                            const uint64_t unmapped_iv,
-                            const uint64_t unmapped_bp) const
+                            const vec<lvlstat_t>& stats_v,
+                            uint64_t unmapped_iv,
+                            uint64_t unmapped_bp) const
 {
   const str& rname = sketch.get_rname();
   for (size_t j = 0; j < thresholds.nlevels(); ++j) {
     const str high_s = thresholds.high_enabled(j)
-                         ? concat_msg(stats[j].nintervals, " interval(s), ", stats[j].bp_covered, " bp")
+                         ? concat_msg(stats_v[j].nintervals, " interval(s), ", stats_v[j].bp_covered, " bp")
                          : str("skipped");
-    const str low_s =
-      thresholds.low_enabled(j)
-        ? concat_msg(
-            stats[thresholds.nlevels() + j].nintervals, " interval(s), ", stats[thresholds.nlevels() + j].bp_covered, " bp")
-        : str("skipped");
-    cerr_msg("[", rname, "] level ", thresholds.levels[j].alpha, ": high: ", high_s, " | low: ", low_s);
+    const str low_s = thresholds.low_enabled(j) ? concat_msg(stats_v[thresholds.nlevels() + j].nintervals,
+                                                             " interval(s), ",
+                                                             stats_v[thresholds.nlevels() + j].bp_covered,
+                                                             " bp")
+                                                : str("skipped");
+    cerr_msg("[", rname, "] level ", thresholds.levels_v[j].alpha, ": high: ", high_s, " | low: ", low_s);
   }
   cerr_msg("[", rname, "] unmapped (no k-mer hits): ", unmapped_iv, " interval(s), ", unmapped_bp, " bp");
 }
 
-void Detector::run(std::ostream& out,
-                   ThreadPool& pool,
-                   const vec<dpoint_t>& rev_rows,
-                   const double lr_th,
-                   const double min_portion)
+void Detector::run(std::ostream& out, ThreadPool& pool, const vec<ds_t>& rev_rows_v, double lr_th, double min_portion)
 {
   // Scalar LLH for the threshold screen and the per-interval estimates.
-  const LLH<double> llhf(sketch.get_k(), sketch.get_h(), sketch.get_rho(), hdist_th, 0.0, false);
+  const LLH<double> llhf = make_llhf(sketch, hdist_th);
 
   // Sample background windows; keep counts for the threshold screen.
-  DistanceSampler sampler(sketch, batch_v, tau, bin_shift, hdist_th);
+  WindowEstimator estimator(sketch, batch_v, tau, bin_shift, hdist_th);
   if (per_sequence)
-    sampler.run_per_sequence(sample_size, true, pool);
+    estimator.estimate_per_sequence(sample_size, pool);
   else
-    sampler.run_for_all(sample_size, true, pool);
-  vvec<double> d_per_seq(batch_v.size());
-  sampler.collect_distances(d_per_seq);
+    estimator.estimate_all(sample_size, pool);
+  vvec<double> d_per_seq_v(batch_v.size());
+  estimator.for_each_window([&](uint64_t bix, uint64_t, uint64_t, double d, char, const uint64_t*, uint64_t) {
+    if (is_valid_distance(d)) d_per_seq_v[bix].push_back(d);
+  });
 
   // Gamma null: one-directional, or reconciled when a reverse sample is given.
   vvec<double> fit_v;
-  if (rev_rows.empty()) {
+  if (rev_rows_v.empty()) {
     if (per_sequence) {
-      fit_v = d_per_seq;
+      fit_v = d_per_seq_v;
     } else {
       fit_v.emplace_back();
-      for (const auto& d_v : d_per_seq)
+      for (const auto& d_v : d_per_seq_v)
         fit_v.front().insert(fit_v.front().end(), d_v.begin(), d_v.end());
     }
   } else if (per_sequence) {
     // Reverse sample is genome-level; every sequence reconciles against it.
-    vec<vec<dpoint_t>> rows_per_seq(batch_v.size());
-    sampler.collect_samples(rows_per_seq);
+    vec<vec<ds_t>> rows_per_seq_v(batch_v.size());
+    estimator.for_each_window([&](uint64_t bix, uint64_t, uint64_t, double d, char, const uint64_t* hist, uint64_t u) {
+      rows_per_seq_v[bix].push_back(estimator.make_row(d, hist, u));
+    });
     fit_v.resize(batch_v.size());
     for (size_t bix = 0; bix < batch_v.size(); ++bix) {
-      const sym_est_t est = sym_estimate(sym_merge(rows_per_seq[bix], rev_rows), lr_th, min_portion);
-      fit_v[bix] = est.null_d_v;
+      const summary_t s = summarize_symmetric(rows_per_seq_v[bix], rev_rows_v, lr_th, min_portion);
+      fit_v[bix] = s.d_v;
     }
   } else {
-    vec<dpoint_t> fwd_rows;
-    sampler.collect_samples(fwd_rows);
-    const sym_est_t est = sym_estimate(sym_merge(std::move(fwd_rows), rev_rows), lr_th, min_portion);
-    sym_distance = est.distance;
-    fit_v.push_back(est.null_d_v);
+    vec<ds_t> fwd_rows_v;
+    estimator.for_each_window([&](uint64_t, uint64_t, uint64_t, double d, char, const uint64_t* hist, uint64_t u) {
+      fwd_rows_v.push_back(estimator.make_row(d, hist, u));
+    });
+    const summary_t s = summarize_symmetric(std::move(fwd_rows_v), rev_rows_v, lr_th, min_portion);
+    sym_distance = s.d;
+    fit_v.push_back(s.d_v);
   }
 
-  const vec<thcfg_t> sets = plan(sampler, d_per_seq, fit_v, llhf);
+  const vec<thcfg_t> sets_v = plan_v(estimator, d_per_seq_v, fit_v, llhf);
 
   // Pass 2: extract outlier intervals per threshold.
   size_t max_lanes = 0;
-  for (const auto& set : sets)
+  for (const auto& set : sets_v)
     max_lanes = std::max(max_lanes, set.nlanes());
-  vec<lvlstat_t> stats(max_lanes);
+  vec<lvlstat_t> stats_v(max_lanes);
   uint64_t unmapped_iv = 0, unmapped_bp = 0;
   strstream sout;
   set_precision(sout, 5);
-  extract_batch(sets, per_sequence, llhf, stats, unmapped_iv, unmapped_bp, sout, pool);
+  extract_batch(sets_v, per_sequence, llhf, stats_v, unmapped_iv, unmapped_bp, sout, pool);
   if (sout.tellp() > 0) out << sout.rdbuf();
 
-  if (verbosity >= 1 && !per_sequence && !sets.empty()) {
-    report_stats(sets[0], stats, unmapped_iv, unmapped_bp);
+  if (verbosity >= 1 && !per_sequence && !sets_v.empty()) {
+    report_stats(sets_v[0], stats_v, unmapped_iv, unmapped_bp);
   }
 }
 
@@ -802,91 +793,88 @@ DetectSC::DetectSC(CLI::App& sc)
 {
   sc.add_option("target-path", target_path, "Query FASTA/FASTQ file <path> (or URL) (gzip compatible)")
     ->check(url_validator | CLI::ExistingFile);
-  sc.add_option("sketch-path", sketch_path, "Reference sketch file <path>")->check(CLI::ExistingFile);
+  sc.add_option("sketch-path", sketch_path, "Reference container <path>")->check(CLI::ExistingFile);
   sc.add_option("-o,--output-path", output_path, "Write output to a file at <path> [stdout]");
-  sc.add_option("-l", tau, "Minimum interval length in k-mers; also the background window length")
+  sc.add_option("-l", params.tau, "Minimum interval length in k-mers; also the background window length")
     ->required()
     ->check(CLI::PositiveNumber);
-  sc.add_option("-b,--bin-shift", bin_shift, "Group consecutive k-mers into bins of size 2^b [0]")->check(CLI::Range(0, 16));
-  sc.add_option("--hdist-th", hdist_th, "Maximum Hamming distance for a k-mer to match [4]")
+  sc.add_option("-b,--bin-shift", params.bin_shift, "Group consecutive k-mers into bins of size 2^b [0]")
+    ->check(CLI::Range(0, 16));
+  sc.add_option("--hdist-th", params.hdist_th, "Maximum Hamming distance for a k-mer to match [4]")
     ->check(CLI::Range(0, static_cast<int>(hdist_bound)));
-  sc.add_option("--chisq", chisq, "Chi-square threshold for merging overlapping intervals [33.00051]")
+  sc.add_option("--chisq", params.chisq, "Chi-square threshold for merging overlapping intervals [33.00051]")
     ->check(CLI::NonNegativeNumber);
-  sc.add_option("--sample-size", sample_size, "Background windows sampled per fit [1000]")->check(CLI::PositiveNumber);
-  sc.add_option("--levels", levels, "Two-sided confidence level(s) - provide exactly 1 or 4 values [0.05 0.01 0.001 0.0001]")
+  sc.add_option("--sample-size", params.sample_size, "Background windows sampled per fit [1000]")->check(CLI::PositiveNumber);
+  sc.add_option(
+      "--levels", params.levels_v, "Two-sided confidence level(s) - provide exactly 1 or 4 values [0.05 0.01 0.001 0.0001]")
     ->expected(1, 4);
-  sc.add_flag("--per-sequence", per_sequence, "Fit and sample the background per query sequence [per-sketch]");
+  sc.add_flag("--per-sequence", params.per_sequence, "Fit and sample the background per query sequence [per-sketch]");
   sc.add_flag("--symmetric,!--no-symmetric",
-              symmetric,
+              params.symmetric,
               "Build the background null from both directions (default) or from the query side only");
-  sc.add_option("--lr-th", lr_th, "Likelihood-ratio cut for the symmetric reconciliation filter [3.841]")
+  sc.add_option("--lr-th", params.lr_th, "Likelihood-ratio cut for the symmetric reconciliation filter [3.841]")
     ->check(CLI::NonNegativeNumber);
   sc.add_option(
-      "--min-portion", min_portion, "Use the filtered null only if this fraction of windows survives --lr-th [0.66]")
+      "--min-portion", params.min_portion, "Use the filtered null only if this fraction of windows survives --lr-th [0.66]")
     ->check(CLI::Range(0.0, 1.0));
   sc.add_flag("--low-memory",
-              low_memory,
+              params.low_memory,
               "Derive interval extrema on the fly instead of precomputing them: "
               "two fewer whole-query arrays, at some time cost");
-  sc.add_option("--batch-bases", batch_bases, "Query bases held in memory at once; 0 loads the whole query [0]")
-    ->check(CLI::NonNegativeNumber);
-  sc.add_option("--fit-quantiles", fit_quantiles, "Three central quantile probabilities for the gamma fit [0.2 0.4 0.6]")
+  sc.add_option(
+      "--fit-quantiles", params.fit_quantiles_v, "Three central quantile probabilities for the gamma fit [0.2 0.4 0.6]")
     ->expected(3);
-  sc.add_option("--verbosity", verbosity, "Statistics and report detail level (0-3) [1]")->check(CLI::Range(0, 3));
+  sc.add_option("--verbosity", params.verbosity, "Statistics and report detail level (0-3) [1]")->check(CLI::Range(0, 3));
   sc.callback([&]() {
-    if (levels.empty()) levels = {0.05, 0.01, 0.001, 0.0001};
-    if (fit_quantiles.empty()) fit_quantiles = {0.2, 0.4, 0.6};
+    if (params.levels_v.empty()) params.levels_v = {0.05, 0.01, 0.001, 0.0001};
+    if (params.fit_quantiles_v.empty()) params.fit_quantiles_v = {0.2, 0.4, 0.6};
     if (!validate_configuration()) {
       error_exit("Invalid configuration!");
     }
-    if (!output_path.empty()) {
-      output_file.open(output_path);
-      check_fstream(output_file, "Cannot open output file", output_path.string());
-      output_stream = &output_file;
-    }
+    open_output(output_file, output_path, output_stream);
   });
 }
 
 bool DetectSC::validate_configuration()
 {
   bool is_invalid = false;
-  if (levels.size() != 1 && levels.size() != 4) {
+  if (params.levels_v.size() != 1 && params.levels_v.size() != 4) {
     is_invalid = true;
-    cerr_msg("--levels requires exactly 1 or 4 levels; got ", levels.size());
+    cerr_msg("--levels requires exactly 1 or 4 levels; got ", params.levels_v.size());
   }
-  for (size_t i = 0; i < levels.size(); ++i) {
-    if (!std::isfinite(levels[i]) || levels[i] <= 1e-8 || levels[i] >= 0.5) {
+  for (size_t i = 0; i < params.levels_v.size(); ++i) {
+    if (!std::isfinite(params.levels_v[i]) || params.levels_v[i] <= 1e-8 || params.levels_v[i] >= 0.5) {
       is_invalid = true;
-      cerr_msg("--levels[", i, "] must be in (1e-8, 0.5): ", levels[i]);
+      cerr_msg("--levels[", i, "] must be in (1e-8, 0.5): ", params.levels_v[i]);
     }
   }
   {
-    auto slevels = levels;
+    auto slevels = params.levels_v;
     std::sort(slevels.begin(), slevels.end());
     if (const auto it = std::adjacent_find(slevels.begin(), slevels.end()); it != slevels.end()) {
       is_invalid = true;
       cerr_msg("--levels values must be unique; duplicate: ", *it);
     }
   }
-  if (!std::is_sorted(fit_quantiles.begin(), fit_quantiles.end()) ||
-      std::adjacent_find(fit_quantiles.begin(), fit_quantiles.end()) != fit_quantiles.end()) {
+  if (!std::is_sorted(params.fit_quantiles_v.begin(), params.fit_quantiles_v.end()) ||
+      std::adjacent_find(params.fit_quantiles_v.begin(), params.fit_quantiles_v.end()) != params.fit_quantiles_v.end()) {
     is_invalid = true;
     cerr_msg("--fit-quantiles must be strictly increasing");
   }
-  for (size_t i = 0; i < fit_quantiles.size(); ++i) {
-    if (!std::isfinite(fit_quantiles[i]) || fit_quantiles[i] <= 0.0 || fit_quantiles[i] >= 1.0) {
+  for (size_t i = 0; i < params.fit_quantiles_v.size(); ++i) {
+    if (!std::isfinite(params.fit_quantiles_v[i]) || params.fit_quantiles_v[i] <= 0.0 || params.fit_quantiles_v[i] >= 1.0) {
       is_invalid = true;
-      cerr_msg("--fit-quantiles[", i, "] must be in (0, 1): ", fit_quantiles[i]);
+      cerr_msg("--fit-quantiles[", i, "] must be in (0, 1): ", params.fit_quantiles_v[i]);
     }
   }
-  if (!validate_binning(bin_shift, tau)) {
+  if (!validate_binning(params.bin_shift, params.tau)) {
     is_invalid = true;
   }
-  const uint64_t bin_size = (bin_shift <= 16) ? (uint64_t(1) << bin_shift) : 0;
-  const uint64_t tau_bin = (bin_size > 0) ? ((tau + bin_size - 1) >> bin_shift) : 0;
+  const uint64_t bin_size = (params.bin_shift <= 16) ? (uint64_t(1) << params.bin_shift) : 0;
+  const uint64_t tau_bin = (bin_size > 0) ? ceil_bins(params.tau, params.bin_shift) : 0;
   if (tau_bin < 2) {
     is_invalid = true;
-    cerr_msg("-l must span at least two bins after binning ", "(tau=", tau, ", bin_size=", bin_size, ")");
+    cerr_msg("-l must span at least two bins after binning ", "(params.tau=", params.tau, ", bin_size=", bin_size, ")");
   }
   return !is_invalid;
 }
@@ -895,12 +883,14 @@ void DetectSC::detect()
 {
   set_precision(*output_stream, 5);
 
-  QSeq qs(target_path, batch_bases ? batch_bases : std::numeric_limits<uint64_t>::max());
+  // The whole query is held resident: the pooled background fit and the
+  // extraction pass both span every sampled sequence (see review section 7.1).
+  QSeq qs(target_path, std::numeric_limits<uint64_t>::max());
   while (qs.read_next_batch()) {
   }
   const vec<qseq_t>& batch_v = qs.get_batch_v();
 
-  const SketchFile file(sketch_path);
+  const Container file(sketch_path);
   const uint32_t nsketches = file.size();
   const sketch_config_t& cfg = file.get_config();
 
@@ -911,45 +901,40 @@ void DetectSC::detect()
 
   // Reverse null: reference windows vs one in-memory sketch of the query.
   Sketch query_sketch;
-  if (symmetric) {
+  if (params.symmetric) {
     if (cfg.tau == 0) {
       error_exit("Symmetric detection needs stored reference windows; re-sketch with -l or pass --no-symmetric");
     }
-    const lshf_sptr_t lshf = std::make_shared<LSHF>(cfg.ppos, cfg.npos);
-    built_sketch_t built = build_buckets(target_path, lshf, cfg.w, cfg.nrows, cfg.canonical);
-    query_sketch =
-      Sketch(cfg, std::filesystem::path(target_path).filename().string(), std::move(built.buckets), built.nkmers, built.rho);
-    if (per_sequence) {
-      warn_msg("--per-sequence with symmetric detection: the reverse sample is genome-level, "
+    query_sketch = build_sketch(target_path, cfg, std::filesystem::path(target_path).filename().string());
+    if (params.per_sequence) {
+      warn_msg("--per-sequence with params.symmetric detection: the reverse sample is genome-level, "
                "so every sequence is reconciled against the same one");
     }
   }
 
   for (uint32_t i = 0; i < nsketches; ++i) {
-    const Sketch sketch = file.open(i, symmetric ? SketchPart::All : SketchPart::Buckets);
-    vec<dpoint_t> rev_rows;
-    if (symmetric) {
-      rev_rows = run_direction(sketch, query_sketch, hdist_th, cfg.tau, false).rows;
+    const Sketch sketch = file.open(i, params.symmetric ? SketchLoad::All : SketchLoad::Buckets);
+    vec<ds_t> rev_rows_v;
+    if (params.symmetric) {
+      rev_rows_v = run_direction(sketch, query_sketch, params.hdist_th, false, false).rows_v;
     }
     Detector detector(sketch,
                       batch_v,
-                      tau,
-                      bin_shift,
-                      hdist_th,
-                      chisq,
-                      sample_size,
-                      levels,
-                      fit_quantiles,
-                      per_sequence,
-                      low_memory,
-                      verbosity);
-    detector.run(*output_stream, pool, rev_rows, lr_th, min_portion);
+                      params.tau,
+                      params.bin_shift,
+                      params.hdist_th,
+                      params.chisq,
+                      params.sample_size,
+                      params.levels_v,
+                      params.fit_quantiles_v,
+                      params.per_sequence,
+                      params.low_memory,
+                      params.verbosity);
+    detector.run(*output_stream, pool, rev_rows_v, params.lr_th, params.min_portion);
 
-    const record_entry_t& e = file.get_index().records[i];
+    const sketch_entry_t& e = file.get_entry(i);
     file.advise(e.offset, e.len, MADV_DONTNEED);
-    if (verbosity >= 1) {
-      std::cerr << "\rProcessed sketch " << i + 1 << "/" << nsketches << "..." << std::flush;
-      if (i + 1 == nsketches) std::cerr << std::endl;
-    }
+    if (params.verbosity >= 1) progress("Processed sketch", i + 1, nsketches);
   }
+  if (params.verbosity >= 1) progress_done();
 }

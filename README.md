@@ -126,7 +126,7 @@ In `--enum-only` mode, each row is an independent interval covering the k-mer bi
 | `-o, --output-path` | (required) | Output sketch file (one or more sketches) |
 | `-k, --mer-len` | `27` | k-mer length (19–32) |
 | `-w, --win-len` | `k+6` | Minimizer window length (>= k) |
-| `-h, --num-positions` | `k-16` | Number of LSH positions (3–16) |
+| `-h, --num-positions` | `max(floor(k/2)-2, k-16)` | Number of LSH positions (3–16) |
 | `--frac` | `1.0` | Keep k-mer if LSH(x) < frac · 2^2h; subsamples on top of minimizers |
 | `--num-threads` | `1` | Parallel input-file sketching threads |
 

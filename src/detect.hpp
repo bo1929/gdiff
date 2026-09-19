@@ -5,7 +5,7 @@
 #include "gamma.hpp"
 #include "llh.hpp"
 #include "sym.hpp"
-#include "stils.hpp"
+#include "distance.hpp"
 #include "rqseq.hpp"
 #include "sketch.hpp"
 #include "tpool.hpp"
@@ -15,7 +15,7 @@
 #include <fstream>
 #include <iostream>
 
-class DistanceSampler;
+class WindowEstimator;
 
 struct clvl_t
 {
@@ -40,8 +40,8 @@ struct bggamma_t
 
 struct thcfg_t
 {
-  vec<clvl_t> levels; // alpha descending
-  arr<double, RWIDTH> extrema{};
+  vec<clvl_t> levels_v; // alpha descending
+  arr<double, rwidth> extrema{};
   vec<double> high_v; // ascending t_high
   vec<double> low_v;  // ascending t_low
 
@@ -51,27 +51,27 @@ struct thcfg_t
   double d_median = nanx();
   bool med_valid = false;
 
-  [[nodiscard]] size_t nlevels() const { return levels.size(); }
-  [[nodiscard]] size_t nlanes() const { return 2 * levels.size(); }
-  [[nodiscard]] bool empty() const { return levels.empty(); }
+  [[nodiscard]] size_t nlevels() const { return levels_v.size(); }
+  [[nodiscard]] size_t nlanes() const { return 2 * levels_v.size(); }
+  [[nodiscard]] bool empty() const { return levels_v.empty(); }
 
   [[nodiscard]] bool is_high_side(size_t ix) const { return ix < nlevels(); }
   [[nodiscard]] double alpha(size_t ix) const
   {
     assert(ix < nlanes());
-    return levels[is_high_side(ix) ? ix : ix - nlevels()].alpha;
+    return levels_v[is_high_side(ix) ? ix : ix - nlevels()].alpha;
   }
 
   [[nodiscard]] bool high_enabled(size_t level_ix) const
   {
     assert(level_ix < nlevels());
-    return levels[level_ix].high;
+    return levels_v[level_ix].high;
   }
 
   [[nodiscard]] bool low_enabled(size_t level_ix) const
   {
     assert(level_ix < nlevels());
-    return levels[level_ix].low;
+    return levels_v[level_ix].low;
   }
 
   [[nodiscard]] bool lane_enabled(size_t ix) const
@@ -93,7 +93,7 @@ struct thcfg_t
 
   void pack()
   {
-    assert(nlanes() <= RWIDTH);
+    assert(nlanes() <= rwidth);
     extrema.fill(d_eps);
     high_v.clear();
     low_v.clear();
@@ -101,10 +101,10 @@ struct thcfg_t
     low_v.reserve(nlevels());
     for (size_t j = 0; j < nlevels(); ++j) {
       // Disabled lanes stay at d_eps and are skipped during extraction.
-      if (levels[j].high) extrema[j] = -levels[j].t_high;
-      if (levels[j].low) extrema[nlevels() + j] = levels[j].t_low;
-      high_v.push_back(levels[j].t_high);
-      low_v.push_back(levels[j].t_low);
+      if (levels_v[j].high) extrema[j] = -levels_v[j].t_high;
+      if (levels_v[j].low) extrema[nlevels() + j] = levels_v[j].t_low;
+      high_v.push_back(levels_v[j].t_high);
+      low_v.push_back(levels_v[j].t_low);
     }
     std::reverse(low_v.begin(), low_v.end());
   }
@@ -127,14 +127,14 @@ public:
            uint32_t hdist_th,
            double chisq,
            uint64_t sample_size,
-           const vec<double>& levels,
-           const vec<double>& fit_quantiles,
+           const vec<double>& levels_v,
+           const vec<double>& fit_quantiles_v,
            bool per_sequence,
            bool low_memory,
            uint32_t verbosity);
 
   // Empty rev_rows: one-directional null. Otherwise reconcile both directions.
-  void run(std::ostream& out, ThreadPool& pool, const vec<dpoint_t>& rev_rows, double lr_th, double min_portion);
+  void run(std::ostream& out, ThreadPool& pool, const vec<ds_t>& rev_rows, double lr_th, double min_portion);
 
 private:
   bggamma_t fit(const vec<double>& d_v) const;
@@ -146,14 +146,14 @@ private:
                          bool disable_high,
                          bool disable_low) const;
   // fit_v is the gamma sample (pooled or per-sequence); may differ from d_per_seq.
-  vec<thcfg_t> plan(const DistanceSampler& sampler,
-                    const vvec<double>& d_per_seq,
-                    const vvec<double>& fit_v,
-                    const LLH<double>& llhf) const;
+  vec<thcfg_t> plan_v(const WindowEstimator& estimator,
+                      const vvec<double>& d_per_seq,
+                      const vvec<double>& fit_v,
+                      const LLH<double>& llhf) const;
   void extract_batch(const vec<thcfg_t>& sets,
                      bool per_sequence,
                      const LLH<double>& llhf,
-                     vec<lvlstat_t>& stats,
+                     vec<lvlstat_t>& stats_v,
                      uint64_t& unmapped_iv,
                      uint64_t& unmapped_bp,
                      strstream& sout,
@@ -162,7 +162,7 @@ private:
   report_fit(const bggamma_t& fit, const thcfg_t& thresholds, double mean, double sd, uint64_t nunmapped, uint64_t nmapped)
     const;
   void
-  report_stats(const thcfg_t& thresholds, const vec<lvlstat_t>& stats, uint64_t unmapped_iv, uint64_t unmapped_bp) const;
+  report_stats(const thcfg_t& thresholds, const vec<lvlstat_t>& stats_v, uint64_t unmapped_iv, uint64_t unmapped_bp) const;
 
   const Sketch& sketch;
   const vec<qseq_t>& batch_v;
@@ -171,8 +171,8 @@ private:
   const uint32_t hdist_th;
   const double chisq;
   const uint64_t sample_size;
-  const vec<double>& levels;
-  const vec<double>& fit_quantiles;
+  const vec<double>& levels_v;
+  const vec<double>& fit_quantiles_v;
   const bool per_sequence;
   const bool low_memory;
   const uint32_t verbosity;
@@ -182,6 +182,23 @@ private:
 class DetectSC
 {
 public:
+  struct params
+  {
+    uint64_t tau = 0;
+    uint64_t sample_size = 1000;
+    uint64_t bin_shift = 0;
+    uint32_t hdist_th = 3;
+    double chisq = 33.00051; // chi-square(1) survival ~1e-8
+    vec<double> levels_v;
+    vec<double> fit_quantiles_v;
+    bool per_sequence = false;
+    bool symmetric = true;
+    double lr_th = lr_th_default;
+    double min_portion = min_portion_default;
+    bool low_memory = false;
+    uint32_t verbosity = 1;
+  };
+
   explicit DetectSC(CLI::App& sc);
   void detect();
   bool validate_configuration();
@@ -192,21 +209,7 @@ private:
   std::filesystem::path output_path;
   std::ofstream output_file;
   std::ostream* output_stream = &std::cout;
-  uint64_t tau = 0;
-  uint64_t sample_size = 1000;
-  uint64_t bin_shift = 0;
-  uint32_t hdist_th = 3;
-  bool hdist_given = false;
-  double chisq = 33.00051; // chi-square(1) survival ~1e-8
-  vec<double> levels;
-  vec<double> fit_quantiles;
-  bool per_sequence = false;
-  bool symmetric = true;
-  double lr_th = lr_th_default;
-  double min_portion = min_portion_default;
-  uint64_t batch_bases = 0; // 0 = load the whole query, preserving the pooled fit
-  bool low_memory = false;
-  uint32_t verbosity = 1;
+  params params;
 };
 
 #endif

@@ -2,19 +2,15 @@
 #include "dim.hpp"
 #include "msg.hpp"
 
-bool test_significance(record_t& r,
-                       const vec<sample_t>& bg_samples,
-                       const uint64_t sample_size,
-                       const str& qid,
-                       gamma_fit_t* fit)
+bool test_significance(record_t& r, const vec<sample_t>& bg_samples, uint64_t sample_size, const str& qid, gamma_fit_t* fit)
 {
   if (!is_valid_distance(r.d)) return false;
   const double d_obs = r.d;
 
-  vec<sample_t> filtered;
-  const bool excluded = filter_background_samples(bg_samples, r, sample_size, filtered);
+  vec<sample_t> filtered_v;
+  const bool excluded = filter_background_samples(bg_samples, r, sample_size, filtered_v);
 
-  if (filtered.size() < GammaModel::min_nsamples) {
+  if (filtered_v.size() < GammaModel::min_nsamples) {
     warn_pmsg(qid, "not enough background samples; skipping significance test");
     return false;
   }
@@ -28,12 +24,12 @@ bool test_significance(record_t& r,
     median = fit->median;
     ok = fit->ok;
   } else {
-    vec<double> d_raw;
-    d_raw.reserve(filtered.size());
-    for (const auto& est : filtered)
-      d_raw.push_back(est.d);
-    const auto prepared = GammaModel::prepare_samples(d_raw, d_eps);
-    gp = GammaModel::fit_from_samples(prepared.x);
+    vec<double> d_raw_v;
+    d_raw_v.reserve(filtered_v.size());
+    for (const auto& est : filtered_v)
+      d_raw_v.push_back(est.d);
+    const auto prepared = GammaModel::prepare_samples(d_raw_v, d_eps);
+    gp = GammaModel::fit_from_samples(prepared.x_v);
     ok = GammaModel::validate_params(gp);
     median = ok ? GammaModel::median_from_params(gp, d_eps, d_ub - d_eps) : nanx();
     if (fit && !excluded) {

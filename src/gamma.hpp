@@ -1,15 +1,14 @@
 #ifndef _GAMMA_HPP
 #define _GAMMA_HPP
 
+#include "records.hpp"
+#include "windows.hpp"
 #include <algorithm>
-#include <array>
 #include <cmath>
 #include <cstdint>
 #include <limits>
 #include <utility>
-#include <vector>
 #include <boost/math/distributions/gamma.hpp>
-#include "stils.hpp"
 
 // Gamma model fitted by 2D Nelder-Mead over (log shape, log scale).
 class GammaModel
@@ -26,9 +25,9 @@ public:
     return gp.shape > 0.0 && gp.scale > 0.0 && std::isfinite(gp.shape) && std::isfinite(gp.scale);
   }
 
-  struct Config
+  struct config_t
   {
-    std::array<double, 3> quantile_probs = {0.2, 0.4, 0.6};
+    arr<double, 3> quantile_probs = {0.2, 0.4, 0.6};
 
     // Nelder-Mead
     int max_niter = 200;    // iteration cap
@@ -40,7 +39,7 @@ public:
     double nm_sigma = 0.5;  // shrink coefficient
   };
 
-  [[nodiscard]] static bool validate_config(const Config& cfg) noexcept
+  [[nodiscard]] static bool validate_config(const config_t& cfg) noexcept
   {
     if (cfg.max_niter <= 0 || !(cfg.tol > 0.0) || !(cfg.nm_step > 0.0) || !(cfg.nm_alpha > 0.0) || !(cfg.nm_expand > 1.0) ||
         !(cfg.nm_rho > 0.0 && cfg.nm_rho < 1.0) || !(cfg.nm_sigma > 0.0 && cfg.nm_sigma < 1.0))
@@ -86,47 +85,62 @@ public:
   }
 
   // Moment estimate (mean^2/var, var/mean); fallback when Nelder-Mead fails.
-  [[nodiscard]] static params_t moments_estimate(const std::vector<double>& x_v) { return init_from_moments(x_v); }
+  [[nodiscard]] static params_t moments_estimate(const vec<double>& x_v)
+  {
+    const double N = static_cast<double>(x_v.size());
+    double m = 0.0, v = 0.0;
+    for (double x : x_v)
+      m += x;
+    m /= N;
+    for (double x : x_v)
+      v += (x - m) * (x - m);
+    v /= N;
+
+    const double v_l = std::max(v, 1e-6);
+    const double shape0 = (m > eps) ? (m * m) / v_l : 1.0;
+    const double scale0 = (m > eps) ? v_l / m : std::max(m, eps);
+    return {std::max(shape0, 1e-2), std::max(scale0, 1e-6)};
+  }
 
   // Drop non-finite samples and floor values below `floor` (typically d_eps).
   struct prepared_t
   {
-    std::vector<double> x;
+    vec<double> x_v;
     uint64_t ndropped = 0;
     uint64_t nfloored = 0;
   };
 
-  [[nodiscard]] static prepared_t prepare_samples(const std::vector<double>& d_v, double floor)
+  [[nodiscard]] static prepared_t prepare_samples(const vec<double>& d_v, double floor)
   {
     prepared_t out;
-    out.x.reserve(d_v.size());
+    out.x_v.reserve(d_v.size());
     for (const double d : d_v) {
       if (!std::isfinite(d)) {
         ++out.ndropped;
       } else if (d < floor) {
         ++out.nfloored;
-        out.x.push_back(floor);
+        out.x_v.push_back(floor);
       } else {
-        out.x.push_back(d);
+        out.x_v.push_back(d);
       }
     }
     return out;
   }
 
   // Fit Gamma directly to draws via quantile matching.
-  [[nodiscard]] static params_t fit_from_samples(const std::vector<double>& x_v)
+  [[nodiscard]] static params_t fit_from_samples(const vec<double>& x_v)
   {
-    Config cfg{};
+    config_t cfg{};
     return fit_from_samples(x_v, cfg);
   }
 
   // Optional diagnostics: final objective value and Nelder-Mead iterations used.
   [[nodiscard]] static params_t
-  fit_from_samples(const std::vector<double>& x_v, const Config& cfg, double* obj_out = nullptr, int* niter_out = nullptr)
+  fit_from_samples(const vec<double>& x_v, const config_t& cfg, double* obj_out = nullptr, int* niter_out = nullptr)
   {
     if (x_v.empty()) return {1.0, 1.0};
     if (!validate_config(cfg)) return {NaN, NaN};
-    const params_t p0 = init_from_moments(x_v);
+    const params_t p0 = moments_estimate(x_v);
     const auto emp_q = compute_quantiles(x_v, cfg.quantile_probs);
     double objective = INF;
     int niter = 0;
@@ -169,7 +183,7 @@ public:
   }
 
   [[nodiscard]] static std::pair<double, double>
-  score_from_samples(double x, const std::vector<double>& samples, double lower, double upper)
+  score_from_samples(double x, const vec<double>& samples, double lower, double upper)
   {
     if (!std::isfinite(x)) return {NaN, NaN};
     if (samples.size() < min_nsamples) return {NaN, NaN};
@@ -194,44 +208,25 @@ private:
 
   using hpolicy = boost::math::policies::policy<boost::math::policies::max_series_iterations<1000000>>;
 
-  // Moment-based initializer from sample mean and variance.
-  [[nodiscard]] static params_t init_from_moments(const std::vector<double>& x_v)
-  {
-    const double N = static_cast<double>(x_v.size());
-    double m = 0.0, v = 0.0;
-    for (double x : x_v)
-      m += x;
-    m /= N;
-    for (double x : x_v)
-      v += (x - m) * (x - m);
-    v /= N;
-
-    const double v_l = std::max(v, 1e-6);
-    const double shape0 = (m > eps) ? (m * m) / v_l : 1.0;
-    const double scale0 = (m > eps) ? v_l / m : std::max(m, eps);
-    return {std::max(shape0, 1e-2), std::max(scale0, 1e-6)};
-  }
-
   // Compute interpolated empirical quantiles.
-  [[nodiscard]] static std::array<double, 3>
-  compute_quantiles(const std::vector<double>& x_v, const std::array<double, 3>& quantiles_v)
+  [[nodiscard]] static arr<double, 3> compute_quantiles(const vec<double>& x_v, const arr<double, 3>& quantiles_v)
   {
-    std::vector<double> sorted = x_v;
-    std::sort(sorted.begin(), sorted.end());
-    const double last = static_cast<double>(sorted.size() - 1);
-    std::array<double, 3> q{};
+    vec<double> sorted_v = x_v;
+    std::sort(sorted_v.begin(), sorted_v.end());
+    const double last = static_cast<double>(sorted_v.size() - 1);
+    arr<double, 3> q{};
     for (size_t k = 0; k < quantiles_v.size(); ++k) {
       const double ix = quantiles_v[k] * last;
       const size_t lo = static_cast<size_t>(ix);
-      const size_t hi = std::min(lo + 1, sorted.size() - 1);
+      const size_t hi = std::min(lo + 1, sorted_v.size() - 1);
       const double frac = ix - static_cast<double>(lo);
-      q[k] = sorted[lo] * (1.0 - frac) + sorted[hi] * frac;
+      q[k] = sorted_v[lo] * (1.0 - frac) + sorted_v[hi] * frac;
     }
     return q;
   }
 
   // Sort a 3-element simplex so that F[0] <= F[1] <= F[2].
-  static void sort3(std::array<coord_t, 3>& S, std::array<double, 3>& F)
+  static void sort3(arr<coord_t, 3>& S, arr<double, 3>& F)
   {
     if (F[0] > F[1]) {
       std::swap(F[0], F[1]);
@@ -250,14 +245,14 @@ private:
   // 2D Nelder-Mead in (log shape, log scale); stops on objective spread and diameter.
   template<typename Obj>
   [[nodiscard]] static params_t
-  bivariate_nelder_mead(params_t p0, Obj&& obj, const Config& cfg, double* obj_out = nullptr, int* niter_out = nullptr)
+  bivariate_nelder_mead(params_t p0, Obj&& obj, const config_t& cfg, double* obj_out = nullptr, int* niter_out = nullptr)
   {
     auto eval = [&](const coord_t& p) { return obj(std::exp(p.x), std::exp(p.y)); };
 
-    std::array<coord_t, 3> S = {{{std::log(p0.shape), std::log(p0.scale)},
-                                 {std::log(p0.shape) + cfg.nm_step, std::log(p0.scale)},
-                                 {std::log(p0.shape), std::log(p0.scale) + cfg.nm_step}}};
-    std::array<double, 3> F = {eval(S[0]), eval(S[1]), eval(S[2])};
+    arr<coord_t, 3> S = {{{std::log(p0.shape), std::log(p0.scale)},
+                          {std::log(p0.shape) + cfg.nm_step, std::log(p0.scale)},
+                          {std::log(p0.shape), std::log(p0.scale) + cfg.nm_step}}};
+    arr<double, 3> F = {eval(S[0]), eval(S[1]), eval(S[2])};
     sort3(S, F);
 
     int iter = 0;

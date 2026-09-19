@@ -2,13 +2,33 @@
 #define _MSG_HPP
 
 #include <cassert>
+#include <cstdint>
 #include <cstdlib>
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <unistd.h>
 #include <utility>
 
 #define assertm(exp, msg) assert(((void)(msg), exp))
+
+// --verbose: report progress even when stderr is not a TTY.
+extern bool verbose;
+
+inline bool stderr_is_tty() noexcept { return isatty(STDERR_FILENO) != 0; }
+
+// Progress line "<label> <done>/<total>..."; silent unless stderr is a TTY or --verbose.
+inline void progress(const std::string& label, uint64_t done, uint64_t total)
+{
+  if (!stderr_is_tty() && !verbose) return;
+  std::cerr << '\r' << label << ' ' << done << '/' << total << "..." << std::flush;
+}
+
+// Finish a progress line; pairs with progress().
+inline void progress_done()
+{
+  if (stderr_is_tty() || verbose) std::cerr << '\n';
+}
 
 inline std::string concat_msg() { return {}; }
 

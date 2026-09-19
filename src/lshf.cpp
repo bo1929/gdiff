@@ -83,28 +83,13 @@ void LSHF::set_lshf()
   gen_compress_mv(mask_drop_bp, mv_drop_bp);
 }
 
-uint32_t LSHF::get_npos_diff(uint32_t zc)
-{
-  uint32_t i = __builtin_ctz(zc);
-  zc = zc >> (i + 1);
-  return npos_v[i];
-}
-
-uint32_t LSHF::get_npos_accdiff(uint32_t& zc, uint32_t& i)
-{
-  uint32_t j = __builtin_ctz(zc) + 1;
-  i += j;
-  zc >>= j;
-  return npos_v.rbegin()[i - 1];
-}
-
 uint64_t LSHF::inv_ppos_bp(uint32_t bp) { return deposit_bits(static_cast<uint64_t>(bp), mask_hash_bp); }
 
 uint64_t LSHF::inv_ppos_lr(uint32_t lr) { return deposit_bits(static_cast<uint64_t>(lr), mask_drop_lr); }
 
-char* LSHF::npos_data() { return reinterpret_cast<char*>(npos_v.data()); }
+char* LSHF::get_npos_data() { return reinterpret_cast<char*>(npos_v.data()); }
 
-char* LSHF::ppos_data() { return reinterpret_cast<char*>(ppos_v.data()); }
+char* LSHF::get_ppos_data() { return reinterpret_cast<char*>(ppos_v.data()); }
 
 uint8_t LSHF::get_k() const { return k; }
 

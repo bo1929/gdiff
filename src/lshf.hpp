@@ -53,10 +53,8 @@ public:
 #endif
   uint64_t inv_ppos_bp(uint32_t bp);
   uint64_t inv_ppos_lr(uint32_t lr);
-  uint32_t get_npos_accdiff(uint32_t& zc, uint32_t& i);
-  uint32_t get_npos_diff(uint32_t zc);
-  char* npos_data();
-  char* ppos_data();
+  char* get_npos_data();
+  char* get_ppos_data();
   vec<uint8_t> get_npos_v();
   vec<uint8_t> get_ppos_v();
   uint8_t get_k() const;

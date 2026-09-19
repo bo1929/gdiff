@@ -1,40 +1,29 @@
 #ifndef _SYM_HPP
 #define _SYM_HPP
 
-#include "stils.hpp"
+#include "distance.hpp"
 #include "types.hpp"
 
-struct dpoint_t
+struct ds_t
 {
-  double d = nanx();
-  double lr_ub = nanx();
+  double d = nanx(); // the MLE distance estimate
+  double s = nanx(); // likelihood-ratio statistic for the upper bound
 };
 
-struct sym_merge_t
+struct summary_t
 {
-  vec<dpoint_t> rows; // ascending by d, all-NaN ranks removed
-  uint64_t n_na = 0;
+  double d = nanx();         // reported estimate
+  double d_median = nanx();  // median over the distances behind `d`
+  double d_mean = nanx();    // plain mean over the symmetrized distances, before filtering
+  double d_highest = nanx(); // max d over every mapped window
+  double d_upper = nanx();   // max d over the kept windows only
+  vec<double> d_v;           // distances after symmetrization
+  uint64_t n_na = 0;         // # of windows without a distance estimate
+  uint64_t n_ub = 0;         // # of windows whose likelihood-ratio statistic is exactly zero
+  uint64_t n_filtered = 0;   // # of windows rejected by the likelihood-ratio filter
 };
 
-sym_merge_t sym_merge(vec<dpoint_t> ab, vec<dpoint_t> ba);
-
-struct sym_est_t
-{
-  double distance = nanx();         // reported estimate (filtered or unfiltered mean)
-  double median = nanx();           // median over the rows behind `distance`
-  uint64_t num_filtered = 0;        // rows rejected by the lr_ub filter
-  double alternative_mean = nanx(); // the mean that was not reported
-  uint64_t num_na = 0;
-  double max_unfiltered = nanx(); // max d over all non-NA rows
-  double max_distance = nanx();   // max d over kept rows only
-  uint64_t n_lr_zero = 0;
-  uint64_t n_total = 0; // non-NA reconciled rows
-  uint64_t n_kept = 0;  // rows passing the filter
-  bool used_filtered = false;
-  vec<double> null_d_v; // distances behind `distance`, ascending; detect's null
-};
-
-sym_est_t sym_estimate(const sym_merge_t& rc, double lr_th, double min_portion);
+summary_t summarize_symmetric(vec<ds_t> ab_v, vec<ds_t> ba_v, double lr_th, double min_portion);
 
 constexpr double lr_th_default = 3.841;
 constexpr double min_portion_default = 0.66;

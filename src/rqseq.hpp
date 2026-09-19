@@ -11,7 +11,7 @@
 #include "types.hpp"
 #include "lshf.hpp"
 #include "enc.hpp"
-#include "hm.hpp"
+#include "buckets.hpp"
 #include "exthash.hpp"
 #include "hyperloglog.hpp"
 
@@ -21,8 +21,8 @@ protected:
 #if defined(_LCURL) && _LCURL == 1
   static size_t write_data(void* ptr, size_t s, size_t nmb, FILE* fst)
   {
-    size_t written = fwrite(ptr, s, nmb, fst);
-    return written;
+    size_t nitems = fwrite(ptr, s, nmb, fst);
+    return nitems;
   }
 
   str download_url(str url)
@@ -77,16 +77,16 @@ struct hmer_t
 class RSeq : public HandlerURL
 {
 public:
-  RSeq(const str& input, const lshf_sptr_t& lshf, uint8_t w, uint32_t frac_th, bool canonical);
+  RSeq(const str& input, const LSHF& lshf, uint8_t w, uint32_t fracth, bool canonical);
   ~RSeq();
   bool set_curr_seq();
   bool read_next_seq();
   // HLL estimate of the number of distinct canonical k-mers seen so far.
-  [[nodiscard]] double get_card_est() const { return csk.estimate(); }
+  [[nodiscard]] double get_card() const { return csk.estimate(); }
   [[nodiscard]] const char* get_name() const { return name; }
   [[nodiscard]] uint64_t get_len() const { return len; }
   // Append the selected minimizers of the current sequence as packed keys.
-  void extract_mers(vec<uint64_t>& keys);
+  void extract_mers(vec<uint64_t>& keys_v);
 
 private:
   gzFile gfile;
@@ -94,12 +94,12 @@ private:
   bool is_url;
   uint8_t k;
   uint8_t w;
-  uint32_t frac_th;
+  uint32_t fracth;
   bool canonical;
   char* cseq = nullptr;
   char* name = nullptr;
   uint64_t len = 0;
-  lshf_sptr_t lshf;
+  const LSHF& lshf;
   uint64_t mask_bp = 0;
   uint64_t mask_lr = 0;
   hll::HyperLogLog csk;
@@ -113,18 +113,17 @@ struct qseq_t
   str seq;
 };
 
-constexpr uint64_t qseq_bpmax_default = uint64_t(64) << 20;
+constexpr uint64_t bpmax_batch_default = uint64_t(64) << 20;
 
 class QSeq : public HandlerURL
 {
 public:
-  explicit QSeq(const str& input, uint64_t max_batch_bases = qseq_bpmax_default);
+  explicit QSeq(const str& input, uint64_t bpmax_batch = bpmax_batch_default);
   ~QSeq();
   // Append up to one batch of sequences; false once the input is exhausted.
   bool read_next_batch();
   void clear();
   bool is_empty();
-  uint64_t get_cbatch_size() const { return cbatch_size; }
   const vec<qseq_t>& get_batch_v() const { return batch_v; }
 
 private:
@@ -132,9 +131,8 @@ private:
   kseq_t* kseq;
   bool is_url;
   vec<qseq_t> batch_v;
-  uint64_t cbatch_size = 0;
   uint64_t rbatch_size = 512;
-  uint64_t max_batch_bases;
+  uint64_t bpmax_batch;
   std::filesystem::path input_path;
 };
 

@@ -3,8 +3,14 @@
 
 #include <simde/x86/avx512.h>
 #include "llh.hpp"
-#include "stils.hpp"
-#include "tpool.hpp"
+#include "records.hpp"
+#include "windows.hpp"
+
+// Number of bins of size 2^bin_shift needed to cover `len` sites.
+inline uint64_t ceil_bins(uint64_t len, uint64_t bin_shift) { return (len + (uint64_t(1) << bin_shift) - 1) >> bin_shift; }
+
+// Threshold-lane bitmask (bit i = lane i); fits rwidth <= 8.
+using mask_t = uint32_t;
 
 class HDHist
 {
@@ -15,7 +21,6 @@ public:
   template<bool Atomic = false>
   void aggregate_mer(uint32_t hdist_min, uint64_t i);
   void compute_prefhistsum();
-  void compute_prefhistsum_parallel(ThreadPool& pool, uint32_t nchunks);
   void extract_histogram(uint64_t a, uint64_t b, vec<uint64_t>& v, uint64_t& u, uint64_t& t) const;
   void extract_histogram(uint64_t a, uint64_t b, window_counts_t& wc) const;
   void extract_histogram(uint64_t a, uint64_t b, swindow_counts_t& wc, bool is_rc) const;
@@ -24,13 +29,12 @@ public:
 private:
   uint64_t nbins = 0;
   uint32_t hdist_th = 0;
-  uint64_t bin_shift = 0;
   vec<uint64_t> hist_v;
   vec<uint64_t> miss_v;
 };
 
 template<typename T>
-inline double at(T v, const size_t ix)
+inline double lane_at(T v, size_t ix)
 {
   if constexpr (std::is_same_v<T, double>) {
     return v;
@@ -39,13 +43,48 @@ inline double at(T v, const size_t ix)
   }
 }
 
+// Runtime config for DIM / QIE / detect interval extraction.
+template<typename T>
+struct dim_params
+{
+  T dist_th;            // Distance threshold(s): one double or eight SIMD lanes
+  uint32_t hdist_th;    // Hamming distance threshold used for k-mer search
+  uint64_t tau_bin;     // Minimum interval length in bins
+  double chisq;         // Chi-square threshold for interval merging
+  uint64_t bin_shift;   // Bin index = site >> bin_shift
+  uint64_t bin_size;    // 2^bin_shift
+  uint64_t sample_size; // Background samples for significance (0 = skip)
+  bool canonical;       // Strand-agnostic mode
+  bool enum_only;       // Enumerate without ordered removal / full hist path
+
+  dim_params(T dist_th,
+             uint32_t hdist_th,
+             uint64_t tau,
+             double chisq,
+             uint64_t bin_shift,
+             uint64_t sample_size,
+             bool canonical,
+             bool enum_only)
+    : dist_th(dist_th)
+    , hdist_th(hdist_th)
+    , tau_bin(ceil_bins(tau, bin_shift))
+    , chisq(chisq)
+    , bin_shift(bin_shift)
+    , bin_size(uint64_t(1) << bin_shift)
+    , sample_size(sample_size)
+    , canonical(canonical)
+    , enum_only(enum_only)
+  {
+  }
+};
+
 template<typename T>
 class DIM
 {
-  static constexpr size_t WIDTH = std::is_same_v<T, double> ? 1 : RWIDTH;
+  static constexpr size_t WIDTH = std::is_same_v<T, double> ? 1 : rwidth;
 
 public:
-  DIM(const params_t<T>& params, const llh_sptr_t<T>& llhf, uint64_t nbins, uint64_t nmers);
+  DIM(const dim_params<T>& params, const LLH<T>& llhf, uint64_t nbins, uint64_t nmers);
   void inclusive_scan();
   void extrema_scan();
   void compute_prefhistsum();
@@ -81,8 +120,8 @@ public:
   }
 
 private:
-  const params_t<T>& params;
-  const llh_sptr_t<T> llhf;                // log-likelihood function for all calculations
+  const dim_params<T>& params;
+  const LLH<T>& llhf;                      // log-likelihood function for all calculations
   const uint64_t nbins;                    // number of bins
   const uint64_t nmers;                    // number of k-mers in query (for per-k-mer HD tracking)
   const bool keep_hist;                    // whether to keep track of the histogram(s) for the query sequence

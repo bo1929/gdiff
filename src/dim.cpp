@@ -14,20 +14,33 @@ namespace {
     uint64_t pos;
     double val;
   };
+
+  // Split [lix, rix] into maximal skip-free subranges (1-based bins, skip_v is 0-based).
+  template<typename Fn>
+  void for_each_skip_free(const vec<uint8_t>& skip_v, uint64_t lix, uint64_t rix, Fn&& fn)
+  {
+    uint64_t a = lix;
+    for (uint64_t x = lix; x <= rix; ++x) {
+      if (skip_v[x - 1]) {
+        if (x > a) fn(a, x - 1);
+        a = x + 1;
+      }
+    }
+    if (rix >= a) fn(a, rix);
+  }
 } // namespace
 
-HDHist::HDHist(const uint64_t nbins, const uint32_t hdist_th, const uint64_t bin_shift)
+HDHist::HDHist(uint64_t nbins, uint32_t hdist_th, uint64_t bin_shift)
   : nbins(nbins)
   , hdist_th(hdist_th)
-  , bin_shift(bin_shift)
   , hist_v((nbins + 1) * (hdist_th + 1), 0)
   , miss_v(nbins + 1, 0)
 {
-  assert(this->bin_shift <= 16);
+  assert(bin_shift <= 16);
 }
 
 template<bool Atomic>
-void HDHist::aggregate_mer(const uint32_t hdist_min, const uint64_t i)
+void HDHist::aggregate_mer(uint32_t hdist_min, uint64_t i)
 {
   if (i >= nbins) return;
   if (hdist_min <= hdist_th) {
@@ -50,67 +63,21 @@ void HDHist::compute_prefhistsum()
 {
   const uint32_t W = hdist_th + 1;
   for (uint64_t i = 0; i < nbins; ++i) {
-    for (uint32_t d = 0; d < W; ++d) {
-      hist_v[((i + 1) * W) + d] += hist_v[(i * W) + d];
+    for (uint32_t hd = 0; hd < W; ++hd) {
+      hist_v[((i + 1) * W) + hd] += hist_v[(i * W) + hd];
     }
     miss_v[i + 1] += miss_v[i];
   }
 }
 
-void HDHist::compute_prefhistsum_parallel(ThreadPool& pool, uint32_t nchunks)
-{
-  const uint32_t W = hdist_th + 1;
-  const uint64_t nrows = nbins + 1;
-  if (nchunks <= 1 || nrows < (uint64_t(1) << 16)) {
-    compute_prefhistsum();
-    return;
-  }
-  nchunks = std::min<uint32_t>(nchunks, static_cast<uint32_t>((nrows + 4095) / 4096));
-  if (nchunks <= 1) {
-    compute_prefhistsum();
-    return;
-  }
-  const uint64_t rows_per = (nrows + nchunks - 1) / nchunks;
-  uint64_t* h = hist_v.data();
-  // Phase A: exclusive-local prefix sums inside each chunk.
-  pool.parallel_for(nchunks, 1, [&](uint64_t c) {
-    const uint64_t c0 = c * rows_per;
-    const uint64_t c1 = std::min(c0 + rows_per, nrows);
-    for (uint64_t r = c0 + 1; r < c1; ++r) {
-      for (uint32_t d = 0; d < W; ++d)
-        h[r * W + d] += h[(r - 1) * W + d];
-    }
-  });
-  // Serial combine of chunk bases (few chunks).
-  vec<uint64_t> base(static_cast<uint64_t>(nchunks) * W, 0);
-  for (uint32_t c = 1; c < nchunks; ++c) {
-    const uint64_t last = std::min((c * rows_per), nrows) - 1;
-    for (uint32_t d = 0; d < W; ++d)
-      base[c * W + d] = base[(c - 1) * W + d] + h[last * W + d];
-  }
-  // Phase B: add each chunk's base to all of its rows.
-  pool.parallel_for(nchunks - 1, 1, [&](uint64_t ci) {
-    const uint64_t c = ci + 1;
-    const uint64_t c0 = c * rows_per;
-    const uint64_t c1 = std::min(c0 + rows_per, nrows);
-    const uint64_t* b = &base[c * W];
-    for (uint64_t r = c0; r < c1; ++r) {
-      for (uint32_t d = 0; d < W; ++d)
-        h[r * W + d] += b[d];
-    }
-  });
-  for (uint64_t i = 0; i < nbins; ++i)
-    miss_v[i + 1] += miss_v[i];
-}
-
-void HDHist::extract_histogram(const uint64_t a, const uint64_t b, vec<uint64_t>& v, uint64_t& u, uint64_t& t) const
+void HDHist::extract_histogram(uint64_t a, uint64_t b, vec<uint64_t>& v, uint64_t& u, uint64_t& t) const
 {
   assert(a <= b && b <= nbins);
   const uint32_t W = hdist_th + 1;
-  assert(W <= RWIDTH && W <= hdist_bound + 1);
+  assert(W <= rwidth && W <= hdist_bound + 1);
   // Copy into 8-lane scratch; a masked load of W < 8 can fault near a page end.
-  alignas(64) uint64_t hb[RWIDTH] = {};
-  alignas(64) uint64_t ha[RWIDTH] = {};
+  alignas(64) uint64_t hb[rwidth] = {};
+  alignas(64) uint64_t ha[rwidth] = {};
   std::memcpy(hb, &hist_v[b * W], W * sizeof(uint64_t));
   std::memcpy(ha, &hist_v[a * W], W * sizeof(uint64_t));
 
@@ -146,7 +113,7 @@ void HDHist::extract_histogram(uint64_t a, uint64_t b, swindow_counts_t& wc, boo
 }
 
 template<typename T>
-DIM<T>::DIM(const params_t<T>& params, const llh_sptr_t<T>& llhf, uint64_t nbins, uint64_t nmers)
+DIM<T>::DIM(const dim_params<T>& params, const LLH<T>& llhf, uint64_t nbins, uint64_t nmers)
   : params(params)
   , llhf(llhf)
   , nbins(nbins)
@@ -168,7 +135,7 @@ DIM<T>::DIM(const params_t<T>& params, const llh_sptr_t<T>& llhf, uint64_t nbins
 }
 
 template<typename T>
-void DIM<T>::set_query_distance(const double d_q)
+void DIM<T>::set_query_distance(double d_q)
 {
   const bool is_valid = is_valid_distance(d_q);
 
@@ -179,7 +146,7 @@ void DIM<T>::set_query_distance(const double d_q)
   } else {
     arr<std::pair<double, size_t>, WIDTH> tp;
     for (size_t i = 0; i < WIDTH; ++i) {
-      const double t = at(params.dist_th, i);
+      const double t = lane_at(params.dist_th, i);
       thneg_v[i] = is_valid && t > d_q;
       tp[i] = {t, i};
     }
@@ -239,18 +206,18 @@ void DIM<T>::aggregate_mer(uint32_t hdist_min, uint64_t i)
       hdhist.aggregate_mer(hdist_min, i);
     else
       hist_v[hdist_min]++;
-    add_to(sdc_v[i], llhf->get_sdc(hdist_min));
-    add_to(fdc_v[i], llhf->get_fdc(hdist_min));
+    add_to(sdc_v[i], llhf.get_sdc(hdist_min));
+    add_to(fdc_v[i], llhf.get_fdc(hdist_min));
   } else {
     u_q++;
     if (keep_hist) hdhist.aggregate_mer(hdist_min, i);
-    add_to(sdc_v[i], llhf->get_sdc());
-    add_to(fdc_v[i], llhf->get_fdc());
+    add_to(sdc_v[i], llhf.get_sdc());
+    add_to(fdc_v[i], llhf.get_fdc());
   }
 }
 
 template<typename T>
-void DIM<T>::skip_mer(const uint64_t i)
+void DIM<T>::skip_mer(uint64_t i)
 {
   if (i >= nbins) return;
   if (skip_v.empty()) skip_v.assign(nbins, 0);
@@ -330,49 +297,41 @@ void DIM<T>::extrema_scan()
 
 // Maximal [a,b] in [lix,rix] where the prefix sum drops below a prior maximum.
 template<typename T>
-void DIM<T>::extract_intervals_mx(const uint64_t tau, const uint64_t lix, const uint64_t rix, const size_t ix)
+void DIM<T>::extract_intervals_mx(uint64_t tau, uint64_t lix, uint64_t rix, size_t ix)
 {
   if (!has_skips) {
     extract_mx(tau, lix, rix, ix);
     return;
   }
-  // Split [lix, rix] into maximal skip-free subranges (1-based bins, skip_v is 0-based).
-  uint64_t a = lix;
-  for (uint64_t x = lix; x <= rix; ++x) {
-    if (skip_v[x - 1]) {
-      if (x > a) extract_mx(tau, a, x - 1, ix);
-      a = x + 1;
-    }
-  }
-  if (rix >= a) extract_mx(tau, a, rix, ix);
+  for_each_skip_free(skip_v, lix, rix, [&](uint64_t a, uint64_t b) { extract_mx(tau, a, b, ix); });
 }
 
 template<typename T>
-void DIM<T>::extract_mx(const uint64_t tau, const uint64_t lix, const uint64_t rix, const size_t ix)
+void DIM<T>::extract_mx(uint64_t tau, uint64_t lix, uint64_t rix, size_t ix)
 {
   uint64_t b_curr = lix;
   uint64_t b_prev = std::numeric_limits<uint64_t>::max();
 
-  if (rix >= lix + tau && at(fdps_v[rix], ix) < at(fdps_v[lix], ix)) {
+  if (rix >= lix + tau && lane_at(fdps_v[rix], ix) < lane_at(fdps_v[lix], ix)) {
     intervals_v[ix].emplace_back(lix, rix);
     return;
   }
 
   for (uint64_t a = lix; a <= rix; ++a) {
-    const double fdpmax_a = at(fdpmax_v[a - 1], ix);
-    const double fdps_a = at(fdps_v[a], ix);
+    const double fdpmax_a = lane_at(fdpmax_v[a - 1], ix);
+    const double fdps_a = lane_at(fdps_v[a], ix);
 
     if (fdpmax_a >= fdps_a) continue; // Condition 1
 
-    while ((b_curr + 1) <= rix && (at(fdsmin_v[b_curr + 1], ix) < fdps_a))
+    while ((b_curr + 1) <= rix && (lane_at(fdsmin_v[b_curr + 1], ix) < fdps_a))
       ++b_curr; // Condition 2
 
     const uint64_t b_star = b_curr;
-    if (b_star < (a + tau)) continue;               // Condition 3
-    if (at(fdps_v[b_star], ix) >= fdps_a) continue; // Condition 4
-    if (b_star == b_prev) continue;                 // Condition 6
+    if (b_star < (a + tau)) continue;                    // Condition 3
+    if (lane_at(fdps_v[b_star], ix) >= fdps_a) continue; // Condition 4
+    if (b_star == b_prev) continue;                      // Condition 6
 
-    if (at(fdps_v[b_star], ix) >= fdpmax_a) { // Condition 5
+    if (lane_at(fdps_v[b_star], ix) >= fdpmax_a) { // Condition 5
       intervals_v[ix].emplace_back(a, b_star);
       b_prev = b_star;
     }
@@ -380,29 +339,21 @@ void DIM<T>::extract_mx(const uint64_t tau, const uint64_t lix, const uint64_t r
 }
 
 template<typename T>
-void DIM<T>::extract_intervals_sx(const uint64_t tau, const uint64_t lix, const uint64_t rix, const size_t ix)
+void DIM<T>::extract_intervals_sx(uint64_t tau, uint64_t lix, uint64_t rix, size_t ix)
 {
   if (!has_skips) {
     extract_sx(tau, lix, rix, ix);
     return;
   }
-  // Split [lix, rix] into maximal skip-free subranges (1-based bins, skip_v is 0-based).
-  uint64_t a = lix;
-  for (uint64_t x = lix; x <= rix; ++x) {
-    if (skip_v[x - 1]) {
-      if (x > a) extract_sx(tau, a, x - 1, ix);
-      a = x + 1;
-    }
-  }
-  if (rix >= a) extract_sx(tau, a, rix, ix);
+  for_each_skip_free(skip_v, lix, rix, [&](uint64_t a, uint64_t b) { extract_sx(tau, a, b, ix); });
 }
 
 template<typename T>
-void DIM<T>::extract_sx(const uint64_t tau, const uint64_t lix, const uint64_t rix, const size_t ix)
+void DIM<T>::extract_sx(uint64_t tau, uint64_t lix, uint64_t rix, size_t ix)
 {
   // Valid right endpoints are suffix minima; the pointer is monotone (O(k) total).
   const uint64_t gap_len = rix - lix + 1;
-  if (gap_len >= 1 + tau && at(fdps_v[rix], ix) < at(fdps_v[lix], ix)) {
+  if (gap_len >= 1 + tau && lane_at(fdps_v[rix], ix) < lane_at(fdps_v[lix], ix)) {
     intervals_v[ix].emplace_back(lix, rix);
     return;
   }
@@ -411,7 +362,7 @@ void DIM<T>::extract_sx(const uint64_t tau, const uint64_t lix, const uint64_t r
   {
     double y_min = pinf();
     for (uint64_t j = rix; j >= lix; --j) {
-      const double v = at(fdps_v[j], ix);
+      const double v = lane_at(fdps_v[j], ix);
       if (v < y_min) {
         y_min = v;
         pv_v.push_back({j, v});
@@ -426,7 +377,7 @@ void DIM<T>::extract_sx(const uint64_t tau, const uint64_t lix, const uint64_t r
   uint64_t b_prev = std::numeric_limits<uint64_t>::max();
 
   for (uint64_t a = lix; a <= rix; ++a) {
-    const double fdps_a = at(fdps_v[a], ix);
+    const double fdps_a = lane_at(fdps_v[a], ix);
     const double fdpmax_a = running_max;
     if (fdps_a > running_max) running_max = fdps_a;
 
@@ -453,7 +404,7 @@ void DIM<T>::extract_sx(const uint64_t tau, const uint64_t lix, const uint64_t r
 }
 
 template<typename T>
-void DIM<T>::expand_intervals(const double chisq_th, const size_t ix)
+void DIM<T>::expand_intervals(double chisq_th, size_t ix)
 {
   auto& iv_ix = intervals_v[ix];
   if (iv_ix.empty()) return;
@@ -467,8 +418,8 @@ void DIM<T>::expand_intervals(const double chisq_th, const size_t ix)
   for (size_t i = 1; i < iv_ix.size(); ++i) {
     a = iv_ix[i].a;
     b = iv_ix[i].b;
-    fdiff = at(fdps_v[b], ix) - at(fdps_v[ap], ix);
-    sdiff = at(sdps_v[ap], ix) - at(sdps_v[b], ix);
+    fdiff = lane_at(fdps_v[b], ix) - lane_at(fdps_v[ap], ix);
+    sdiff = lane_at(sdps_v[ap], ix) - lane_at(sdps_v[b], ix);
     chisq_val = ((fdiff * fdiff) + eps) / (sdiff + eps);
 
     // Never merge across an N-run break: a skip bin in the gap (bp, a) keeps them apart.
@@ -539,7 +490,7 @@ void DIM<T>::extract_histogram(uint64_t a, uint64_t b, swindow_counts_t& wc, boo
 }
 
 template<typename T>
-vec<sample_t> DIM<T>::sample_random_intervals(const uint64_t nwin_bins, const uint64_t bix) const
+vec<sample_t> DIM<T>::sample_random_intervals(uint64_t nwin_bins, uint64_t bix) const
 {
   vec<sample_t> out_v;
   if (nwin_bins == 0 || params.sample_size == 0 || nwin_bins > nbins) return out_v;
@@ -547,7 +498,7 @@ vec<sample_t> DIM<T>::sample_random_intervals(const uint64_t nwin_bins, const ui
   const uint64_t npos = nbins - nwin_bins + 1;
   const size_t goal = static_cast<size_t>(std::min(params.sample_size, npos));
   out_v.reserve(goal);
-  window_counts_t wc(llhf->hdist_th);
+  window_counts_t wc(llhf.hdist_th);
 
   vec<uint64_t> starts_v(npos);
   std::iota(starts_v.begin(), starts_v.end(), uint64_t(0));
@@ -565,9 +516,9 @@ vec<sample_t> DIM<T>::sample_random_intervals(const uint64_t nwin_bins, const ui
     const uint64_t b_bin = x + nwin_bins + 1;
     wc.clear();
     extract_histogram(a_bin - 1, b_bin - 1, wc);
-    const double d = llhf->mle(wc.hist(), wc.u);
+    const double d = llhf.mle(wc.hist(), wc.u);
     if (!is_valid_distance(d)) continue;
-    const double I = llhf->compute_fisher_info(wc.hist(), wc.u, d);
+    const double I = llhf.compute_fisher_info(wc.hist(), wc.u, d);
     if (!std::isfinite(I) || I <= 0.0) continue;
     out_v.push_back({d, I, bix, {a_bin, b_bin}});
   }
@@ -603,4 +554,4 @@ bool filter_background_samples(const vec<sample_t>& in_v, const record_t& r, uin
 }
 
 template class DIM<double>;
-template class DIM<cm512_t>;
+template class DIM<cmlane_t>;

@@ -1,18 +1,18 @@
 #include "rqseq.hpp"
 
-#define HLL_BUCKET_FACTOR 16
+static constexpr uint8_t default_hll_factor = 16;
 
-RSeq::RSeq(const str& input, const lshf_sptr_t& lshf, uint8_t w, uint32_t frac_th, bool canonical)
+RSeq::RSeq(const str& input, const LSHF& lshf, uint8_t w, uint32_t fracth, bool canonical)
   : w(w)
-  , frac_th(frac_th)
+  , fracth(fracth)
   , canonical(canonical)
   , lshf(lshf)
-  , csk(HLL_BUCKET_FACTOR)
+  , csk(default_hll_factor)
 {
-  uint64_t u64m = std::numeric_limits<uint64_t>::max();
-  k = lshf->get_k();
-  mask_bp = u64m >> ((32 - k) * 2);
-  mask_lr = ((u64m >> (64 - k)) << 32) + ((u64m << 32) >> (64 - k));
+  k = lshf.get_k();
+  const lsh_masks_t masks = get_lsh_masks(k);
+  mask_bp = masks.bp;
+  mask_lr = masks.lr;
 
   is_url = std::regex_match(input, urlexp);
   if (is_url) {
@@ -51,7 +51,7 @@ bool RSeq::set_curr_seq()
   return len >= w;
 }
 
-void RSeq::extract_mers(vec<uint64_t>& keys)
+void RSeq::extract_mers(vec<uint64_t>& keys_v)
 {
   uint8_t ldiff;
   if (w > k) {
@@ -64,6 +64,8 @@ void RSeq::extract_mers(vec<uint64_t>& keys)
   uint64_t orenc64_bp = 0, orenc64_lr = 0;
   vec<hmer_t> winenc_v(ldiff);
   hmer_t cminimizer{};
+  uint64_t cx_prev;
+  bool is_wmin = false;
   uint64_t i, l;
   for (i = l = 0; i < len;) {
     if (SEQ_NT4_TABLE[static_cast<uint8_t>(cseq[i])] >= 4) {
@@ -80,29 +82,35 @@ void RSeq::extract_mers(vec<uint64_t>& keys)
       update_encoding(cseq + i - 1, orenc64_lr, orenc64_bp);
     }
     const uint64_t enc_bp = orenc64_bp & mask_bp;
-    winenc_v[klix] = {enc_bp, orenc64_lr & mask_lr, xhur64(enc_bp)};
-    csk.add(canonical ? xhur64(std::max(enc_bp, revcomp_bp64(enc_bp, k))) : winenc_v[klix].z);
+    const uint64_t enc_lr = orenc64_lr & mask_lr;
+    uint64_t x = enc_bp, y = enc_lr;
+    if (canonical) {
+      const uint64_t rc_bp = revcomp_bp64(enc_bp, k);
+      if (x < rc_bp) {
+        x = rc_bp;
+        y = bp64_to_lr64(rc_bp);
+      }
+    }
+    const uint64_t z = xhur64(x);
+    winenc_v[klix] = {x, y, z};
+    csk.add(z);
     if (++klix == ldiff) klix = 0;
     if (l < w) {
       continue;
     }
     cminimizer = *std::min_element(winenc_v.begin(), winenc_v.end(), [](hmer_t lhs, hmer_t rhs) { return lhs.z < rhs.z; });
-    if (canonical) {
-      uint64_t rcenc64_bp = revcomp_bp64(cminimizer.x, k);
-      if (cminimizer.x < rcenc64_bp) {
-        cminimizer.x = rcenc64_bp;
-        cminimizer.y = bp64_to_lr64(rcenc64_bp);
-      }
-    }
-    const uint32_t rix = lshf->compute_hash_bp(cminimizer.x);
-    if (rix < frac_th) {
-      keys.push_back(pack_key(rix, lshf->drop_ppos_lr(cminimizer.y)));
+    if (is_wmin && cminimizer.x == cx_prev) continue;
+    is_wmin = true;
+    cx_prev = cminimizer.x;
+    const uint32_t rix = lshf.compute_hash_bp(cminimizer.x);
+    if (rix < fracth) {
+      keys_v.push_back(pack_key(rix, lshf.drop_ppos_lr(cminimizer.y)));
     }
   }
 }
 
-QSeq::QSeq(const str& input, uint64_t max_batch_bases)
-  : max_batch_bases(max_batch_bases)
+QSeq::QSeq(const str& input, uint64_t bpmax_batch)
+  : bpmax_batch(bpmax_batch)
 {
   is_url = std::regex_match(input, urlexp);
   if (is_url) {
@@ -132,12 +140,11 @@ bool QSeq::read_next_batch()
   bool cont_reading = false;
   uint64_t ix = 0;
   uint64_t nbases = 0;
-  while ((ix < rbatch_size) && (nbases < max_batch_bases) && (cont_reading = (kseq_read(kseq) >= 0))) {
+  while ((ix < rbatch_size) && (nbases < bpmax_batch) && (cont_reading = (kseq_read(kseq) >= 0))) {
     nbases += kseq->seq.l;
     batch_v.push_back({kseq->name.s, kseq->seq.s});
     ix++;
   }
-  cbatch_size = ix;
   return cont_reading;
 }
 

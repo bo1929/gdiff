@@ -3,7 +3,8 @@
 
 #include "CLI11.hpp"
 #include "dim.hpp"
-#include "stils.hpp"
+#include "records.hpp"
+#include "windows.hpp"
 #include "rqseq.hpp"
 #include "sketch.hpp"
 #include <filesystem>
@@ -13,10 +14,10 @@
 template<typename T>
 class QIE
 {
-  static constexpr size_t WIDTH = std::is_same_v<T, double> ? 1 : RWIDTH;
+  static constexpr size_t WIDTH = std::is_same_v<T, double> ? 1 : rwidth;
 
 public:
-  QIE(const params_t<T>& params, const Sketch& sketch, const lshf_sptr_t& lshf, const vec<qseq_t>& batch_v);
+  QIE(const dim_params<T>& params, const Sketch& sketch, const vec<qseq_t>& batch_v);
   void map_sequences(std::ostream& sout, const str& rname);
 
   uint64_t get_nunmapped() const { return nunmapped; }
@@ -29,13 +30,12 @@ private:
   xy_t get_distance_bin(const record_t& r, const vec<double>& th_sorted) const;
   void report_contiguous(std::ostream& sout, const str& rname) const;
 
-  const params_t<T>& params;
+  const dim_params<T>& params;
   const Sketch& sketch;
-  const lshf_sptr_t lshf;
   const vec<qseq_t>& batch_v;
   const uint32_t k;
-  const uint32_t h;
-  llh_sptr_t<T> llhf;
+  const uint32_t hpos;
+  LLH<T> llhf;
   bool skip_test;
   bool keep_hist;
   bool enum_only;
@@ -56,6 +56,17 @@ private:
 class MapSC
 {
 public:
+  struct params
+  {
+    uint32_t hdist_th = 3;
+    uint64_t tau = 1;
+    uint64_t bin_shift = 0;
+    double chisq = 33.00051; // chi-square(1) survival ~1e-8
+    uint64_t sample_size = 200;
+    bool enum_only = false;
+    vec<double> thresholds_v;
+  };
+
   MapSC(CLI::App& sc);
   void map();
   bool validate_configuration();
@@ -67,14 +78,7 @@ private:
   std::filesystem::path output_path;
   std::ofstream output_file;
   std::ostream* output_stream = &std::cout;
-  uint32_t hdist_th = 3;
-  bool hdist_given = false;
-  uint64_t tau = 1;
-  uint64_t bin_shift = 0;
-  double chisq = 33.00051; // chi-square(1) survival ~1e-8
-  uint64_t sample_size = 200;
-  bool enum_only = false;
-  std::vector<double> thresholds_v;
+  params params;
   uint64_t total_qseq = 0;
 };
 
