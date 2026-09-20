@@ -703,7 +703,7 @@ static std::string map_stdout(const std::string& args)
 {
   const auto out = test_util::path("cli_map_stdout.tsv");
   if (!run_cli("map " + args, out)) return {};
-  return test_util::read_file(out);
+  return test_util::strip_comments(test_util::read_file(out));
 }
 
 TEST_SUITE("map CLI options")
@@ -721,7 +721,7 @@ TEST_CASE("map -o writes exactly the stdout report" * doctest::skip(!gdiff_cli_a
 
   const auto out = test_util::path("cli_map_o.tsv");
   REQUIRE(run_cli("map -o " + out.string() + " " + opts + " " + target, test_util::path("cli_map_devnull.txt")));
-  CHECK(test_util::read_file(out) == via_stdout);
+  CHECK(test_util::strip_comments(test_util::read_file(out)) == via_stdout);
   check_output_shape(via_stdout, false);
 }
 
@@ -766,7 +766,7 @@ TEST_CASE("--num-threads does not change the map output" * doctest::skip(!gdiff_
   const auto four = test_util::path("cli_nt4.tsv");
   REQUIRE(run_cli("--num-threads 1" + opts, one));
   REQUIRE(run_cli("--num-threads 4" + opts, four));
-  CHECK(test_util::read_file(one) == test_util::read_file(four));
+  CHECK(test_util::strip_comments(test_util::read_file(one)) == test_util::strip_comments(test_util::read_file(four)));
 }
 
 } // TEST_SUITE

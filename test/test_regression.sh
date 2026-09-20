@@ -3,9 +3,12 @@ set -euo pipefail
 
 # End-to-end regression for gdiff.
 #
-# Phases 1-2 pin `map` against the committed ground truth in gt/:
+# Phases 1-2 pin `map` against the committed ground truth in gt/, comparing the complete row
+# (column header included) rather than a stable prefix:
 #   gt/*.enum.txt  -- expected enum-only output
 #   gt/*.cont.txt  -- expected continuous-mode output
+# A legitimate change to any column, including the significance ones, means regenerating gt/:
+# delete the files and re-run, and the bootstrap below rewrites them.
 #
 # The later phases are self-validating: they assert invariants (option equivalence, thread
 # invariance, round trips, refused inputs) rather than comparing against new golden files, so
@@ -39,6 +42,13 @@ fail() {
 wait_slot() {
   while [ "$(jobs -rp | wc -l)" -ge "$NPROC" ]; do wait -n 2>/dev/null || true; done
 }
+
+# Every output is headed by two `#` provenance lines: the invocation, then the version with a
+# timestamp. Both differ between runs by construction, so comparisons must drop them.
+strip_comments() { grep -v '^#' "$1" || true; }
+
+# True when an output holds at least one data line, i.e. more than its provenance header.
+has_data() { [ -n "$(strip_comments "$1")" ]; }
 
 first_name="$(head -n 1 genome_names.txt)"
 first_query="$(cut -f1 genome_pairs.txt | head -n 1)"
@@ -78,10 +88,8 @@ while IFS=$'\t' read -r query ref; do
     ENUM_GT_MISSING=1
     continue
   fi
-  # enum output: QUERY_ID, SEQ_LEN, INTERVAL_START, INTERVAL_END, STRAND, REF_ID, DIST_TH (7 cols)
-  cut -f1,2,3,4,5,6,7 "$es_f" > "$WORK/est_enum"
-  cut -f1,2,3,4,5,6,7 "$gt_f" > "$WORK/gt_enum"
-  if ! diff -q "$WORK/est_enum" "$WORK/gt_enum" >/dev/null 2>&1; then
+  strip_comments "$es_f" > "$WORK/est_enum"
+  if ! diff -q "$WORK/est_enum" "$gt_f" >/dev/null 2>&1; then
     ENUM_FAIL=1
     ENUM_DETAIL+="  differs: $es_f vs $gt_f\n"
   fi
@@ -90,7 +98,7 @@ done < genome_pairs.txt
 if [ "$ENUM_GT_MISSING" -eq 1 ]; then
   echo "WARN: gt/*.enum.txt not found; generating ground truth from current output."
   while IFS=$'\t' read -r query ref; do
-    cp "$WORK/est/query_${query}-ref_${ref}.enum.txt" "gt/query_${query}-ref_${ref}.enum.txt"
+    strip_comments "$WORK/est/query_${query}-ref_${ref}.enum.txt" > "gt/query_${query}-ref_${ref}.enum.txt"
   done < genome_pairs.txt
   ENUM_FAIL=0
   echo "PASS: enum-only ground truth generated (first run)."
@@ -123,11 +131,8 @@ while IFS=$'\t' read -r query ref; do
     CONT_GT_MISSING=1
     continue
   fi
-  # cont output: QUERY_ID, SEQ_LEN, INTERVAL_START, INTERVAL_END, REF_ID, DIST, MASK, ...
-  # compare first 6 columns (through DIST) - downstream columns may vary with algorithmic changes
-  cut -f1,2,3,4,5,6 "$es_f" > "$WORK/est_cont"
-  cut -f1,2,3,4,5,6 "$gt_f" > "$WORK/gt_cont"
-  if ! diff -q "$WORK/est_cont" "$WORK/gt_cont" >/dev/null 2>&1; then
+  strip_comments "$es_f" > "$WORK/est_cont"
+  if ! diff -q "$WORK/est_cont" "$gt_f" >/dev/null 2>&1; then
     CONT_FAIL=1
     CONT_DETAIL+="  differs: $es_f vs $gt_f\n"
   fi
@@ -136,7 +141,7 @@ done < genome_pairs.txt
 if [ "$CONT_GT_MISSING" -eq 1 ]; then
   echo "WARN: gt/*.cont.txt not found; generating ground truth from current output."
   while IFS=$'\t' read -r query ref; do
-    cp "$WORK/est/query_${query}-ref_${ref}.cont.txt" "gt/query_${query}-ref_${ref}.cont.txt"
+    strip_comments "$WORK/est/query_${query}-ref_${ref}.cont.txt" > "gt/query_${query}-ref_${ref}.cont.txt"
   done < genome_pairs.txt
   CONT_FAIL=0
   echo "PASS: continuous ground truth generated (first run)."
@@ -180,27 +185,30 @@ map_once() { # $1 = output file, rest = extra options
 }
 
 map_once "$WORK/map_ref.tsv" -d 0.10
-[ -s "$WORK/map_ref.tsv" ] || fail "map produced no records at all"
+strip_comments "$WORK/map_ref.tsv" > "$WORK/map_ref.data"
+has_data "$WORK/map_ref.tsv" || fail "map produced no records at all"
 
 # -o must write exactly what stdout would.
 "$GDIFF" map -o "$WORK/map_o.tsv" -d 0.10 $MAP_BASE \
   "genomes/${first_query}.fna.gz" "$WORK/sketches/${first_ref}.gs" >/dev/null 2>&1
-cmp -s "$WORK/map_ref.tsv" "$WORK/map_o.tsv" || fail "map -o differs from the stdout report"
+strip_comments "$WORK/map_o.tsv" > "$WORK/map_o.data"
+cmp -s "$WORK/map_ref.data" "$WORK/map_o.data" || fail "map -o differs from the stdout report"
 
 # The worker count must not change the records.
 "$GDIFF" --num-threads 4 map -d 0.10 $MAP_BASE \
   "genomes/${first_query}.fna.gz" "$WORK/sketches/${first_ref}.gs" > "$WORK/map_t4.tsv" 2>/dev/null
-cmp -s "$WORK/map_ref.tsv" "$WORK/map_t4.tsv" || fail "map output depends on --num-threads"
+strip_comments "$WORK/map_t4.tsv" > "$WORK/map_t4.data"
+cmp -s "$WORK/map_ref.data" "$WORK/map_t4.data" || fail "map output depends on --num-threads"
 
 # --levels resolves its own thresholds from the background and must stay well formed.
 map_once "$WORK/map_levels.tsv" --levels 0.1 0.05 0.01 0.005
-[ -s "$WORK/map_levels.tsv" ] || fail "map --levels produced no output"
+has_data "$WORK/map_levels.tsv" || fail "map --levels produced no output"
 
 # --per-sequence and -b are alternate modes, not failures.
 map_once "$WORK/map_perseq.tsv" -d 0.10 --per-sequence
-[ -s "$WORK/map_perseq.tsv" ] || fail "map --per-sequence produced no output"
+has_data "$WORK/map_perseq.tsv" || fail "map --per-sequence produced no output"
 map_once "$WORK/map_b2.tsv" -d 0.10 -b 2
-[ -s "$WORK/map_b2.tsv" ] || fail "map -b 2 produced no output"
+has_data "$WORK/map_b2.tsv" || fail "map -b 2 produced no output"
 echo "PASS: map option equivalence"
 
 # -- Phase 5: dist -------------------------------------------------------------
@@ -210,38 +218,43 @@ sketch_b="$WORK/sketches/${names[1]}.gs"
 
 # A self-pair exercises the symmetric reconciliation on real data.
 "$GDIFF" dist "$sketch_a" "$sketch_a" > "$WORK/dist_self.tsv" 2>/dev/null
-[ -s "$WORK/dist_self.tsv" ] || fail "dist produced no output"
+has_data "$WORK/dist_self.tsv" || fail "dist produced no output"
 
 # Two lists select the same cross product as two positionals.
 "$GDIFF" dist "$sketch_a" "$sketch_b" > "$WORK/dist_pos.tsv" 2>/dev/null
 printf '%s\n' "$sketch_a" > "$WORK/list_a.txt"
 printf '%s\n' "$sketch_b" > "$WORK/list_b.txt"
 "$GDIFF" dist --list-a "$WORK/list_a.txt" --list-b "$WORK/list_b.txt" > "$WORK/dist_list.tsv" 2>/dev/null
-cmp -s "$WORK/dist_pos.tsv" "$WORK/dist_list.tsv" ||
+strip_comments "$WORK/dist_pos.tsv" > "$WORK/dist_pos.data"
+strip_comments "$WORK/dist_list.tsv" > "$WORK/dist_list.data"
+cmp -s "$WORK/dist_pos.data" "$WORK/dist_list.data" ||
   fail "dist --list-a/--list-b differ from the positional form"
 
 # -o must write exactly what stdout would.
 "$GDIFF" dist -o "$WORK/dist_o.tsv" "$sketch_a" "$sketch_b" >/dev/null 2>&1
-cmp -s "$WORK/dist_pos.tsv" "$WORK/dist_o.tsv" || fail "dist -o differs from the stdout report"
+strip_comments "$WORK/dist_o.tsv" > "$WORK/dist_o.data"
+cmp -s "$WORK/dist_pos.data" "$WORK/dist_o.data" || fail "dist -o differs from the stdout report"
 
 # --output-samples switches to one line per sampled window.
 "$GDIFF" dist --output-samples "$sketch_a" "$sketch_b" > "$WORK/dist_samples.tsv" 2>/dev/null
-[ -s "$WORK/dist_samples.tsv" ] || fail "dist --output-samples produced no output"
-[ "$(head -n 1 "$WORK/dist_samples.tsv" | cut -f1)" = "config" ] ||
+has_data "$WORK/dist_samples.tsv" || fail "dist --output-samples produced no output"
+[ "$(strip_comments "$WORK/dist_samples.tsv" | head -n 1 | cut -f1)" = "config" ] ||
   fail "dist --output-samples header changed"
-[ "$(head -n 1 "$WORK/dist_samples.tsv" | cut -f8)" = "direction" ] ||
+[ "$(strip_comments "$WORK/dist_samples.tsv" | head -n 1 | cut -f8)" = "direction" ] ||
   fail "dist --output-samples lost the direction column"
 echo "PASS: dist"
 
 # -- Phase 6: roll -------------------------------------------------------------
 echo "=== Phase 6: roll ==="
 "$GDIFF" roll -l 100 -s 500 "genomes/${first_query}.fna.gz" "$sketch_a" > "$WORK/roll.tsv" 2>/dev/null
-[ -s "$WORK/roll.tsv" ] || fail "roll produced no output"
-[ "$(head -n 1 "$WORK/roll.tsv" | cut -f1)" = "seq" ] || fail "roll header changed"
+has_data "$WORK/roll.tsv" || fail "roll produced no output"
+[ "$(strip_comments "$WORK/roll.tsv" | head -n 1 | cut -f1)" = "seq" ] || fail "roll header changed"
 
 "$GDIFF" roll -l 100 -s 500 -o "$WORK/roll_o.tsv" \
   "genomes/${first_query}.fna.gz" "$sketch_a" >/dev/null 2>&1
-cmp -s "$WORK/roll.tsv" "$WORK/roll_o.tsv" || fail "roll -o differs from the stdout report"
+strip_comments "$WORK/roll.tsv" > "$WORK/roll.data"
+strip_comments "$WORK/roll_o.tsv" > "$WORK/roll_o.data"
+cmp -s "$WORK/roll.data" "$WORK/roll_o.data" || fail "roll -o differs from the stdout report"
 echo "PASS: roll"
 
 # -- Phase 7: merge and info ---------------------------------------------------
@@ -257,10 +270,12 @@ blocks="$(grep -c '^\[Sketch ' "$WORK/info.txt" || true)"
 # A merged container is an ordinary input, and its within-set comparison is the same
 # whether it is given positionally or through --list-a.
 "$GDIFF" dist "$WORK/merged.gs" > "$WORK/dist_merged.tsv" 2>/dev/null
-[ -s "$WORK/dist_merged.tsv" ] || fail "dist rejected the merged container"
+has_data "$WORK/dist_merged.tsv" || fail "dist rejected the merged container"
 printf '%s\n' "$WORK/merged.gs" > "$WORK/list_merged.txt"
 "$GDIFF" dist --list-a "$WORK/list_merged.txt" > "$WORK/dist_merged_list.tsv" 2>/dev/null
-cmp -s "$WORK/dist_merged.tsv" "$WORK/dist_merged_list.tsv" ||
+strip_comments "$WORK/dist_merged.tsv" > "$WORK/dist_merged.data"
+strip_comments "$WORK/dist_merged_list.tsv" > "$WORK/dist_merged_list.data"
+cmp -s "$WORK/dist_merged.data" "$WORK/dist_merged_list.data" ||
   fail "dist --list-a differs from the positional form for a within-set pair"
 
 # Containers with different configurations cannot be merged, and a refusal writes nothing.
@@ -270,6 +285,62 @@ if "$GDIFF" merge -i "$WORK/merged.gs" -i "$WORK/k23.gs" -o "$WORK/refused.gs" >
 fi
 [ -e "$WORK/refused.gs" ] && fail "a refused merge left an output file behind"
 echo "PASS: merge and info"
+
+# -- Phase 8: provenance header ------------------------------------------------
+echo "=== Phase 8: provenance header ==="
+# Text outputs carry the two lines in the data stream; sketch and merge write a binary container,
+# so theirs go to stderr.
+for probe in map dist roll info; do
+  case "$probe" in
+    map)  "$GDIFF" map -d 0.10 $MAP_BASE "genomes/${first_query}.fna.gz" "$WORK/sketches/${first_ref}.gs" \
+            > "$WORK/prov_$probe.txt" 2>/dev/null ;;
+    dist) "$GDIFF" dist "$sketch_a" "$sketch_b" > "$WORK/prov_$probe.txt" 2>/dev/null ;;
+    roll) "$GDIFF" roll -l 100 -s 500 "genomes/${first_query}.fna.gz" "$sketch_a" \
+            > "$WORK/prov_$probe.txt" 2>/dev/null ;;
+    info) "$GDIFF" info -i "$sketch_a" > "$WORK/prov_$probe.txt" 2>/dev/null ;;
+  esac
+  [ "$(head -n 1 "$WORK/prov_$probe.txt" | cut -c1-14)" = "# invocation: " ] ||
+    fail "$probe output is missing its invocation line"
+  [ "$(head -n 2 "$WORK/prov_$probe.txt" | tail -n 1 | cut -c1-11)" = "# version: " ] ||
+    fail "$probe output is missing its version line"
+done
+
+for probe in sketch merge; do
+  if [ "$probe" = "sketch" ]; then
+    "$GDIFF" sketch -k 27 -w 31 -h 11 -i "genomes/${first_query}.fna.gz" \
+      -o "$WORK/prov_sketch.gs" >/dev/null 2> "$WORK/prov_$probe.txt"
+  else
+    "$GDIFF" merge -i "$sketch_a" -i "$sketch_b" -o "$WORK/prov_merge.gs" >/dev/null 2> "$WORK/prov_$probe.txt"
+  fi
+  grep -q '^# invocation: ' "$WORK/prov_$probe.txt" || fail "$probe stderr is missing its invocation line"
+  grep -q '^# version: gdiff ' "$WORK/prov_$probe.txt" || fail "$probe stderr is missing its version line"
+done
+echo "PASS: provenance header"
+
+# -- Phase 9: map output schema ------------------------------------------------
+echo "=== Phase 9: map output schema ==="
+# `map` names its columns so `plot.py` can find them by name instead of by position; the
+# strand-aware variant is not covered by the gt/ files above.
+EXPECT_AGNOSTIC="seq seq_len start end reference d mask d_bin d_q d_acc percentile fold qvalue info lr_ub"
+EXPECT_AWARE="seq seq_len start end strand is_rc reference d mask d_bin d_q d_diff d_acc percentile fold qvalue info lr_ub"
+
+agnostic_header="$(strip_comments "$WORK/map_ref.tsv" | head -n 1 | tr '\t' ' ')"
+[ "$agnostic_header" = "$EXPECT_AGNOSTIC" ] || fail "strand-agnostic map header changed: $agnostic_header"
+
+"$GDIFF" sketch -k 27 -w 31 -h 11 --strand-aware -i "genomes/${first_query}.fna.gz" \
+  -o "$WORK/aware.gs" >/dev/null 2>&1
+"$GDIFF" map -d 0.10 -l 9900 --hdist-th 4 --sample-size 100 "genomes/${first_query}.fna.gz" \
+  "$WORK/aware.gs" > "$WORK/aware.tsv" 2>/dev/null
+aware_header="$(strip_comments "$WORK/aware.tsv" | head -n 1 | tr '\t' ' ')"
+[ "$aware_header" = "$EXPECT_AWARE" ] || fail "strand-aware map header changed: $aware_header"
+
+# Every data row carries as many fields as its header.
+for probe in map_ref aware; do
+  fields="$(strip_comments "$WORK/$probe.tsv" | head -n 1 | awk -F'\t' '{print NF}')"
+  bad="$(strip_comments "$WORK/$probe.tsv" | awk -F'\t' -v n="$fields" 'NF != n' | wc -l | tr -d ' ')"
+  [ "$bad" = "0" ] || fail "$probe has $bad row(s) whose field count differs from the header"
+done
+echo "PASS: map output schema"
 
 # -- Summary -------------------------------------------------------------------
 echo ""

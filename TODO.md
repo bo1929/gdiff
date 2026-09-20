@@ -1,5 +1,12 @@
 # TODO
 
+- Come up with a better output format for map subcommand -- for all paths and modes.
+- Better tests and perhaps change the test data.
+- Refactor and review:
+  * modified:   src/map.cpp
+  * modified:   src/map.hpp
+  * modified:   src/records.hpp
+
 ## Map / detection
 
 * Optional direction control for `map`: a strand-aware reference always scores both strands and

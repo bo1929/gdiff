@@ -226,6 +226,7 @@ void RollSC::roll()
   // One shared config per container, so the header shape is known before the loop.
   const bool canonical = file.get_config().canonical;
   std::ostream& os = *output_stream;
+  write_provenance(os);
   if (canonical) {
     write_tsv(os, "seq", "start", "end", "strand", "reference", "d") << '\n';
   } else {

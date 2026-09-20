@@ -66,7 +66,7 @@ namespace {
     std::vector<std::string> lines;
     std::string line;
     while (std::getline(in, line))
-      if (!line.empty()) lines.push_back(line);
+      if (!line.empty() && line[0] != '#') lines.push_back(line);
     return lines;
   }
 
@@ -164,7 +164,9 @@ TEST_SUITE("roll")
     const std::string file_cmd =
       GDIFF_BIN + " roll -l 100 -s 500 -o " + out.string() + " " + fa.string() + " " + skc.string() + " >/dev/null 2>&1";
     REQUIRE(std::system(file_cmd.c_str()) == 0);
-    CHECK(test_util::read_file(out) == test_util::read_file(via_stdout));
+    // The two runs carry different provenance (argv and timestamp), so compare the data.
+    CHECK(test_util::strip_comments(test_util::read_file(out)) ==
+          test_util::strip_comments(test_util::read_file(via_stdout)));
   }
 
   TEST_CASE("roll --hdist-th changes matching, not window geometry" * doctest::skip(!gdiff_available()))

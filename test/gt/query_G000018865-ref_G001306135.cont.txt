@@ -1,1 +1,2 @@
-seq2	5258541	1	5258541	G001306135.fna.gz	0.35837	0	(0.1, 1)	0.35837	0.35837	nan	nan	nan	2.6969e+06	0	7047.4
+seq	seq_len	start	end	reference	d	mask	d_bin	d_q	d_acc	percentile	fold	qvalue	info	lr_ub
+seq2	5258541	1	5258541	G001306135.fna.gz	0.35837	0	(0.1, 1)	0.35837	0.35837	0.30599	0.94763	0.30599	2.6969e+06	7047.4

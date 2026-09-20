@@ -4,13 +4,28 @@
 #include "CLI11.hpp"
 #include "msg.hpp"
 #include "types.hpp"
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <ostream>
 #include <regex>
 #include <sstream>
 #include <string>
 #include <vector>
+
+inline constexpr const char* gdiff_version = "v0.2.0-rc";
+
+inline str invocation;
+
+inline void write_provenance(std::ostream& os)
+{
+  const std::time_t now = std::time(nullptr);
+  str stamp = std::ctime(&now);
+  if (!stamp.empty() && stamp.back() == '\n') stamp.pop_back();
+  os << "# invocation: " << invocation << '\n';
+  os << "# version: gdiff " << gdiff_version << ' ' << stamp << '\n';
+}
 
 inline void set_precision(std::ostream& stream, int precision) { stream << std::setprecision(precision); }
 

@@ -1,13 +1,22 @@
 #include "map.hpp"
+
+#include "common.hpp"
 #include "msg.hpp"
 #include "random.hpp"
-#include "scan.hpp"
 #include "records.hpp"
+#include "scan.hpp"
+#include "windows.hpp"
+
 #include <algorithm>
-#include <numeric>
+#include <cmath>
+#include <limits>
+#include <simde/x86/avx512.h>
 #include <sys/mman.h>
 
 namespace {
+  // The accumulator is one 512-bit register wide, so the histogram must have exactly 8 lanes.
+  static_assert(hdist_bound + 1 == 8, "add_to_acc assumes an 8-lane histogram");
+
   inline void add_to_acc(vec<uint64_t>& acc_v, uint64_t& u_acc, const vec<uint64_t>& source_v, uint64_t u)
   {
     simde__m512i s = simde_mm512_loadu_si512(acc_v.data());
@@ -38,7 +47,52 @@ namespace {
     }
   }
 
-  // One output line; canonical mode drops the strand columns.
+  inline void write_map_header(std::ostream& sout, bool canonical)
+  {
+    if (canonical) {
+      write_tsv(sout,
+                "seq",
+                "seq_len",
+                "start",
+                "end",
+                "reference",
+                "d",
+                "mask",
+                "d_bin",
+                "d_q",
+                "d_acc",
+                "percentile",
+                "fold",
+                "qvalue",
+                "info",
+                "lr_ub")
+        << '\n';
+    } else {
+      write_tsv(sout,
+                "seq",
+                "seq_len",
+                "start",
+                "end",
+                "strand",
+                "is_rc",
+                "reference",
+                "d",
+                "mask",
+                "d_bin",
+                "d_q",
+                "d_diff",
+                "d_acc",
+                "percentile",
+                "fold",
+                "qvalue",
+                "info",
+                "lr_ub")
+        << '\n';
+    }
+  }
+
+  // One output line; canonical mode drops the strand columns. The column order is a published
+  // contract (`plot.py` reads it positionally), so keep the two branches in step.
   inline void write_map_line(std::ostream& sout,
                              const str& qid,
                              bool canonical,
@@ -140,7 +194,7 @@ IntMap<T>::IntMap(const map_opts& opts, const Sketch& sketch, const vec<qseq_t>&
   , batch_v(batch_v)
   , k(sketch.get_k())
   , hpos(sketch.get_h())
-  , canonical(sketch.is_canonical())
+  , sketch_canonical(sketch.is_canonical())
 {
   scratch_v.assign(hdist_bound + 1, 0);
   acc_v.assign(hdist_bound + 1, 0);
@@ -173,6 +227,7 @@ void IntMap<T>::map_sequences(std::ostream& sout, const str& rname, ThreadPool& 
   build_null(pool);
   if (opts.levels_v.empty()) {
     th_v = sorted_unique(opts.thresholds_v);
+    // Also guards direct (non-CLI) construction; the CLI checks this in validate_configuration.
     if (th_v.size() != 1 && th_v.size() != WIDTH)
       error_exit(concat_msg("-d needs exactly 1 or ", WIDTH, " thresholds; got ", th_v.size()));
   } else if (!thresholds_from_levels(null_v, opts.levels_v, th_v)) {
@@ -216,13 +271,14 @@ void IntMap<T>::scan_sequence(const map_params<T>& params, const LLH<T>& llhf, s
     return;
   }
   if (params.tau_bin > nbins)
-    warn_pmsg(batch_v[bix].qid, "minimum length is exceeded; using the full query as the effective minimum ");
+    warn_pmsg(batch_v[bix].qid, "requested minimum exceeds the query; using the full query as the effective minimum");
 
+  // tau_eff is the minimum interval span minus one: extraction compares spans against > tau_eff.
   const uint64_t tau_eff = std::min(params.tau_bin, nbins) - 1;
   const size_t srprev = records_v.size();
   const scan_ctx_t ctx = make_scan_ctx(sketch, params.bin_shift, params.hdist_th);
 
-  if (canonical) {
+  if (sketch_canonical) {
     IntExt<T> ext(params, llhf, nbins, enmers);
     scan_mers_range<true>(ctx, cseq, 0, enmers, intext_agg_t<T>{ext, nullptr});
     ext.inclusive_scan();
@@ -236,9 +292,9 @@ void IntMap<T>::scan_sequence(const map_params<T>& params, const LLH<T>& llhf, s
     ext.extrema_scan();
 
     if (opts.enum_only)
-      extract_simple_intervals(ext, params, llhf, false, tau_eff, bix);
+      extract_simple_intervals(ext, llhf, false, tau_eff, bix);
     else
-      extract_ordered_intervals(ext, params, llhf, false, tau_eff, bix);
+      extract_ordered_intervals(ext, llhf, false, tau_eff, bix);
 
     for (size_t ri = srprev; ri < records_v.size(); ++ri) {
       records_v[ri].d_q = d_q;
@@ -270,11 +326,11 @@ void IntMap<T>::scan_sequence(const map_params<T>& params, const LLH<T>& llhf, s
     ext->extrema_scan();
 
   if (opts.enum_only) {
-    extract_simple_intervals(ext_fw, params, llhf, false, tau_eff, bix);
-    extract_simple_intervals(ext_rc, params, llhf, true, tau_eff, bix);
+    extract_simple_intervals(ext_fw, llhf, false, tau_eff, bix);
+    extract_simple_intervals(ext_rc, llhf, true, tau_eff, bix);
   } else {
-    extract_ordered_intervals(ext_fw, params, llhf, false, tau_eff, bix);
-    extract_ordered_intervals(ext_rc, params, llhf, true, tau_eff, bix);
+    extract_ordered_intervals(ext_fw, llhf, false, tau_eff, bix);
+    extract_ordered_intervals(ext_rc, llhf, true, tau_eff, bix);
   }
 
   for (size_t ri = srprev; ri < records_v.size(); ++ri) {
@@ -289,29 +345,19 @@ void IntMap<T>::scan_sequence(const map_params<T>& params, const LLH<T>& llhf, s
 }
 
 template<typename T>
-void IntMap<T>::extract_simple_intervals(IntExt<T>& ext,
-                                         const map_params<T>& params,
-                                         const LLH<T>& llhf,
-                                         bool is_rc,
-                                         uint64_t tau_eff,
-                                         size_t bix)
+void IntMap<T>::extract_simple_intervals(IntExt<T>& ext, const LLH<T>& llhf, bool is_rc, uint64_t tau_eff, size_t bix)
 {
   const uint64_t nbins = ext.get_nbins();
   for (size_t ix = 0; ix < WIDTH; ++ix) {
     ext.extract_intervals_mx(tau_eff, 1, nbins, ix);
-    ext.expand_intervals(params.chisq, ix);
+    ext.expand_intervals(opts.chisq, ix);
     for (const auto& iv : ext.get_intervals_v(ix))
-      emit_record(ext, params, llhf, bix, iv.a, iv.b + 1, ix, is_rc);
+      emit_record(ext, llhf, bix, iv.a, iv.b + 1, ix, is_rc);
   }
 }
 
 template<typename T>
-void IntMap<T>::extract_ordered_intervals(IntExt<T>& ext,
-                                          const map_params<T>& params,
-                                          const LLH<T>& llhf,
-                                          bool is_rc,
-                                          uint64_t tau_eff,
-                                          size_t bix)
+void IntMap<T>::extract_ordered_intervals(IntExt<T>& ext, const LLH<T>& llhf, bool is_rc, uint64_t tau_eff, size_t bix)
 {
   const uint64_t nbins = ext.get_nbins();
   bp_v.clear();
@@ -340,7 +386,7 @@ void IntMap<T>::extract_ordered_intervals(IntExt<T>& ext,
       prev = std::max(prev, s.b_bin);
     }
     if (nbins >= prev + tau_eff) run_range(prev, nbins, ix);
-    ext.expand_intervals(params.chisq, ix);
+    ext.expand_intervals(opts.chisq, ix);
 
     const auto& iv_v = ext.get_intervals_v(ix);
     const size_t nprev = bp_v.size();
@@ -353,27 +399,26 @@ void IntMap<T>::extract_ordered_intervals(IntExt<T>& ext,
   if (bp_v.empty()) {
     if (!ext.is_wskip()) {
       // No intervals extracted; report the full query.
-      emit_record(ext, params, llhf, bix, 1, nbins + 1, no_threshold, is_rc);
+      emit_record(ext, llhf, bix, 1, nbins + 1, no_threshold, is_rc);
     } else {
       // One record per skip-free segment of at least tau_eff + 1 bins.
       uint64_t a = 1;
       for (uint64_t x = 1; x <= nbins; ++x) {
         if (ext.is_skip(x)) {
-          if (x > a + tau_eff) emit_record(ext, params, llhf, bix, a, x, no_threshold, is_rc);
+          if (x > a + tau_eff) emit_record(ext, llhf, bix, a, x, no_threshold, is_rc);
           a = x + 1;
         }
       }
-      if (nbins >= a + tau_eff) emit_record(ext, params, llhf, bix, a, nbins + 1, no_threshold, is_rc);
+      if (nbins >= a + tau_eff) emit_record(ext, llhf, bix, a, nbins + 1, no_threshold, is_rc);
     }
   } else {
     for (const auto& s : bp_v)
-      emit_record(ext, params, llhf, bix, s.a_bin, s.b_bin, s.ix, is_rc);
+      emit_record(ext, llhf, bix, s.a_bin, s.b_bin, s.ix, is_rc);
   }
 }
 
 template<typename T>
 void IntMap<T>::emit_record(IntExt<T>& ext,
-                            const map_params<T>& params,
                             const LLH<T>& llhf,
                             size_t bix,
                             uint64_t a_bin,
@@ -399,7 +444,7 @@ void IntMap<T>::emit_record(IntExt<T>& ext,
   }
 
   const interval_t bin_iv{a_bin, b_bin};
-  const interval_t seq_iv = get_coordinates(bin_iv, params.bin_shift, enmers, k);
+  const interval_t seq_iv = get_coordinates(bin_iv, opts.bin_shift, enmers, k);
   records_v.emplace_back(bix, L, seq_iv, is_rc, d, I, th_ix, lr_ub);
 }
 
@@ -443,17 +488,20 @@ void IntMap<T>::report_null(const str& rname) const
 template<typename T>
 void IntMap<T>::report_contiguous(std::ostream& sout, const str& rname, const LLH<T>& llhf) const
 {
+  // Writes every record for this sketch, one TSV line each (the name predates the mode split).
   for (const auto& r : records_v) {
     const mask_t mask = (r.th_ix != no_threshold) ? static_cast<mask_t>(1u << r.th_ix) : 0;
     const auto d_range = get_distance_bin(r, llhf);
     const bracket_t d_bin{d_range.first, d_range.second};
-    write_map_line(sout, batch_v[r.bix].qid, canonical, rname, r, mask, d_bin, d_acc);
+    write_map_line(sout, batch_v[r.bix].qid, sketch_canonical, rname, r, mask, d_bin, d_acc);
   }
 }
 
 template class IntMap<double>;
 template class IntMap<cmlane_t>;
 
+// LLH is used by dist.cpp, intext.cpp and roll.cpp as well, but there is no llh.cpp, so its only
+// explicit instantiation lives here and every TU links against these two definitions.
 template class LLH<double>;
 template class LLH<cmlane_t>;
 
@@ -470,7 +518,7 @@ BackgroundSampler::BackgroundSampler(const Sketch& sketch,
   , nwinmers(get_nwinmers(tau, bin_shift))
   , llhf(make_llhf(sketch, hdist_th))
 {
-  canonical = sketch.is_canonical();
+  sketch_canonical = sketch.is_canonical();
 }
 
 vec<sample_point_t> BackgroundSampler::sample(uint64_t sample_size, bool per_sequence, ThreadPool& pool)
@@ -512,9 +560,10 @@ void BackgroundSampler::plan(uint64_t sample_size, bool per_sequence)
     return;
   }
 
+  vec<uint64_t> source_lens_v(1);
   for (size_t bix = 0; bix < batch_v.size(); ++bix) {
     // A sample per source: one draw each, in source order.
-    const vec<uint64_t> source_lens_v{batch_v[bix].seq.size()};
+    source_lens_v[0] = batch_v[bix].seq.size();
     const window_plan_t wp = make_window_plan(source_lens_v, sketch.get_k(), tau, bin_shift, sample_size, gen);
     for (const window_plan_t::source_t& src : wp.sources_v)
       append(bix, src);
@@ -543,7 +592,7 @@ void BackgroundSampler::evaluate(ThreadPool& pool)
     const task_t& t = tasks_v[ti];
     const batch_t& b = batches_v[t.batch];
     const char* cseq = batch_v[b.bix].seq.data();
-    if (canonical) {
+    if (sketch_canonical) {
       window_counts_t agg(hdist_th);
       for (uint64_t s = t.a; s < t.b; ++s) {
         sample_point_t& p = points_v[b.point0 + s];
@@ -642,6 +691,7 @@ bool MapSC::validate_configuration()
 void MapSC::map()
 {
   set_precision(*output_stream, 5);
+  write_provenance(*output_stream);
 
   QSeq qs(query_path, std::numeric_limits<uint64_t>::max());
 
@@ -653,9 +703,11 @@ void MapSC::map()
 
   const Container file(sketch_path);
   const uint32_t nsketches = file.size();
+  write_map_header(*output_stream, file.get_config().canonical);
 
   ThreadPool pool(num_threads);
   cerr_msg("Processing ", nsketches, " sketch(es) w/ ", pool.size(), " thread(s)...");
+  // One RNG stream for the whole container: sketch k's null continues where sketch k-1 left off.
   init_thread_rng(1);
 
   const bool scalar = params.levels_v.empty() && params.thresholds_v.size() == 1;

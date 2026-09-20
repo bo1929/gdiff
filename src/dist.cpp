@@ -452,6 +452,7 @@ void DistSC::estimate_distances()
     return entries_v[x.b].rname < entries_v[y.b].rname;
   });
   std::ostream& os = *output_stream;
+  write_provenance(os);
   emit_header(os);
   if (pairs_v.empty()) {
     cerr_msg("No pairs to compare");

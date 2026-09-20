@@ -8,7 +8,6 @@
 #include "rqseq.hpp"
 #include "sketch.hpp"
 #include "tpool.hpp"
-#include "windows.hpp"
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -61,7 +60,7 @@ public:
   BackgroundSampler(const Sketch& sketch, const vec<qseq_t>& batch_v, uint64_t tau, uint64_t bin_shift, uint32_t hdist_th);
 
   // Draw at most `sample_size` windows (per query sequence when `per_sequence`) and score
-  // them against the reference. Returned in source order.
+  // them against the reference. Returned in source order. Call once: the points are moved out.
   vec<sample_point_t> sample(uint64_t sample_size, bool per_sequence, ThreadPool& pool);
 
 private:
@@ -79,7 +78,7 @@ private:
 
   const Sketch& sketch;
   const vec<qseq_t>& batch_v;
-  bool canonical;
+  bool sketch_canonical;
   uint32_t hdist_th;
   uint64_t tau;
   uint64_t bin_shift;
@@ -92,9 +91,9 @@ private:
 // A 1-based half-open bin range plus the threshold that claimed it.
 struct bp_t
 {
-  uint64_t a_bin;
-  uint64_t b_bin;
-  size_t ix;
+  uint64_t a_bin = 0;
+  uint64_t b_bin = 0;
+  size_t ix = 0;
 };
 
 // Empirical two-sided thresholds for `levels_v` over a sorted background pool.
@@ -114,26 +113,9 @@ public:
 private:
   void build_null(ThreadPool& pool);
   void scan_sequence(const map_params<T>& params, const LLH<T>& llhf, size_t bix);
-  void extract_simple_intervals(IntExt<T>& ext,
-                                const map_params<T>& params,
-                                const LLH<T>& llhf,
-                                bool is_rc,
-                                uint64_t tau_eff,
-                                size_t bix);
-  void extract_ordered_intervals(IntExt<T>& ext,
-                                 const map_params<T>& params,
-                                 const LLH<T>& llhf,
-                                 bool is_rc,
-                                 uint64_t tau_eff,
-                                 size_t bix);
-  void emit_record(IntExt<T>& ext,
-                   const map_params<T>& params,
-                   const LLH<T>& llhf,
-                   size_t bix,
-                   uint64_t a_bin,
-                   uint64_t b_bin,
-                   size_t th_ix,
-                   bool is_rc);
+  void extract_simple_intervals(IntExt<T>& ext, const LLH<T>& llhf, bool is_rc, uint64_t tau_eff, size_t bix);
+  void extract_ordered_intervals(IntExt<T>& ext, const LLH<T>& llhf, bool is_rc, uint64_t tau_eff, size_t bix);
+  void emit_record(IntExt<T>& ext, const LLH<T>& llhf, size_t bix, uint64_t a_bin, uint64_t b_bin, size_t th_ix, bool is_rc);
   xy_t get_distance_bin(const record_t& r, const LLH<T>& llhf) const;
   void report_null(const str& rname) const;
   void report_contiguous(std::ostream& sout, const str& rname, const LLH<T>& llhf) const;
@@ -143,7 +125,7 @@ private:
   const vec<qseq_t>& batch_v;
   const uint32_t k;
   const uint32_t hpos;
-  const bool canonical;
+  const bool sketch_canonical;
   vec<double> th_v;          // resolved thresholds, sorted ascending
   vec<double> null_v;        // pooled background distances, sorted
   uint64_t null_floored = 0; // background samples below d_eps

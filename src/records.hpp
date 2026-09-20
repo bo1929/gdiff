@@ -7,10 +7,12 @@
 #include "distance.hpp"
 #include "types.hpp"
 #include <algorithm>
-#include <ostream>
+#include <cassert>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
+#include <ostream>
 
 // Tab-separated output helpers: the variadic line writer and the "(low, high)" distance
 // bracket that inherits the stream's flags and precision.
@@ -68,9 +70,10 @@ struct record_t
 };
 
 // The thresholds bracketing a distance, for the d_bin output column; the full distance
-// domain when d is not valid.
+// domain when d is not valid. `th_v` must be sorted ascending.
 inline xy_t bracket_distance(double d, const vec<double>& th_v)
 {
+  assert(std::is_sorted(th_v.begin(), th_v.end()));
   xy_t d_range{d_eps, d_ub};
   if (!is_valid_distance(d)) return d_range;
   const auto it = std::lower_bound(th_v.begin(), th_v.end(), d);
@@ -79,9 +82,11 @@ inline xy_t bracket_distance(double d, const vec<double>& th_v)
   return d_range;
 }
 
-// 1-based inclusive bp coordinates of the bin range [bin_iv.a, bin_iv.b).
+// 1-based inclusive bp coordinates of the bin range [bin_iv.a, bin_iv.b); the bin coordinates
+// are 1-based, so both must be at least 1 or the shift underflows.
 inline interval_t get_coordinates(const interval_t& bin_iv, uint64_t bin_shift, uint64_t enmers, uint32_t k)
 {
+  assert(bin_iv.a >= 1 && bin_iv.b >= 1);
   const uint64_t a = ((bin_iv.a - 1) << bin_shift) + 1;
   const uint64_t b = std::min((bin_iv.b - 1) << bin_shift, enmers) + k - 1;
   return {a, b};
@@ -94,8 +99,11 @@ inline constexpr size_t min_null_samples = 8;
 inline void apply_empirical_significance(record_t& r, const vec<double>& pool_v)
 {
   if (!is_valid_distance(r.d) || pool_v.size() < min_null_samples) return;
+  assert(std::is_sorted(pool_v.begin(), pool_v.end()));
   const size_t le = static_cast<size_t>(std::upper_bound(pool_v.begin(), pool_v.end(), r.d) - pool_v.begin());
   const double prob = static_cast<double>(le) / static_cast<double>(pool_v.size());
+  // Two-sided for a record on the strand the query-level comparison prefers. `d_diff` is NaN, or
+  // a signed infinity when only one strand is finite; those take the one-sided test.
   const bool two_sided = !std::isnan(r.d_diff) && (r.is_rc == (r.d_diff > 0.0));
   r.percentile = std::clamp(two_sided ? 2.0 * std::min(prob, 1.0 - prob) : prob, 0.0, 1.0);
   const double median = linear_quantile(pool_v, 0.5);
@@ -116,9 +124,10 @@ inline void benjamini_hochberg_correction(vec<record_t>& records_v)
 
     const double m = static_cast<double>(idx_v.size());
     double q_min = 1.0;
-    for (size_t rank = idx_v.size(); rank >= 1; --rank) {
-      record_t& r = records_v[idx_v[rank - 1]];
-      q_min = std::min(q_min, std::min(1.0, r.percentile * m / static_cast<double>(rank)));
+    // Walk from the largest percentile down; `rank` counts from 1, so `i + 1` is the rank.
+    for (size_t i = idx_v.size(); i-- > 0;) {
+      record_t& r = records_v[idx_v[i]];
+      q_min = std::min(q_min, std::min(1.0, r.percentile * m / static_cast<double>(i + 1)));
       r.qvalue = q_min;
     }
   }

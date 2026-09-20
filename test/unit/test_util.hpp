@@ -44,6 +44,24 @@ inline const std::filesystem::path& cleanup_t::dir()
 // A path inside the scratch directory; the directory is created on first use.
 inline std::filesystem::path path(const std::string& name) { return cleanup_t::dir() / name; }
 
+// Drop the `#` provenance lines, so two runs can be compared: their timestamps and their argv
+// (and therefore their invocation lines) differ by construction.
+inline std::string strip_comments(const std::string& text)
+{
+  std::string out;
+  size_t b = 0;
+  while (b < text.size()) {
+    const size_t nl = text.find('\n', b);
+    const size_t end = (nl == std::string::npos) ? text.size() : nl;
+    if (text[b] != '#') {
+      out.append(text, b, end - b);
+      if (nl != std::string::npos) out += '\n';
+    }
+    b = (nl == std::string::npos) ? text.size() : nl + 1;
+  }
+  return out;
+}
+
 // The bytes of a file, for comparing two outputs exactly.
 inline std::string read_file(const std::filesystem::path& p)
 {

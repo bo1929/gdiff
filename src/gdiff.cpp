@@ -1,5 +1,6 @@
 #include "gdiff.hpp"
 
+#include "common.hpp"
 #include "dist.hpp"
 #include "map.hpp"
 #include "msg.hpp"
@@ -99,6 +100,8 @@ MergeSC::MergeSC(CLI::App& sc)
 
 void InfoSC::info()
 {
+  write_provenance(std::cout);
+
   const Container file(sketch_path);
   const sketch_config_t& cfg = file.get_config();
 
@@ -175,7 +178,7 @@ int main(int argc, char** argv)
   RollSC gdiff_roll(sc_roll);
 
   CLI11_PARSE(app, argc, argv);
-  str invocation;
+  invocation.clear();
   for (int i = 0; i < argc; ++i) {
     invocation += str(argv[i]) + " ";
   }
@@ -195,6 +198,7 @@ int main(int argc, char** argv)
   };
 
   if (sc_sketch.parsed()) {
+    write_provenance(std::cerr);
     cerr_msg("Initializing the sketch...");
     gdiff_sketch.set_nrows();
     gdiff_sketch.set_lshf();
@@ -202,6 +206,7 @@ int main(int argc, char** argv)
   }
 
   if (sc_merge.parsed()) {
+    write_provenance(std::cerr);
     cerr_msg("Merging sketches...");
     run_timed("Done merging sketches, elapsed: ", [&]() { gdiff_merge.merge(); });
   }

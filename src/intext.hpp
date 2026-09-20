@@ -113,7 +113,7 @@ private:
   arr<bool, WIDTH> thneg_v{};              // which thresholds need a sign flip
   arr<vec<interval_t>, WIDTH> intervals_v; // 1-based inclusive bin coordinates per threshold
   vec<uint8_t> skip_v;                     // 0-based per-bin N-run break flags (lazy)
-  bool wskip = false;                   // whether any bin was flagged by skip_mer
+  bool wskip = false;                      // whether any bin was flagged by skip_mer
 
   void extract_mx(uint64_t tau, uint64_t lix, uint64_t rix, size_t ix);
   void apply_threshold_signs();

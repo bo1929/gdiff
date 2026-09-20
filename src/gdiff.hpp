@@ -5,8 +5,6 @@
 #include "types.hpp"
 #include "CLI11.hpp"
 
-inline constexpr const char* gdiff_version = "v0.2.0-rc";
-
 class MergeSC
 {
 public:

@@ -1,6 +1,7 @@
 // Container write/read round-trip for buckets and both window representations.
 #include "doctest/doctest.h"
 #include "buckets.hpp"
+#include "common.hpp"
 #include "sketch.hpp"
 #include "test_util.hpp"
 #include <cstdlib>
@@ -44,11 +45,7 @@ namespace {
     const auto path = test_util::path("dist_cli.tsv");
     const std::string cmd = GDIFF_BIN + " dist " + args + " > " + path.string() + " 2>/dev/null";
     if (std::system(cmd.c_str()) != 0) return {};
-    std::ifstream in(path);
-    std::stringstream ss;
-    ss << in.rdbuf();
-    std::filesystem::remove(path);
-    return ss.str();
+    return test_util::strip_comments(test_util::read_file(path));
   }
 
   // Returns the merged container's path, or an empty path when merge fails.
@@ -185,9 +182,9 @@ TEST_SUITE("container")
       GDIFF_BIN + " dist " + skc_a.string() + " " + skc_b.string() + " > " + out.string() + " 2>/dev/null";
     REQUIRE(std::system(cmd.c_str()) == 0);
 
-    std::ifstream in(out);
+    std::istringstream in(test_util::strip_comments(test_util::read_file(out)));
     std::string line;
-    REQUIRE(std::getline(in, line)); // header
+    REQUIRE(std::getline(in, line)); // column header, after the provenance lines
     CHECK(line.rfind("genome_a\tgenome_b\t", 0) == 0);
 
     REQUIRE(std::getline(in, line)); // the pair's reconciled line
@@ -823,7 +820,47 @@ TEST_SUITE("CLI surface")
     const std::string cmd =
       GDIFF_BIN + " dist -o " + out.string() + " " + skc_a.string() + " " + skc_b.string() + " >/dev/null 2>&1";
     REQUIRE(std::system(cmd.c_str()) == 0);
-    CHECK(test_util::read_file(out) == run_dist(skc_a.string() + " " + skc_b.string()));
+    // The two runs carry different provenance (argv and timestamp), so compare the data.
+    CHECK(test_util::strip_comments(test_util::read_file(out)) == run_dist(skc_a.string() + " " + skc_b.string()));
+  }
+
+  TEST_CASE("every output is headed by the invocation and version lines" *
+            doctest::skip(!gdiff_available()))
+  {
+    const auto fa_a = test_util::write_fasta("pv_a", 120000, 58);
+    const auto fa_b = test_util::write_fasta("pv_b", 120000, 59);
+    const auto skc_a = run_sketch("pv_a", "-i " + fa_a.string());
+    const auto skc_b = run_sketch("pv_b", "-i " + fa_b.string());
+    REQUIRE_FALSE(skc_a.empty());
+    REQUIRE_FALSE(skc_b.empty());
+
+    // `info` reports to stdout, so its first two lines are the provenance header.
+    const std::string report = run_info(skc_a);
+    REQUIRE_FALSE(report.empty());
+    std::istringstream lines(report);
+    std::string first, second, third;
+    REQUIRE(std::getline(lines, first));
+    REQUIRE(std::getline(lines, second));
+    REQUIRE(std::getline(lines, third));
+    CHECK(first.rfind("# invocation: ", 0) == 0);
+    CHECK(first.find("info") != std::string::npos); // the real argv, not a placeholder
+    CHECK(second.rfind("# version: gdiff ", 0) == 0);
+    CHECK(second.find(gdiff_version) != std::string::npos);
+    CHECK(third.rfind("#", 0) != 0); // the report itself follows immediately
+
+    // A data-producing command heads its TSV the same way, before any column header.
+    const auto out = test_util::path("pv_dist.tsv");
+    const std::string cmd =
+      GDIFF_BIN + " dist " + skc_a.string() + " " + skc_b.string() + " > " + out.string() + " 2>/dev/null";
+    REQUIRE(std::system(cmd.c_str()) == 0);
+    std::istringstream raw(test_util::read_file(out));
+    REQUIRE(std::getline(raw, first));
+    REQUIRE(std::getline(raw, second));
+    REQUIRE(std::getline(raw, third));
+    CHECK(first.rfind("# invocation: ", 0) == 0);
+    CHECK(first.find("dist") != std::string::npos);
+    CHECK(second.rfind("# version: gdiff ", 0) == 0);
+    CHECK(third.rfind("genome_a\t", 0) == 0); // the column header comes after the provenance
   }
 
 } // TEST_SUITE
