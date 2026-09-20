@@ -93,14 +93,14 @@ void read_container_header(const char*& p,
 void read_container_index(const char*& p,
                           const char* end,
                           uint64_t nsketches,
-                          vec<sketch_entry_t>& entries_v,
+                          vec<scentry>& entries_v,
                           const std::filesystem::path& path)
 {
   entries_v.resize(static_cast<size_t>(nsketches));
-  for (sketch_entry_t& r : entries_v) {
-    p = need(p, end, sizeof(sketch_entry_t), "index entry");
-    std::memcpy(&r, p, sizeof(sketch_entry_t));
-    p += sizeof(sketch_entry_t);
+  for (scentry& r : entries_v) {
+    p = need(p, end, sizeof(scentry), "index entry");
+    std::memcpy(&r, p, sizeof(scentry));
+    p += sizeof(scentry);
   }
 }
 

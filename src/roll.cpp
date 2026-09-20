@@ -6,10 +6,10 @@
 #include <sys/mman.h>
 
 #include "common.hpp"
+#include "records.hpp"
 #include "distance.hpp"
 #include "llh.hpp"
 #include "sketch.hpp"
-#include "tsv.hpp"
 #include "msg.hpp"
 #include "random.hpp"
 #include "rqseq.hpp"
@@ -17,12 +17,6 @@
 #include "tpool.hpp"
 
 namespace {
-
-  // Local copy, so roll does not have to pull in the whole scoring library (dist.hpp).
-  inline LLH<double> make_llhf(const Sketch& sketch, uint32_t hdist_th)
-  {
-    return {sketch.get_k(), sketch.get_h(), sketch.get_rho(), hdist_th, 0.0, false};
-  }
 
   // Record every k-mer's Hamming distance once, so windows can then slide.
   // Indices are relative to `base`, the first k-mer of the scanned range.
@@ -270,8 +264,8 @@ void RollSC::roll()
       }
     }
 
-    const sketch_entry_t& e = file.get_entry(i);
-    file.advise(e.buckets_off, e.buckets_len, MADV_DONTNEED);
+    const scentry& e = file.get_entry(i);
+    file.advise(e.buckets_offset, e.buckets_len, MADV_DONTNEED);
     progress("Rolled", i + 1, nsketches);
   }
   progress_done();
@@ -301,7 +295,7 @@ RollSC::RollSC(CLI::App& sc)
   sc.add_option("query-path", query_path, "Query FASTA/FASTQ to roll the window over (gzip ok)")
     ->required()
     ->check(CLI::ExistingFile);
-  sc.add_option("sketch-path", sketch_path, "Reference container (.gs)")->required()->check(CLI::ExistingFile);
+  sc.add_option("sketch-path", sketch_path, "Reference container <path>")->required()->check(CLI::ExistingFile);
   sc.add_option("-l", params.tau, "Window length in k-mers")->required()->check(CLI::PositiveNumber);
   sc.add_option("-s", params.step, "Step between consecutive window starts [-l]")->check(CLI::PositiveNumber);
   sc.add_option("--hdist-th", params.hdist_th, "Maximum Hamming distance for a k-mer to match [3]")

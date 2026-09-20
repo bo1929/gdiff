@@ -196,7 +196,7 @@ void Sketch::canonicalize()
 Sketch Container::open(uint32_t rec, SketchLoad part) const
 {
   if (rec >= entries_v.size()) error_exit("Sketch index out of range: " + path.string());
-  const sketch_entry_t& e = entries_v[rec];
+  const scentry& e = entries_v[rec];
   const char* base = map->begin();
   const char* end = map->end();
   if (e.offset + e.len > map->size()) error_exit("Sketch past EOF: " + path.string());
@@ -223,12 +223,12 @@ Sketch Container::open(uint32_t rec, SketchLoad part) const
 
   if (want_buckets) {
     if (e.buckets_len == 0) error_exit("Sketch has no buckets: " + gs.rname);
-    const char* bp = base + static_cast<ptrdiff_t>(e.buckets_off);
+    const char* bp = base + static_cast<ptrdiff_t>(e.buckets_offset);
     gs.buckets.view(bp, bp + e.buckets_len, cfg.nrows);
     gs.loaded_buckets = true;
   }
   if (want_windows && e.windows_len) {
-    const char* wp = base + static_cast<ptrdiff_t>(e.windows_off);
+    const char* wp = base + static_cast<ptrdiff_t>(e.windows_offset);
     const char* wend = wp + e.windows_len;
     const uint64_t nwins = read_trivial<uint64_t>(wp, wend, "nwins");
     gs.windows.wins_v.resize(static_cast<size_t>(nwins));
@@ -275,7 +275,8 @@ void read_path_list(const std::filesystem::path& list_path, vec<str>& paths_v, v
 bool compatible_configs(const sketch_config_t& a, const sketch_config_t& b)
 {
   if (a.k != b.k || a.w != b.w || a.h != b.h) return false;
-  if (a.nrows != b.nrows || a.canonical != b.canonical) return false;
+  // if (a.nrows != b.nrows || a.canonical != b.canonical) return false;
+  if (a.canonical != b.canonical) return false;
   if (a.tau != b.tau) return false;
   return a.ppos_v == b.ppos_v && a.npos_v == b.npos_v;
 }
@@ -351,13 +352,9 @@ bool SketchSC::validate_configuration()
     is_invalid = true;
     cerr_msg("For compact k-mer encodings, h must be >= k-16!");
   }
-  if (params.tau == 0) {
+  if (params.tau != 0 && params.tau < k) {
     is_invalid = true;
-    cerr_msg("-l (window length in k-mers) must be positive");
-  }
-  if (params.tau < k) {
-    is_invalid = true;
-    cerr_msg("-l must be at least k (-k); got ", params.tau);
+    cerr_msg("-l must be 0 (no windows) or at least k (-k); got ", params.tau);
   }
   if (params.sample_size == 0 || params.sample_size > 65535) {
     is_invalid = true;
@@ -407,6 +404,8 @@ window_sample_t SketchSC::sample_windows(const str& input_path, uint64_t& ntotal
       }
     }
   }
+
+  if (params.tau == 0) return window_sample_t{}; // buckets-only sketch
 
   // Which windows to keep, spread over every sequence of this input.
   const window_plan_t wp = make_window_plan(len_v, k, params.tau, 0, params.sample_size, gen);
@@ -540,17 +539,17 @@ void SketchSC::write_windows(std::ostream& os, const window_sample_t& sample)
   }
 }
 
-sketch_entry_t SketchSC::write_sketch(str& bytes,
-                                      uint64_t timestamp,
-                                      uint64_t ntotal_bp,
-                                      uint64_t nvalid_bp,
-                                      const Sketch& built,
-                                      const window_sample_t& sample)
+scentry SketchSC::write_sketch(str& bytes,
+                               uint64_t timestamp,
+                               uint64_t ntotal_bp,
+                               uint64_t nvalid_bp,
+                               const Sketch& built,
+                               const window_sample_t& sample)
 {
   bytes.clear();
   strbuf_t buf(bytes);
   std::ostream os(&buf);
-  sketch_entry_t e;
+  scentry e;
   const str& rname = built.get_rname();
   const uint64_t rname_len = rname.size();
   write_trivial(os, rname_len);
@@ -563,13 +562,13 @@ sketch_entry_t SketchSC::write_sketch(str& bytes,
   write_trivial(os, built.get_nkmers());
   write_trivial(os, built.get_rho());
 
-  e.buckets_off = static_cast<uint64_t>(os.tellp());
+  e.buckets_offset = static_cast<uint64_t>(os.tellp());
   built.get_buckets().save(os);
-  e.buckets_len = static_cast<uint64_t>(os.tellp()) - e.buckets_off;
+  e.buckets_len = static_cast<uint64_t>(os.tellp()) - e.buckets_offset;
   if (!sample.wins_v.empty()) {
-    e.windows_off = static_cast<uint64_t>(os.tellp());
+    e.windows_offset = static_cast<uint64_t>(os.tellp());
     write_windows(os, sample);
-    e.windows_len = static_cast<uint64_t>(os.tellp()) - e.windows_off;
+    e.windows_len = static_cast<uint64_t>(os.tellp()) - e.windows_offset;
   }
   pad_to_word(os);
   e.len = static_cast<uint64_t>(os.tellp());
@@ -588,7 +587,12 @@ void SketchSC::process()
 
   const uint64_t nsketches = paths_v.size();
   const uint32_t nthreads = std::max(1u, num_threads);
-  cerr_msg("Sketching ", nsketches, " file(s) w/ ", nthreads, " thread(s), windows=", params.keep_seq ? "seq" : "default");
+  cerr_msg("Sketching ",
+           nsketches,
+           " file(s) w/ ",
+           nthreads,
+           " thread(s), windows=",
+           params.tau == 0 ? "none" : (params.keep_seq ? "seq" : "default"));
 
   std::ofstream sketch_stream(sketch_path, std::ofstream::binary);
   check_fstream(sketch_stream, "Cannot open output container", sketch_path.string());
@@ -596,15 +600,15 @@ void SketchSC::process()
 
   // Index placeholder, patched after every sketch is written.
   const std::streampos index_pos = sketch_stream.tellp();
-  vec<sketch_entry_t> entries_v(nsketches);
+  vec<scentry> entries_v(nsketches);
   sketch_stream.write(reinterpret_cast<const char*>(entries_v.data()),
-                      static_cast<std::streamsize>(sizeof(sketch_entry_t) * nsketches));
+                      static_cast<std::streamsize>(sizeof(scentry) * nsketches));
   pad_to_word(sketch_stream);
 
   struct pending_t
   {
     str bytes;
-    sketch_entry_t rel; // section offsets relative to the sketch start
+    scentry rel; // section offsets relative to the sketch start
   };
   vec<pending_t> pending_v(nsketches);
 
@@ -636,8 +640,8 @@ void SketchSC::process()
     pending_t& rec = pending_v[i];
     entries_v[i] = rec.rel;
     entries_v[i].offset = pos;
-    entries_v[i].buckets_off += pos;
-    if (entries_v[i].windows_len) entries_v[i].windows_off += pos;
+    entries_v[i].buckets_offset += pos;
+    if (entries_v[i].windows_len) entries_v[i].windows_offset += pos;
     pos += rec.bytes.size();
     sketch_stream.write(rec.bytes.data(), static_cast<std::streamsize>(rec.bytes.size()));
     str().swap(rec.bytes);
@@ -645,7 +649,7 @@ void SketchSC::process()
 
   sketch_stream.seekp(index_pos);
   sketch_stream.write(reinterpret_cast<const char*>(entries_v.data()),
-                      static_cast<std::streamsize>(sizeof(sketch_entry_t) * nsketches));
+                      static_cast<std::streamsize>(sizeof(scentry) * nsketches));
   sketch_stream.seekp(0, std::ios::end);
   check_fstream(sketch_stream, "Failed to write the sketch", sketch_path.string());
   sketch_stream.close();
@@ -671,7 +675,8 @@ SketchSC::SketchSC(CLI::App& sc)
     ->check(CLI::Range(std::numeric_limits<double>::min(), 1.0));
   sc.add_flag(
     "--strand-agnostic,!--strand-aware", canonical, "A (canonical) strand-agnostic (default) or strand-aware sketch");
-  sc.add_option("-l", params.tau, "Length of sampled windows in k-mers [500]")->check(CLI::PositiveNumber);
+  sc.add_option("-l", params.tau, "Length of sampled windows in k-mers; 0 stores buckets only [500]")
+    ->check(CLI::NonNegativeNumber);
   sc.add_option("--sample-size", params.sample_size, "Windows sampled across each genome [1000]")
     ->check(CLI::Range(1, 65535));
   sc.add_flag("--keep-seq,!--no-keep-seq",

@@ -1,23 +1,16 @@
-#include "dim.hpp"
-#include "random.hpp"
+#include "intext.hpp"
+#include "scan.hpp"
 
 #include <algorithm>
 #include <cassert>
 #include <cstring>
 #include <limits>
 #include <numeric>
-#include <random>
 
 namespace {
-  struct pv_t
-  {
-    uint64_t pos;
-    double val;
-  };
-
   // Split [lix, rix] into maximal skip-free subranges (1-based bins, skip_v is 0-based).
   template<typename Fn>
-  void for_each_skip_free(const vec<uint8_t>& skip_v, uint64_t lix, uint64_t rix, Fn&& fn)
+  void for_each_contiguous(const vec<uint8_t>& skip_v, uint64_t lix, uint64_t rix, Fn&& fn)
   {
     uint64_t a = lix;
     for (uint64_t x = lix; x <= rix; ++x) {
@@ -30,7 +23,7 @@ namespace {
   }
 } // namespace
 
-HDHist::HDHist(uint64_t nbins, uint32_t hdist_th, uint64_t bin_shift)
+Histogram::Histogram(uint64_t nbins, uint32_t hdist_th, uint64_t bin_shift)
   : nbins(nbins)
   , hdist_th(hdist_th)
   , hist_v((nbins + 1) * (hdist_th + 1), 0)
@@ -39,27 +32,17 @@ HDHist::HDHist(uint64_t nbins, uint32_t hdist_th, uint64_t bin_shift)
   assert(bin_shift <= 16);
 }
 
-template<bool Atomic>
-void HDHist::aggregate_mer(uint32_t hdist_min, uint64_t i)
+void Histogram::aggregate_mer(uint32_t hdist_min, uint64_t i)
 {
   if (i >= nbins) return;
   if (hdist_min <= hdist_th) {
-    if constexpr (Atomic)
-      __atomic_add_fetch(&hist_v[((i + 1) * (hdist_th + 1)) + hdist_min], 1, __ATOMIC_RELAXED);
-    else
-      ++hist_v[((i + 1) * (hdist_th + 1)) + hdist_min];
+    ++hist_v[((i + 1) * (hdist_th + 1)) + hdist_min];
   } else {
-    if constexpr (Atomic)
-      __atomic_add_fetch(&miss_v[i + 1], 1, __ATOMIC_RELAXED);
-    else
-      ++miss_v[i + 1];
+    ++miss_v[i + 1];
   }
 }
 
-template void HDHist::aggregate_mer<false>(uint32_t, uint64_t);
-template void HDHist::aggregate_mer<true>(uint32_t, uint64_t);
-
-void HDHist::compute_prefhistsum()
+void Histogram::compute_prefhistsum()
 {
   const uint32_t W = hdist_th + 1;
   for (uint64_t i = 0; i < nbins; ++i) {
@@ -70,7 +53,7 @@ void HDHist::compute_prefhistsum()
   }
 }
 
-void HDHist::extract_histogram(uint64_t a, uint64_t b, vec<uint64_t>& v, uint64_t& u, uint64_t& t) const
+void Histogram::extract_histogram(uint64_t a, uint64_t b, vec<uint64_t>& v, uint64_t& u, uint64_t& t) const
 {
   assert(a <= b && b <= nbins);
   const uint32_t W = hdist_th + 1;
@@ -97,13 +80,13 @@ void HDHist::extract_histogram(uint64_t a, uint64_t b, vec<uint64_t>& v, uint64_
   u = miss_v[b] - miss_v[a];
 }
 
-void HDHist::extract_histogram(uint64_t a, uint64_t b, window_counts_t& wc) const
+void Histogram::extract_histogram(uint64_t a, uint64_t b, window_counts_t& wc) const
 {
   uint64_t t = 0;
   extract_histogram(a, b, wc.hist_v, wc.u, t);
 }
 
-void HDHist::extract_histogram(uint64_t a, uint64_t b, swindow_counts_t& wc, bool is_rc) const
+void Histogram::extract_histogram(uint64_t a, uint64_t b, swindow_counts_t& wc, bool is_rc) const
 {
   uint64_t t = 0;
   if (is_rc)
@@ -113,12 +96,12 @@ void HDHist::extract_histogram(uint64_t a, uint64_t b, swindow_counts_t& wc, boo
 }
 
 template<typename T>
-DIM<T>::DIM(const dim_params<T>& params, const LLH<T>& llhf, uint64_t nbins, uint64_t nmers)
+IntExt<T>::IntExt(const map_params<T>& params, const LLH<T>& llhf, uint64_t nbins, uint64_t nmers)
   : params(params)
   , llhf(llhf)
   , nbins(nbins)
   , nmers(nmers)
-  , keep_hist(!params.enum_only || params.sample_size > 0)
+  , hist(nbins, params.hdist_th, params.bin_shift)
 {
   // Extra slot so inclusive_scan can prefix-sum in place. Aggregation uses [0, nbins).
   fdc_v.resize(nbins + 1);
@@ -127,15 +110,10 @@ DIM<T>::DIM(const dim_params<T>& params, const LLH<T>& llhf, uint64_t nbins, uin
   thrank_v.resize(WIDTH);
   for (size_t i = 0; i < WIDTH; ++i)
     thrank_v[i] = i;
-  if (keep_hist) {
-    hdhist = HDHist(nbins, params.hdist_th, params.bin_shift);
-  } else {
-    hist_v.assign(hdist_bound + 1, 0);
-  }
 }
 
 template<typename T>
-void DIM<T>::set_query_distance(double d_q)
+void IntExt<T>::set_query_distance(double d_q)
 {
   const bool is_valid = is_valid_distance(d_q);
 
@@ -170,7 +148,7 @@ void DIM<T>::set_query_distance(double d_q)
 }
 
 template<typename T>
-void DIM<T>::apply_threshold_signs()
+void IntExt<T>::apply_threshold_signs()
 {
   // Flip the sign of fdps_v lanes whose threshold is on the opposite side of d_q.
   if constexpr (std::is_same_v<T, double>) {
@@ -198,36 +176,31 @@ void DIM<T>::apply_threshold_signs()
 }
 
 template<typename T>
-void DIM<T>::aggregate_mer(uint32_t hdist_min, uint64_t i)
+void IntExt<T>::aggregate_mer(uint32_t hdist_min, uint64_t i)
 {
   if (hdist_min <= params.hdist_th) {
-    t_q++;
-    if (keep_hist)
-      hdhist.aggregate_mer(hdist_min, i);
-    else
-      hist_v[hdist_min]++;
+    hist.aggregate_mer(hdist_min, i);
     add_to(sdc_v[i], llhf.get_sdc(hdist_min));
     add_to(fdc_v[i], llhf.get_fdc(hdist_min));
   } else {
-    u_q++;
-    if (keep_hist) hdhist.aggregate_mer(hdist_min, i);
+    hist.aggregate_mer(hdist_min, i);
     add_to(sdc_v[i], llhf.get_sdc());
     add_to(fdc_v[i], llhf.get_fdc());
   }
 }
 
 template<typename T>
-void DIM<T>::skip_mer(uint64_t i)
+void IntExt<T>::skip_mer(uint64_t i)
 {
   if (i >= nbins) return;
   if (skip_v.empty()) skip_v.assign(nbins, 0);
   skip_v[i] = 1;
-  has_skips = true;
+  wskip = true;
 }
 
 // In-place prefix sum: C[0]=0, C[i]=C[i-1]+c[i-1].
 template<typename T>
-void DIM<T>::inclusive_scan()
+void IntExt<T>::inclusive_scan()
 {
   assert(nbins > 0);
   const uint64_t s = nbins + 1;
@@ -262,7 +235,7 @@ void DIM<T>::inclusive_scan()
 }
 
 template<typename T>
-void DIM<T>::extrema_scan()
+void IntExt<T>::extrema_scan()
 {
   const uint64_t s = nbins + 1;
   fdpmax_v.resize(s + 1);
@@ -297,17 +270,17 @@ void DIM<T>::extrema_scan()
 
 // Maximal [a,b] in [lix,rix] where the prefix sum drops below a prior maximum.
 template<typename T>
-void DIM<T>::extract_intervals_mx(uint64_t tau, uint64_t lix, uint64_t rix, size_t ix)
+void IntExt<T>::extract_intervals_mx(uint64_t tau, uint64_t lix, uint64_t rix, size_t ix)
 {
-  if (!has_skips) {
+  if (!wskip) {
     extract_mx(tau, lix, rix, ix);
     return;
   }
-  for_each_skip_free(skip_v, lix, rix, [&](uint64_t a, uint64_t b) { extract_mx(tau, a, b, ix); });
+  for_each_contiguous(skip_v, lix, rix, [&](uint64_t a, uint64_t b) { extract_mx(tau, a, b, ix); });
 }
 
 template<typename T>
-void DIM<T>::extract_mx(uint64_t tau, uint64_t lix, uint64_t rix, size_t ix)
+void IntExt<T>::extract_mx(uint64_t tau, uint64_t lix, uint64_t rix, size_t ix)
 {
   uint64_t b_curr = lix;
   uint64_t b_prev = std::numeric_limits<uint64_t>::max();
@@ -339,72 +312,7 @@ void DIM<T>::extract_mx(uint64_t tau, uint64_t lix, uint64_t rix, size_t ix)
 }
 
 template<typename T>
-void DIM<T>::extract_intervals_sx(uint64_t tau, uint64_t lix, uint64_t rix, size_t ix)
-{
-  if (!has_skips) {
-    extract_sx(tau, lix, rix, ix);
-    return;
-  }
-  for_each_skip_free(skip_v, lix, rix, [&](uint64_t a, uint64_t b) { extract_sx(tau, a, b, ix); });
-}
-
-template<typename T>
-void DIM<T>::extract_sx(uint64_t tau, uint64_t lix, uint64_t rix, size_t ix)
-{
-  // Valid right endpoints are suffix minima; the pointer is monotone (O(k) total).
-  const uint64_t gap_len = rix - lix + 1;
-  if (gap_len >= 1 + tau && lane_at(fdps_v[rix], ix) < lane_at(fdps_v[lix], ix)) {
-    intervals_v[ix].emplace_back(lix, rix);
-    return;
-  }
-
-  vec<pv_t> pv_v;
-  {
-    double y_min = pinf();
-    for (uint64_t j = rix; j >= lix; --j) {
-      const double v = lane_at(fdps_v[j], ix);
-      if (v < y_min) {
-        y_min = v;
-        pv_v.push_back({j, v});
-      }
-    }
-    std::reverse(pv_v.begin(), pv_v.end());
-  }
-  if (pv_v.empty()) return;
-
-  size_t yix_min = 0;
-  double running_max = ninf();
-  uint64_t b_prev = std::numeric_limits<uint64_t>::max();
-
-  for (uint64_t a = lix; a <= rix; ++a) {
-    const double fdps_a = lane_at(fdps_v[a], ix);
-    const double fdpmax_a = running_max;
-    if (fdps_a > running_max) running_max = fdps_a;
-
-    if (fdpmax_a >= fdps_a) continue; // Skip if a is not a record high
-
-    // Advance yix_min to the last suffix minimum with val < fdps_a
-    while (yix_min + 1 < pv_v.size() && pv_v[yix_min + 1].val < fdps_a) {
-      ++yix_min;
-    }
-    // Skip if no valid right endpoint with val < fdps_a
-    if (pv_v[yix_min].val >= fdps_a) continue;
-
-    const uint64_t b_star = pv_v[yix_min].pos;
-    const double fdps_bstar = pv_v[yix_min].val;
-
-    if (b_star < a + tau) continue; // Skip if no valid right endpoint in [a+tau, nbins]
-    if (b_star == b_prev) continue; // Skip if b* was already claimed
-
-    if (fdps_bstar >= fdpmax_a) {              // Left maximal
-      intervals_v[ix].emplace_back(a, b_star); // 1-based inclusive coordinates
-      b_prev = b_star;
-    }
-  }
-}
-
-template<typename T>
-void DIM<T>::expand_intervals(double chisq_th, size_t ix)
+void IntExt<T>::expand_intervals(double chisq_th, size_t ix)
 {
   auto& iv_ix = intervals_v[ix];
   if (iv_ix.empty()) return;
@@ -424,7 +332,7 @@ void DIM<T>::expand_intervals(double chisq_th, size_t ix)
 
     // Never merge across an N-run break: a skip bin in the gap (bp, a) keeps them apart.
     bool skip_gap = false;
-    if (has_skips) {
+    if (wskip) {
       for (uint64_t x = bp + 1; x < a; ++x) {
         if (skip_v[x - 1]) {
           skip_gap = true;
@@ -448,39 +356,32 @@ void DIM<T>::expand_intervals(double chisq_th, size_t ix)
 }
 
 template<typename T>
-void DIM<T>::compute_prefhistsum()
+void IntExt<T>::compute_prefhistsum()
 {
-  if (!keep_hist) return;
-  hdhist.compute_prefhistsum();
+  hist.compute_prefhistsum();
 }
 
 template<typename T>
-void DIM<T>::total_histogram(vec<uint64_t>& v, uint64_t& u, uint64_t& t) const
+void IntExt<T>::total_histogram(vec<uint64_t>& v, uint64_t& u, uint64_t& t) const
 {
-  if (keep_hist) {
-    hdhist.extract_histogram(0, nbins, v, u, t);
-  } else {
-    v = hist_v;
-    u = u_q;
-    t = t_q;
-  }
+  hist.extract_histogram(0, nbins, v, u, t);
 }
 
 template<typename T>
-void DIM<T>::extract_histogram(uint64_t a, uint64_t b, vec<uint64_t>& v, uint64_t& u, uint64_t& t) const
+void IntExt<T>::extract_histogram(uint64_t a, uint64_t b, vec<uint64_t>& v, uint64_t& u, uint64_t& t) const
 {
-  hdhist.extract_histogram(a, b, v, u, t);
+  hist.extract_histogram(a, b, v, u, t);
 }
 
 template<typename T>
-void DIM<T>::extract_histogram(uint64_t a, uint64_t b, window_counts_t& wc) const
+void IntExt<T>::extract_histogram(uint64_t a, uint64_t b, window_counts_t& wc) const
 {
   uint64_t t = 0;
   extract_histogram(a, b, wc.hist_v, wc.u, t);
 }
 
 template<typename T>
-void DIM<T>::extract_histogram(uint64_t a, uint64_t b, swindow_counts_t& wc, bool is_rc) const
+void IntExt<T>::extract_histogram(uint64_t a, uint64_t b, swindow_counts_t& wc, bool is_rc) const
 {
   uint64_t t = 0;
   if (is_rc)
@@ -489,69 +390,5 @@ void DIM<T>::extract_histogram(uint64_t a, uint64_t b, swindow_counts_t& wc, boo
     extract_histogram(a, b, wc.hist_fw_v, wc.u_fw, t);
 }
 
-template<typename T>
-vec<sample_t> DIM<T>::sample_random_intervals(uint64_t nwin_bins, uint64_t bix) const
-{
-  vec<sample_t> out_v;
-  if (nwin_bins == 0 || params.sample_size == 0 || nwin_bins > nbins) return out_v;
-
-  const uint64_t npos = nbins - nwin_bins + 1;
-  const size_t goal = static_cast<size_t>(std::min(params.sample_size, npos));
-  out_v.reserve(goal);
-  window_counts_t wc(llhf.hdist_th);
-
-  vec<uint64_t> starts_v(npos);
-  std::iota(starts_v.begin(), starts_v.end(), uint64_t(0));
-  std::shuffle(starts_v.begin(), starts_v.end(), gen);
-
-  for (const uint64_t x : starts_v) {
-    if (out_v.size() >= goal) break;
-    if (has_skips) {
-      const auto first = skip_v.begin() + static_cast<ptrdiff_t>(x);
-      const auto last = first + static_cast<ptrdiff_t>(nwin_bins);
-      if (std::find(first, last, uint8_t(1)) != last) continue;
-    }
-
-    const uint64_t a_bin = x + 1;
-    const uint64_t b_bin = x + nwin_bins + 1;
-    wc.clear();
-    extract_histogram(a_bin - 1, b_bin - 1, wc);
-    const double d = llhf.mle(wc.hist(), wc.u);
-    if (!is_valid_distance(d)) continue;
-    const double I = llhf.compute_fisher_info(wc.hist(), wc.u, d);
-    if (!std::isfinite(I) || I <= 0.0) continue;
-    out_v.push_back({d, I, bix, {a_bin, b_bin}});
-  }
-  return out_v;
-}
-
-bool filter_background_samples(const vec<sample_t>& in_v, const record_t& r, uint64_t sample_size, vec<sample_t>& out_v)
-{
-  bool excluded = false;
-  out_v.clear();
-  const size_t goal = std::min(in_v.size(), static_cast<size_t>(sample_size));
-  out_v.reserve(goal);
-  size_t neligible = 0;
-
-  for (const auto& s : in_v) {
-    if (s.bin_iv.b - s.bin_iv.a != r.nbins) continue;
-    if (s.bix == r.bix && overlaps_half_open(s.bin_iv, r.bin_iv)) {
-      excluded = true;
-      continue;
-    }
-    if (!std::isfinite(s.I) || s.I <= 0.0) continue;
-    if (!is_valid_distance(s.d)) continue;
-
-    ++neligible;
-    if (out_v.size() < goal) {
-      out_v.push_back(s);
-    } else if (goal > 0) {
-      const size_t j = std::uniform_int_distribution<size_t>(0, neligible - 1)(gen);
-      if (j < goal) out_v[j] = s;
-    }
-  }
-  return excluded;
-}
-
-template class DIM<double>;
-template class DIM<cmlane_t>;
+template class IntExt<double>;
+template class IntExt<cmlane_t>;

@@ -11,13 +11,13 @@ inline constexpr uint32_t container_version = 1;
 
 #pragma pack(push, 1)
 // Absolute file offsets; a zero section length means the section is absent.
-struct sketch_entry_t
+struct scentry
 {
   uint64_t offset = 0;
   uint64_t len = 0;
-  uint64_t buckets_off = 0;
+  uint64_t buckets_offset = 0;
   uint64_t buckets_len = 0;
-  uint64_t windows_off = 0;
+  uint64_t windows_offset = 0;
   uint64_t windows_len = 0;
 };
 #pragma pack(pop)
@@ -80,8 +80,8 @@ public:
   explicit Container(std::filesystem::path path);
 
   [[nodiscard]] const sketch_config_t& get_config() const noexcept { return cfg; }
-  [[nodiscard]] const vec<sketch_entry_t>& get_entries() const noexcept { return entries_v; }
-  [[nodiscard]] const sketch_entry_t& get_entry(uint32_t rec) const noexcept { return entries_v[rec]; }
+  [[nodiscard]] const vec<scentry>& get_entries() const noexcept { return entries_v; }
+  [[nodiscard]] const scentry& get_entry(uint32_t rec) const noexcept { return entries_v[rec]; }
   [[nodiscard]] uint32_t size() const noexcept { return static_cast<uint32_t>(entries_v.size()); }
   [[nodiscard]] const std::filesystem::path& get_path() const noexcept { return path; }
 
@@ -94,7 +94,7 @@ private:
   std::shared_ptr<const FileMap> map;
   sketch_config_t cfg;
   lshf_sptr_t lshf; // built once; every Sketch from this container shares it
-  vec<sketch_entry_t> entries_v;
+  vec<scentry> entries_v;
 };
 
 // True when `path` starts with the container vgskey.
@@ -111,7 +111,7 @@ void read_container_header(const char*& p,
 void read_container_index(const char*& p,
                           const char* end,
                           uint64_t nsketches,
-                          vec<sketch_entry_t>& entries_v,
+                          vec<scentry>& entries_v,
                           const std::filesystem::path& path);
 
 // Write the header, leaving the stream where the index block starts.

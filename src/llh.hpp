@@ -299,32 +299,4 @@ inline double compute_lr_ub(const LLH<T>& llhf, double d, uint64_t n_total)
   return likelihood_ratio_statistic(llhf.nll(d, v.data(), u), nll_ub);
 }
 
-struct likelihood_estimate_t
-{
-  double d = nanx();
-  double I = nanx();
-  double lr_bg = nanx();
-  double lr_ub = nanx();
-  bool has_hits = false;
-};
-
-template<typename T>
-inline likelihood_estimate_t
-compute_likelihood_estimate(const LLH<T>& llhf, const uint64_t* v, uint64_t u, uint64_t t, double d_bg)
-{
-  likelihood_estimate_t est;
-  if (t == 0) return est;
-  est.has_hits = true;
-
-  double nll = nanx();
-  est.d = llhf.mle(v, u, &nll);
-  if (!is_valid_distance(est.d)) return est;
-
-  const double I = llhf.compute_fisher_info(v, u, est.d);
-  est.I = (std::isfinite(I) && I > 0.0) ? I : nanx();
-  if (is_valid_distance(d_bg)) est.lr_bg = likelihood_ratio_statistic(llhf.nll(d_bg, v, u), nll);
-  est.lr_ub = compute_lr_ub(llhf, est.d, t + u);
-  return est;
-}
-
 #endif

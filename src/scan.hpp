@@ -1,8 +1,9 @@
 #ifndef _SCAN_HPP
 #define _SCAN_HPP
 
-#include "dim.hpp"
+#include "intext.hpp"
 #include "sketch.hpp"
+#include <algorithm>
 #include <cstdint>
 #include <limits>
 
@@ -14,6 +15,12 @@ inline uint32_t bucket_hdist_min(const enc_t* ix1, const enc_t* ix2, const enc_t
     hdist_min = hdist < hdist_min ? hdist : hdist_min;
   }
   return hdist_min;
+}
+
+// Scalar LLH for one reference/threshold pair; derivatives are not needed.
+inline LLH<double> make_llhf(const Sketch& sketch, uint32_t hdist_th)
+{
+  return {sketch.get_k(), sketch.get_h(), sketch.get_rho(), hdist_th, 0.0, false};
 }
 
 struct scan_ctx_t
@@ -136,11 +143,97 @@ inline void scan_mers_range(const scan_ctx_t& ctx, const char* cseq, uint64_t j0
   if (n) flush();
 }
 
-template<typename T>
-struct dim_agg_t
+// Total hits accumulated in a per-window histogram (indices 0..hdist_th).
+inline uint64_t hist_total(const uint64_t* hist, uint32_t hdist_th) noexcept
 {
-  DIM<T>& fw;
-  DIM<T>* rc;
+  uint64_t t = 0;
+  for (uint32_t hd = 0; hd <= hdist_th; ++hd)
+    t += hist[hd];
+  return t;
+}
+
+// Per-window HD counts (canonical - strand agnostic).
+struct window_counts_t
+{
+  vec<uint64_t> hist_v;
+  uint64_t u = 0;
+  uint32_t hdist_th = 0;
+
+  window_counts_t() = default;
+
+  explicit window_counts_t(uint32_t hdist_th)
+    : hdist_th(hdist_th)
+  {
+    hist_v.assign(hdist_bound + 1, 0);
+  }
+
+  void clear() noexcept
+  {
+    std::fill(hist_v.begin(), hist_v.end(), 0);
+    u = 0;
+  }
+
+  uint64_t* hist() noexcept { return hist_v.data(); }
+  const uint64_t* hist() const noexcept { return hist_v.data(); }
+
+  inline void operator()(uint64_t /*bin*/, uint32_t hdist, bool /*is_rc*/) noexcept
+  {
+    if (hdist <= hdist_th)
+      ++hist_v[hdist];
+    else
+      ++u;
+  }
+
+  inline void skip_mer(uint64_t /*bin*/) const noexcept {}
+};
+
+// Per-window HD counts with explicit fw/rc halves for strand-based scans.
+struct swindow_counts_t
+{
+  vec<uint64_t> hist_fw_v;
+  vec<uint64_t> hist_rc_v;
+  uint64_t u_fw = 0;
+  uint64_t u_rc = 0;
+  uint32_t hdist_th = 0;
+
+  swindow_counts_t() = default;
+
+  explicit swindow_counts_t(uint32_t hdist_th)
+    : hdist_th(hdist_th)
+  {
+    hist_fw_v.assign(hdist_bound + 1, 0);
+    hist_rc_v.assign(hdist_bound + 1, 0);
+  }
+
+  void clear() noexcept
+  {
+    std::fill(hist_fw_v.begin(), hist_fw_v.end(), 0);
+    std::fill(hist_rc_v.begin(), hist_rc_v.end(), 0);
+    u_fw = 0;
+    u_rc = 0;
+  }
+
+  uint64_t* hist_fw() noexcept { return hist_fw_v.data(); }
+  uint64_t* hist_rc() noexcept { return hist_rc_v.data(); }
+  const uint64_t* hist_fw() const noexcept { return hist_fw_v.data(); }
+  const uint64_t* hist_rc() const noexcept { return hist_rc_v.data(); }
+
+  inline void operator()(uint64_t /*bin*/, uint32_t hdist, bool is_rc) noexcept
+  {
+    if (hdist <= hdist_th)
+      ++(is_rc ? hist_rc_v[hdist] : hist_fw_v[hdist]);
+    else
+      ++(is_rc ? u_rc : u_fw);
+  }
+
+  inline void skip_mer(uint64_t /*bin*/) const noexcept {}
+};
+
+template<typename T>
+struct intext_agg_t
+{
+  IntExt<T>& fw;
+  IntExt<T>* rc;
   inline void operator()(uint64_t bin, uint32_t hd, bool is_rc) const { (is_rc ? *rc : fw).aggregate_mer(hd, bin); }
   inline void skip_mer(uint64_t bin) const
   {

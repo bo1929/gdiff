@@ -108,12 +108,12 @@ public:
 
 private:
   void write_file_header(std::ostream& os, uint64_t nsketches);
-  sketch_entry_t write_sketch(str& bytes,
-                              uint64_t timestamp,
-                              uint64_t ntotal_bp,
-                              uint64_t nvalid_bp,
-                              const Sketch& built,
-                              const window_sample_t& sample);
+  scentry write_sketch(str& bytes,
+                       uint64_t timestamp,
+                       uint64_t ntotal_bp,
+                       uint64_t nvalid_bp,
+                       const Sketch& built,
+                       const window_sample_t& sample);
   void write_windows(std::ostream& os, const window_sample_t& sample);
   window_sample_t sample_windows(const str& input_path, uint64_t& ntotal_bp, uint64_t& nvalid_bp);
   sketch_config_t make_config(uint64_t timestamp) const;

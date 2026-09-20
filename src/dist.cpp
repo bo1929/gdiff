@@ -12,7 +12,285 @@
 #include "common.hpp"
 #include "msg.hpp"
 #include "random.hpp"
-#include "tsv.hpp"
+#include "records.hpp"
+#include "scan.hpp"
+#include "tpool.hpp"
+#include "windows.hpp"
+
+namespace {
+
+  bool order_finite_first(const mle_t& lhs, const mle_t& rhs)
+  {
+    const bool lnan = std::isnan(lhs.d);
+    const bool rnan = std::isnan(rhs.d);
+    if (lnan || rnan) return !lnan && rnan;
+    return lhs.d < rhs.d;
+  }
+
+  std::pair<vec<mle_t>, uint64_t> merge_samples(vec<mle_t>& ab_v, vec<mle_t>& ba_v)
+  {
+    std::sort(ab_v.begin(), ab_v.end(), order_finite_first);
+    std::sort(ba_v.begin(), ba_v.end(), order_finite_first);
+
+    uint64_t n_na = 0;
+    const size_t nranks = std::max(ab_v.size(), ba_v.size());
+    vec<mle_t> mle_v;
+    mle_v.reserve(nranks);
+    for (size_t i = 0; i < nranks; ++i) {
+      const bool has_ab = i < ab_v.size() && !std::isnan(ab_v[i].d);
+      const bool has_ba = i < ba_v.size() && !std::isnan(ba_v[i].d);
+      if (has_ab && has_ba) {
+        mle_v.push_back(ab_v[i].d <= ba_v[i].d ? ab_v[i] : ba_v[i]);
+      } else if (has_ab) {
+        mle_v.push_back(ab_v[i]);
+      } else if (has_ba) {
+        mle_v.push_back(ba_v[i]);
+      } else {
+        ++n_na;
+      }
+    }
+    return {std::move(mle_v), n_na};
+  }
+
+} // namespace
+
+summary_t summarize_symmetric(vec<mle_t> ab_v, vec<mle_t> ba_v, double lr_th, double min_portion)
+{
+  summary_t s;
+  const auto [mle_v, n_na] = merge_samples(ab_v, ba_v);
+  s.n_na = n_na;
+
+  double bf_sum = 0.0, af_sum = 0.0;
+  vec<double> bf_d_v, af_d_v;
+  bf_d_v.reserve(mle_v.size());
+  af_d_v.reserve(mle_v.size());
+
+  for (const mle_t& m : mle_v) {
+    if (m.s == 0.0) ++s.n_ub;
+
+    bf_sum += m.d;
+    bf_d_v.push_back(m.d);
+    if (std::isnan(s.d_highest) || m.d > s.d_highest) s.d_highest = m.d;
+
+    // A missing likelihood-ratio bound carries no evidence, so it is rejected.
+    if (!std::isnan(m.s) && m.s > lr_th) {
+      af_sum += m.d;
+      af_d_v.push_back(m.d);
+      if (std::isnan(s.d_upper) || m.d > s.d_upper) s.d_upper = m.d;
+    } else {
+      ++s.n_filtered;
+    }
+  }
+
+  const size_t n_total = bf_d_v.size();
+  const size_t n_kept = af_d_v.size();
+  const double portion = n_total ? static_cast<double>(n_kept) / static_cast<double>(n_total) : 0.0;
+  const double bf_mean = n_total ? bf_sum / static_cast<double>(n_total) : nanx();
+  const double af_mean = n_kept ? af_sum / static_cast<double>(n_kept) : nanx();
+
+  // The plain mean is always reported, so a caller can compare it with the filtered estimate.
+  s.d_mean = bf_mean;
+  if (portion > min_portion) {
+    s.d = af_mean;
+    s.d_v = std::move(af_d_v);
+  } else {
+    s.d = bf_mean;
+    s.d_v = std::move(bf_d_v);
+  }
+  s.d_median = linear_quantile(s.d_v, 0.5);
+  return s;
+}
+
+namespace {
+
+  // One strand's match histograms for every window of a side, flattened.
+  struct strand_counts_t
+  {
+    vec<uint64_t> hist_v; // nwins * (hdist_bound + 1)
+    vec<uint64_t> u_v;    // nwins
+
+    void assign(size_t nwins)
+    {
+      hist_v.assign(nwins * (hdist_bound + 1), 0);
+      u_v.assign(nwins, 0);
+    }
+    const uint64_t* window_hist(size_t wix) const noexcept { return hist_v.data() + wix * (hdist_bound + 1); }
+    uint64_t* window_hist(size_t wix) noexcept { return hist_v.data() + wix * (hdist_bound + 1); }
+  };
+
+  // The pool is grouped by bucket, so each bucket is resolved once per sample.
+  void accumulate_pool(const Buckets& buckets,
+                       const hash_pool_t& pool,
+                       uint32_t hdist_th,
+                       size_t nwins,
+                       strand_counts_t& out) noexcept
+  {
+    const uint64_t* hashes = pool.hashes_ptr();
+    const uint16_t* win_ix = pool.win_ix_ptr();
+    const uint64_t n = pool.size();
+    for (uint64_t i = 0; i < n;) {
+      const uint32_t bix = key_bix(hashes[i]);
+      uint64_t j = i + 1;
+      while (j < n && key_bix(hashes[j]) == bix)
+        ++j;
+      const enc_t* beg = nullptr;
+      const enc_t* end = nullptr;
+      if (!buckets.range(bix, beg, end)) {
+        i = j;
+        continue;
+      }
+      __builtin_prefetch(beg, 0, 0);
+      for (uint64_t e = i; e < j; ++e) {
+        const size_t wix = win_ix[e];
+        if (wix >= nwins) continue;
+        const uint32_t hd = bucket_hdist_min(beg, end, key_enc(hashes[e]));
+        if (hd <= hdist_th) ++out.window_hist(wix)[hd];
+      }
+      i = j;
+    }
+  }
+
+  // Per-window counts for one side; rc stays empty in canonical mode.
+  void query_windows(const Sketch& query,
+                     const Sketch& reference,
+                     uint32_t hdist_th,
+                     uint64_t nmers_limit,
+                     strand_counts_t& fw,
+                     strand_counts_t& rc)
+  {
+    const vec<window_t>& wins_v = query.get_windows().wins_v;
+    const size_t nwins = wins_v.size();
+    const bool canonical = query.is_canonical();
+    fw.assign(nwins);
+    if (!canonical) rc.assign(nwins);
+
+    if (!query.get_config().keep_seq) {
+      const Buckets& buckets = reference.get_buckets();
+      accumulate_pool(buckets, query.get_windows().pool_fw, hdist_th, nwins, fw);
+      if (!canonical) accumulate_pool(buckets, query.get_windows().pool_rc, hdist_th, nwins, rc);
+      // A pool holds only retained k-mers; the rest are recovered as misses.
+      for (size_t wix = 0; wix < nwins; ++wix) {
+        const uint64_t matched = hist_total(fw.window_hist(wix), hdist_th);
+        fw.u_v[wix] = wins_v[wix].nvalid_fw > matched ? wins_v[wix].nvalid_fw - matched : 0;
+        if (!canonical) {
+          const uint64_t rmatched = hist_total(rc.window_hist(wix), hdist_th);
+          rc.u_v[wix] = wins_v[wix].nvalid_rc > rmatched ? wins_v[wix].nvalid_rc - rmatched : 0;
+        }
+      }
+      return;
+    }
+
+    // scan_mers_range already counts misses, so u comes out directly.
+    const scan_ctx_t ctx = make_scan_ctx(reference, 0, hdist_th);
+    const seq_pack_t& packs = query.get_windows().packs;
+    str cseq;
+    for (size_t wix = 0; wix < nwins; ++wix) {
+      packs.unpack(wix, cseq);
+      const uint64_t nmers = std::min(nmers_limit, wins_v[wix].end - wins_v[wix].start);
+      if (canonical) {
+        window_counts_t agg(hdist_th);
+        scan_mers_range<true>(ctx, cseq.data(), 0, nmers, agg);
+        std::copy(agg.hist(), agg.hist() + hdist_bound + 1, fw.window_hist(wix));
+        fw.u_v[wix] = agg.u;
+      } else {
+        swindow_counts_t agg(hdist_th);
+        scan_mers_range<false>(ctx, cseq.data(), 0, nmers, agg);
+        std::copy(agg.hist_fw(), agg.hist_fw() + hdist_bound + 1, fw.window_hist(wix));
+        fw.u_v[wix] = agg.u_fw;
+        std::copy(agg.hist_rc(), agg.hist_rc() + hdist_bound + 1, rc.window_hist(wix));
+        rc.u_v[wix] = agg.u_rc;
+      }
+    }
+  }
+
+} // namespace
+
+samples_t process_samples(const Sketch& query, const Sketch& reference, uint32_t hdist_th, bool output_samples, bool is_ba)
+{
+  if (!compatible_configs(query.get_config(), reference.get_config())) {
+    error_exit(concat_msg("Incompatible sketch pair: ",
+                          query.get_rname(),
+                          " vs ",
+                          reference.get_rname(),
+                          " (k/w/h/LSH/window length must match; use the same --seed)"));
+  }
+  if (!reference.has_buckets()) {
+    error_exit(concat_msg("Reference sketch has no buckets: ", reference.get_rname()));
+  }
+  if (!query.has_windows()) {
+    error_exit(concat_msg("Query sketch has no sampled windows: ", query.get_rname()));
+  }
+
+  // s depends on the reference's rho, so it differs between sides.
+  const LLH<double> llhf = make_llhf(reference, hdist_th);
+  const bool canonical = query.is_canonical();
+  const vec<window_t>& wins_v = query.get_windows().wins_v;
+  const size_t nwins = wins_v.size();
+  // Compatible sketches share a window length, so the query's is authoritative.
+  const uint64_t nmers_limit = query.get_config().tau;
+
+  strand_counts_t fw, rc;
+  query_windows(query, reference, hdist_th, nmers_limit, fw, rc);
+
+  samples_t out;
+  out.windows_v.reserve(nwins);
+  vec<double> d_v;
+  d_v.reserve(nwins);
+
+  strstream ss;
+  if (output_samples) set_precision(ss, 5);
+
+  for (size_t wix = 0; wix < nwins; ++wix) {
+    const uint64_t* hfw = fw.window_hist(wix);
+    const uint64_t t_fw = hist_total(hfw, hdist_th);
+    const double d_fw = t_fw == 0 ? nanx() : llhf.mle(hfw, fw.u_v[wix]);
+
+    mle_t mle;
+    mle.d = d_fw;
+    char strand = canonical ? '.' : '+';
+    const uint64_t* hist = hfw;
+    uint64_t u = fw.u_v[wix];
+    if (!canonical) {
+      const uint64_t* hrc = rc.window_hist(wix);
+      const uint64_t t_rc = hist_total(hrc, hdist_th);
+      const double d_rc = t_rc == 0 ? nanx() : llhf.mle(hrc, rc.u_v[wix]);
+      const auto picked = select_strand_distance(d_fw, d_rc);
+      mle.d = picked.first;
+      strand = picked.second;
+      if (strand == '-') {
+        hist = hrc;
+        u = rc.u_v[wix];
+      }
+    }
+
+    if (is_valid_distance(mle.d)) {
+      mle.s = compute_lr_ub(llhf, mle.d, u + hist_total(hist, hdist_th));
+      d_v.push_back(mle.d);
+    }
+    out.windows_v.push_back(mle);
+
+    if (output_samples) {
+      write_tsv(ss,
+                "gdiff",
+                is_ba ? reference.get_rname() : query.get_rname(),
+                is_ba ? query.get_rname() : reference.get_rname(),
+                wins_v[wix].qid,
+                wins_v[wix].start + 1,
+                wins_v[wix].end + query.get_k() - 1,
+                strand,
+                is_ba ? "ba" : "ab",
+                mle.d,
+                mle.s)
+        << '\n';
+    }
+  }
+
+  std::sort(d_v.begin(), d_v.end());
+  out.d_median = linear_quantile(d_v, 0.5);
+  out.n_valid = d_v.size();
+  if (output_samples) out.samples = ss.str();
+  return out;
+}
 
 constexpr uint64_t hcompl_bp_min = 20ull * 1000 * 1000; // 20 Mbp of valid bp
 constexpr uint64_t hcompl_hdist_th = 2u;
@@ -80,8 +358,7 @@ void DistSC::resolve_list(const std::filesystem::path& path, vec<uint32_t>& out)
 void DistSC::emit_header(std::ostream& os) const
 {
   if (params.output_samples) {
-    write_tsv(os, "config", "genome_a", "genome_b", "seq", "start", "end", "strand", "direction", "d", "lr_bg", "lr_ub")
-      << '\n';
+    write_tsv(os, "config", "genome_a", "genome_b", "seq", "start", "end", "strand", "direction", "d", "lr_ub") << '\n';
   } else {
     write_tsv(os,
               "genome_a",
@@ -102,9 +379,9 @@ void DistSC::emit_header(std::ostream& os) const
   }
 }
 
-void DistSC::write_pair_row(std::ostream& os, const pair_t& pr, const str& name_a, const str& name_b)
+void DistSC::write_pair_line(std::ostream& os, const pair_t& pr, const str& name_a, const str& name_b)
 {
-  const summary_t s = summarize_symmetric(pr.ab.rows_v, pr.ba.rows_v, params.lr_th, params.min_portion);
+  const summary_t s = summarize_symmetric(pr.ab.windows_v, pr.ba.windows_v, params.lr_th, params.min_portion);
   write_tsv(os,
             name_a,
             name_b,
@@ -220,7 +497,7 @@ void DistSC::estimate_distances()
 
     pool.parallel_for(batch_end - batch_start, 1, [&](uint64_t i) {
       const job_t& job = jobs_v[batch_start + static_cast<size_t>(i)];
-      direction_t r = run_direction(targets_v[job.target_ix], source, hdist_th, params.output_samples, job.is_ba);
+      samples_t r = process_samples(targets_v[job.target_ix], source, hdist_th, params.output_samples, job.is_ba);
       pair_t& pr = pairs_v[job.pair_ix];
       if (job.is_ba)
         pr.ba = std::move(r);
@@ -228,8 +505,8 @@ void DistSC::estimate_distances()
         pr.ab = std::move(r);
     });
 
-    const sketch_entry_t& e = sentry.file->get_entry(sentry.rix);
-    sentry.file->advise(e.buckets_off, e.buckets_len, MADV_DONTNEED);
+    const scentry& e = sentry.file->get_entry(sentry.rix);
+    sentry.file->advise(e.buckets_offset, e.buckets_len, MADV_DONTNEED);
 
     done_jobs += batch_end - batch_start;
     print_pair_progress(done_jobs, total_jobs);
@@ -244,7 +521,7 @@ void DistSC::estimate_distances()
   } else {
     set_precision(os, 8);
     for (const pair_t& pr : pairs_v)
-      write_pair_row(os, pr, entries_v[pr.a].rname, entries_v[pr.b].rname);
+      write_pair_line(os, pr, entries_v[pr.a].rname, entries_v[pr.b].rname);
   }
   os.flush();
 }
@@ -299,16 +576,16 @@ DistSC::DistSC(CLI::App& sc)
     ->excludes("sketch-b")
     ->check(CLI::ExistingFile);
   sc.add_option(
-      "--hdist-th", params.hdist_th, "Hamming distance limit for a k-mer match; if input is >20 Mbp, it is capped at 2 [3]")
+      "--hdist-th", params.hdist_th, "Maximum Hamming distance for k-mer search; capped at 2 for inputs >20 Mbp [3]")
     ->check(CLI::Range(0, static_cast<int>(hdist_bound)));
-  sc.add_option("--lr-th", params.lr_th, "Likelihood-ratio cut for the reconciliation filter [3.841]")
+  sc.add_option("--lr-th", params.lr_th, "Likelihood-ratio cut for the reconciliation filter [10.828]")
     ->check(CLI::NonNegativeNumber);
   sc.add_option("--min-portion",
                 params.min_portion,
-                "Apply the filter only if at least this fraction of the windows exceeds --lr-th [0.66]")
+                "Apply the filter iff at least --min-portion of the windows exceeds --lr-th [0.66]")
     ->check(CLI::Range(0.0, 1.0));
   sc.add_option("-o,--output-path", output_path, "Write output to a file at <path> [stdout]");
-  sc.add_flag("--output-samples", params.output_samples, "Write per-window sample rows instead of per-pair summaries");
+  sc.add_flag("--output-samples", params.output_samples, "Write per-window sample lines instead of per-pair summaries");
   sc.callback([&]() {
     if (!validate_configuration()) error_exit("Invalid configuration!");
     open_output(output_file, output_path, output_stream);

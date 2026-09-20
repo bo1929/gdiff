@@ -9,7 +9,6 @@
 extern uint32_t seed;
 extern uint32_t num_threads;
 extern thread_local std::mt19937 gen;
-extern thread_local std::random_device rd;
 
 // Derive a reproducible per-thread stream from --seed and thread index.
 void init_thread_rng(uint32_t i = 0);

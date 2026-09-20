@@ -48,4 +48,12 @@ using vec = std::vector<T>;
 template<typename T>
 using vvec = std::vector<std::vector<T>>;
 
+// The mapped counterpart of vec<T>: a non-owning run of Ts.
+template<typename T>
+struct slice_t
+{
+  const T* data = nullptr;
+  uint64_t n = 0;
+};
+
 #endif

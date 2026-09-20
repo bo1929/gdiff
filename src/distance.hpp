@@ -58,4 +58,13 @@ inline double linear_quantile(const vec<double>& v, double p)
 
 inline double validate_distance(double d) noexcept { return is_valid_distance(d) ? d : nanx(); }
 
+inline std::pair<double, char> select_strand_distance(double d_fw, double d_rc)
+{
+  const bool fw_valid = is_valid_distance(d_fw);
+  const bool rc_valid = is_valid_distance(d_rc);
+  if (!fw_valid && !rc_valid) return {nanx(), '.'};
+  if (!rc_valid || (fw_valid && d_fw <= d_rc)) return {d_fw, '+'};
+  return {d_rc, '-'};
+}
+
 #endif

@@ -1,23 +1,21 @@
 #ifndef _WINDOWS_HPP
 #define _WINDOWS_HPP
 
-// Windows: the sampled stretches stored in a container (their metadata plus the Pool and
-// Seq payloads), the per-window count aggregators the scan paths fill, and the sampling
-// plan that picks which windows to visit.
+// Windows: the sampled stretches stored in a container (metadata plus the Pool and Seq
+// payloads) and the sampling plan that picks which windows to visit.
 
-#include "distance.hpp"
 #include "types.hpp"
 #include <algorithm>
 #include <cstdint>
 #include <random>
 
-// A non-owning run of Ts: the mapped counterpart of vec<T>.
+// Window payload arrays are owned while a container is built and become mapped views once it
+// is loaded; `pick_slice` resolves either representation.
 template<typename T>
-struct slice_t
+[[nodiscard]] inline slice_t<T> pick_slice(const slice_t<T>& view, const vec<T>& owned) noexcept
 {
-  const T* data = nullptr;
-  uint64_t n = 0;
-};
+  return view.data ? view : slice_t<T>{owned.data(), owned.size()};
+}
 
 // Window metadata; the payload arrays alongside share its index.
 struct window_t
@@ -45,10 +43,9 @@ struct hash_pool_t
     win_ix_view = {};
   }
 
-  [[nodiscard]] bool is_view() const noexcept { return hashes_view.data != nullptr; }
-  [[nodiscard]] uint64_t size() const noexcept { return is_view() ? hashes_view.n : hashes_v.size(); }
-  [[nodiscard]] const uint64_t* hashes_ptr() const noexcept { return is_view() ? hashes_view.data : hashes_v.data(); }
-  [[nodiscard]] const uint16_t* win_ix_ptr() const noexcept { return is_view() ? win_ix_view.data : win_ix_v.data(); }
+  [[nodiscard]] uint64_t size() const noexcept { return pick_slice(hashes_view, hashes_v).n; }
+  [[nodiscard]] const uint64_t* hashes_ptr() const noexcept { return pick_slice(hashes_view, hashes_v).data; }
+  [[nodiscard]] const uint16_t* win_ix_ptr() const noexcept { return pick_slice(win_ix_view, win_ix_v).data; }
 };
 
 // Concatenated 2-bit bases; base_off_v[i] is window i's bit-pair offset.
@@ -61,13 +58,14 @@ struct seq_pack_t
   slice_t<uint64_t> nmask_view;
   slice_t<uint64_t> base_off_view;
 
-  [[nodiscard]] bool is_view() const noexcept { return base_off_view.data != nullptr; }
-  [[nodiscard]] const uint64_t* packed_ptr() const noexcept { return is_view() ? packed_view.data : packed_v.data(); }
+  [[nodiscard]] const uint64_t* packed_ptr() const noexcept { return pick_slice(packed_view, packed_v).data; }
+  // The N mask is optional: a container with no masked base stores none at all.
   [[nodiscard]] const uint64_t* nmask_ptr() const noexcept
   {
-    return is_view() ? nmask_view.data : (nmask_v.empty() ? nullptr : nmask_v.data());
+    if (nmask_view.data != nullptr) return nmask_view.data;
+    return nmask_v.empty() ? nullptr : nmask_v.data();
   }
-  [[nodiscard]] const uint64_t* base_off_ptr() const noexcept { return is_view() ? base_off_view.data : base_off_v.data(); }
+  [[nodiscard]] const uint64_t* base_off_ptr() const noexcept { return pick_slice(base_off_view, base_off_v).data; }
   // Expand window wi into cseq as ACGT characters plus 'N' where masked.
   void unpack(uint64_t wi, str& cseq) const;
 };
@@ -121,96 +119,5 @@ window_plan_t make_window_plan(const vec<uint64_t>& source_lens_v,
                                uint64_t bin_shift,
                                uint64_t sample_size,
                                std::mt19937& rng);
-
-// Reject a bin shift that cannot be represented, or that quantises wider than the window.
-bool validate_binning(uint64_t bin_shift, uint64_t tau);
-
-// Total hits accumulated in a per-window histogram (indices 0..hdist_th).
-inline uint64_t hist_total(const uint64_t* hist, uint32_t hdist_th) noexcept
-{
-  uint64_t t = 0;
-  for (uint32_t hd = 0; hd <= hdist_th; ++hd)
-    t += hist[hd];
-  return t;
-}
-
-// Per-window HD counts (canonical / one strand). No fw/rc split.
-struct window_counts_t
-{
-  vec<uint64_t> hist_v;
-  uint64_t u = 0;
-  uint32_t hdist_th = 0;
-
-  window_counts_t() = default;
-
-  explicit window_counts_t(uint32_t hdist_th)
-    : hdist_th(hdist_th)
-  {
-    hist_v.assign(hdist_bound + 1, 0);
-  }
-
-  void clear() noexcept
-  {
-    std::fill(hist_v.begin(), hist_v.end(), 0);
-    u = 0;
-  }
-
-  uint64_t* hist() noexcept { return hist_v.data(); }
-  const uint64_t* hist() const noexcept { return hist_v.data(); }
-
-  // scan_mers_range aggregator (is_rc ignored; canonical scan never sets it)
-  inline void operator()(uint64_t /*bin*/, uint32_t hdist, bool /*is_rc*/) noexcept
-  {
-    if (hdist <= hdist_th)
-      ++hist_v[hdist];
-    else
-      ++u;
-  }
-
-  inline void skip_mer(uint64_t /*bin*/) const noexcept {}
-};
-
-// Per-window HD counts with explicit fw/rc halves for strand-aware scans.
-struct swindow_counts_t
-{
-  vec<uint64_t> hist_fw_v;
-  vec<uint64_t> hist_rc_v;
-  uint64_t u_fw = 0;
-  uint64_t u_rc = 0;
-  uint32_t hdist_th = 0;
-
-  swindow_counts_t() = default;
-
-  explicit swindow_counts_t(uint32_t hdist_th)
-    : hdist_th(hdist_th)
-  {
-    hist_fw_v.assign(hdist_bound + 1, 0);
-    hist_rc_v.assign(hdist_bound + 1, 0);
-  }
-
-  void clear() noexcept
-  {
-    std::fill(hist_fw_v.begin(), hist_fw_v.end(), 0);
-    std::fill(hist_rc_v.begin(), hist_rc_v.end(), 0);
-    u_fw = 0;
-    u_rc = 0;
-  }
-
-  uint64_t* hist_fw() noexcept { return hist_fw_v.data(); }
-  uint64_t* hist_rc() noexcept { return hist_rc_v.data(); }
-  const uint64_t* hist_fw() const noexcept { return hist_fw_v.data(); }
-  const uint64_t* hist_rc() const noexcept { return hist_rc_v.data(); }
-
-  // scan_mers_range aggregator
-  inline void operator()(uint64_t /*bin*/, uint32_t hdist, bool is_rc) noexcept
-  {
-    if (hdist <= hdist_th)
-      ++(is_rc ? hist_rc_v[hdist] : hist_fw_v[hdist]);
-    else
-      ++(is_rc ? u_rc : u_fw);
-  }
-
-  inline void skip_mer(uint64_t /*bin*/) const noexcept {}
-};
 
 #endif

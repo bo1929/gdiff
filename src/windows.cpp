@@ -1,9 +1,7 @@
 #include "windows.hpp"
 
-#include "msg.hpp"
 #include "random.hpp"
 #include <utility>
-
 window_plan_t make_window_plan(const vec<uint64_t>& source_lens_v,
                                uint64_t k,
                                uint64_t tau,
@@ -66,19 +64,4 @@ void seq_pack_t::unpack(uint64_t wi, str& cseq) const
     const uint64_t code = (packed_p[b >> 5] >> (2 * (b & 31))) & 3ull;
     cseq[static_cast<size_t>(b - b0)] = bases[code];
   }
-}
-
-bool validate_binning(uint64_t bin_shift, uint64_t tau)
-{
-  bool is_invalid = false;
-  if (bin_shift > 16) {
-    is_invalid = true;
-    cerr_msg("--bin-shift must be less than or equal to 16; got ", bin_shift);
-  }
-  const uint64_t bin_size = (bin_shift <= 16) ? (uint64_t(1) << bin_shift) : 0;
-  if (tau && bin_size > tau) {
-    is_invalid = true;
-    cerr_msg("--bin-shift gives bin_size=", bin_size, ", which exceeds -l=", tau);
-  }
-  return !is_invalid;
 }
