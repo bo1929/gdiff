@@ -1,47 +1,46 @@
 #include "doctest/doctest.h"
+#include "records.hpp"
+#include "intext.hpp"
 #include "types.hpp"
-#include "map.hpp"
 #include <sstream>
 
-TEST_SUITE("params_t") {
+TEST_SUITE("map_params") {
 
 TEST_CASE("bin_size computed from bin_shift") {
-  params_t<double> p(0.1, 4, 1000, 33.0, 0, 1000, true, false);
+  map_params<double> p(0.1, 4, 1000, 0, 33.0);
   CHECK(p.bin_size == 1);      // 2^0 = 1
   CHECK(p.bin_shift == 0);
 
-  params_t<double> p2(0.1, 4, 1000, 33.0, 3, 1000, true, false);
+  map_params<double> p2(0.1, 4, 1000, 3, 33.0);
   CHECK(p2.bin_size == 8);     // 2^3 = 8
 
-  params_t<double> p3(0.1, 4, 1000, 33.0, 10, 1000, true, false);
+  map_params<double> p3(0.1, 4, 1000, 10, 33.0);
   CHECK(p3.bin_size == 1024);  // 2^10 = 1024
 }
 
 TEST_CASE("tau_bin is ceil(tau / bin_size)") {
   // tau=1000, bin_size=1 -> tau_bin=1000
-  params_t<double> p1(0.1, 4, 1000, 33.0, 0, 1000, true, false);
+  map_params<double> p1(0.1, 4, 1000, 0, 33.0);
   CHECK(p1.tau_bin == 1000);
 
   // tau=1000, bin_size=8 -> tau_bin=ceil(1000/8)=125
-  params_t<double> p2(0.1, 4, 1000, 33.0, 3, 1000, true, false);
+  map_params<double> p2(0.1, 4, 1000, 3, 33.0);
   CHECK(p2.tau_bin == 125);
 
   // tau=1001, bin_size=8 -> tau_bin=ceil(1001/8)=126
-  params_t<double> p3(0.1, 4, 1001, 33.0, 3, 1000, true, false);
+  map_params<double> p3(0.1, 4, 1001, 3, 33.0);
   CHECK(p3.tau_bin == 126);
 
   // tau=1024, bin_size=1024 -> tau_bin=1
-  params_t<double> p4(0.1, 4, 1024, 33.0, 10, 1000, true, false);
+  map_params<double> p4(0.1, 4, 1024, 10, 33.0);
   CHECK(p4.tau_bin == 1);
 }
 
-TEST_CASE("params_t with cm512_t") {
-  cm512_t dths{};
+TEST_CASE("map_params with cmlane_t") {
+  cmlane_t dths{};
   for (int i = 0; i < 8; ++i) dths[i] = 0.05 * (i + 1);
-  params_t<cm512_t> p(dths, 4, 5000, 33.0, 2, 1000, true, false);
+  map_params<cmlane_t> p(dths, 4, 5000, 2, 33.0);
   CHECK(p.bin_size == 4);
-  CHECK(p.canonical == true);
-  CHECK(p.enum_only == false);
   // tau_bin = ceil(5000/4) = 1250
   CHECK(p.tau_bin == 1250);
 }
@@ -49,19 +48,6 @@ TEST_CASE("params_t with cm512_t") {
 } // TEST_SUITE
 
 TEST_SUITE("record_t") {
-
-TEST_CASE("intact detection is record-local") {
-  record_t full(0, 100, {1, 100}, {1, 11}, false, 0.1, 10.0, 0);
-  CHECK(full.is_intact());
-  CHECK(full.nbins == 10);
-  CHECK(full.get_interval().a == 0);
-  CHECK(full.get_interval().b == 10);
-
-  record_t partial(0, 100, {1, 90}, {1, 10}, true, 0.1, 10.0, 0);
-  CHECK_FALSE(partial.is_intact());
-  CHECK(partial.get_interval().a == 0);
-  CHECK(partial.get_interval().b == 9);
-}
 
 TEST_CASE("reference strand gets two-sided significance percentile") {
   const auto pct_ref = [](double prob, bool on_ref) {
@@ -155,12 +141,6 @@ TEST_CASE("canonical NaN d_diff uses one-sided test") {
   CHECK_FALSE(two_sided(true, nan));
 }
 
-TEST_CASE("background overlap uses half-open bin boundaries") {
-  CHECK(::overlaps_half_open({1, 6}, {5, 7}));
-  CHECK_FALSE(::overlaps_half_open({1, 6}, {6, 9}));
-  CHECK_FALSE(::overlaps_half_open({6, 9}, {1, 6}));
-}
-
 TEST_CASE("validate_distance rejects out-of-range and non-finite values") {
   const auto nan = std::numeric_limits<double>::quiet_NaN();
   const auto inf = std::numeric_limits<double>::infinity();
@@ -185,17 +165,17 @@ TEST_CASE("coordinate helpers preserve output conventions") {
   const uint64_t enmers = 10;
   const uint32_t k = 5;
 
-  auto row = get_coordinates({1, 2}, 2, enmers, k);
-  CHECK(row.a == 1);
-  CHECK(row.b == 8); // full bp coverage: (2-1)<<2 + k - 1
+  auto iv = get_coordinates({1, 2}, 2, enmers, k);
+  CHECK(iv.a == 1);
+  CHECK(iv.b == 8); // full bp coverage: (2-1)<<2 + k - 1
 
-  row = get_coordinates({2, 4}, 2, enmers, k);
-  CHECK(row.a == 5);
-  CHECK(row.b == enmers + k - 1);
+  iv = get_coordinates({2, 4}, 2, enmers, k);
+  CHECK(iv.a == 5);
+  CHECK(iv.b == enmers + k - 1);
 
-  row = get_coordinates({1, 3}, 0, 2, k);
-  CHECK(row.a == 1);
-  CHECK(row.b == k + 1);
+  iv = get_coordinates({1, 3}, 0, 2, k);
+  CHECK(iv.a == 1);
+  CHECK(iv.b == k + 1);
 }
 
 } // TEST_SUITE
@@ -216,7 +196,7 @@ TEST_CASE("single value") {
 
 TEST_CASE("mixed types") {
   std::ostringstream oss;
-  write_tsv(oss, "seq1", 1000UL, 200UL, 800UL, "+", "ref.skc", 0.1);
+  write_tsv(oss, "seq1", 1000UL, 200UL, 800UL, "+", "ref.gs", 0.1);
   std::string result = oss.str();
   CHECK(result.find("seq1") == 0);
   // Count tabs

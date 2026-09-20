@@ -467,7 +467,7 @@ BackgroundSampler::BackgroundSampler(const Sketch& sketch,
   , hdist_th(hdist_th)
   , tau(tau)
   , bin_shift(bin_shift)
-  , nwinmers(window_nmers(tau, bin_shift))
+  , nwinmers(get_nwinmers(tau, bin_shift))
   , llhf(make_llhf(sketch, hdist_th))
 {
   canonical = sketch.is_canonical();

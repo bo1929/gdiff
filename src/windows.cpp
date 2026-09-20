@@ -2,7 +2,8 @@
 
 #include "random.hpp"
 #include <utility>
-window_plan_t make_window_plan(const vec<uint64_t>& source_lens_v,
+
+window_plan_t make_window_plan(const vec<uint64_t>& slen_v,
                                uint64_t k,
                                uint64_t tau,
                                uint64_t bin_shift,
@@ -10,14 +11,14 @@ window_plan_t make_window_plan(const vec<uint64_t>& source_lens_v,
                                std::mt19937& rng)
 {
   const uint64_t bin_size = uint64_t(1) << bin_shift;
-  const uint64_t nwinmers = window_nmers(tau, bin_shift);
+  const uint64_t nwinmers = get_nwinmers(tau, bin_shift);
   const uint64_t xtau = nwinmers + k - 1;
 
   // Cumulative eligible positions, so one global draw can be split back per source.
   uint64_t total_npos = 0;
-  vec<uint64_t> lenc_v(source_lens_v.size());
-  for (size_t i = 0; i < source_lens_v.size(); ++i) {
-    const uint64_t len = source_lens_v[i];
+  vec<uint64_t> lenc_v(slen_v.size());
+  for (size_t i = 0; i < slen_v.size(); ++i) {
+    const uint64_t len = slen_v[i];
     if (len >= xtau) total_npos += (len - k + 1 - nwinmers) / bin_size + 1;
     lenc_v[i] = total_npos;
   }
@@ -27,12 +28,12 @@ window_plan_t make_window_plan(const vec<uint64_t>& source_lens_v,
   if (total_npos == 0) return plan;
 
   const vec<uint64_t> positions_v = sample_coords(total_npos, sample_size, rng);
-  plan.sources_v.reserve(source_lens_v.size());
+  plan.sources_v.reserve(slen_v.size());
   size_t pidx = 0;
-  for (size_t i = 0; i < source_lens_v.size() && pidx < positions_v.size(); ++i) {
+  for (size_t i = 0; i < slen_v.size() && pidx < positions_v.size(); ++i) {
     const uint64_t roff = i == 0 ? 0 : lenc_v[i - 1];
     if (lenc_v[i] == roff) continue; // nothing eligible in this source
-    const uint64_t enmers = source_lens_v[i] - k + 1;
+    const uint64_t enmers = slen_v[i] - k + 1;
     window_plan_t::source_t entry;
     entry.bix = i;
     entry.enmers = enmers;
@@ -50,7 +51,7 @@ window_plan_t make_window_plan(const vec<uint64_t>& source_lens_v,
 void seq_pack_t::unpack(uint64_t wi, str& cseq) const
 {
   static const char bases[4] = {'A', 'C', 'G', 'T'};
-  const uint64_t* off = base_off_ptr();
+  const uint64_t* off = boffset_ptr();
   const uint64_t* packed_p = packed_ptr();
   const uint64_t* nmask_p = nmask_ptr();
   const uint64_t b0 = off[wi];

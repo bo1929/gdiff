@@ -1,8 +1,36 @@
 #include "gdiff.hpp"
+
+#include "dist.hpp"
+#include "map.hpp"
+#include "msg.hpp"
+#include "random.hpp"
 #include "roll.hpp"
+#include "sketch.hpp"
+
+#include <chrono>
+#include <ctime>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <memory>
+#include <system_error>
 
 void MergeSC::merge()
 {
+  // The output stream truncates its path, so writing over an input would destroy a file that is
+  // still being read. Refuse before opening anything.
+  std::error_code out_ec;
+  const std::filesystem::path out_path = std::filesystem::weakly_canonical(sketch_path, out_ec);
+  if (!out_ec) {
+    for (const str& path : paths_v) {
+      std::error_code in_ec;
+      const std::filesystem::path in_path = std::filesystem::weakly_canonical(path, in_ec);
+      if (!in_ec && in_path == out_path) {
+        error_exit("Output container is also an input: " + path);
+      }
+    }
+  }
+
   cerr_msg("Merging ", paths_v.size(), " container(s)");
 
   // Re-index rather than concatenate: sketches move, absolute offsets are rewritten.
@@ -116,7 +144,7 @@ InfoSC::InfoSC(CLI::App& sc)
 
 int main(int argc, char** argv)
 {
-  PRINT_VERSION
+  std::cerr << "gdiff version: " << gdiff_version << '\n';
   std::ios::sync_with_stdio(false);
   std::cin.tie(nullptr);
 
@@ -125,7 +153,9 @@ int main(int argc, char** argv)
   app.fallthrough();
 
   app.add_flag("--verbose,!--no-verbose", verbose, "Report progress even when stderr is not a terminal");
-  app.require_subcommand();
+  // Exactly one: dispatch below is a fixed-order if-chain, so accepting several would silently
+  // run them in source order rather than the order they were given.
+  app.require_subcommand(1);
   app.add_option("--seed", seed, "Random seed for the LSH and other parts that require randomness [0]");
   app.callback([&]() { init_thread_rng(0); });
   app.add_option("--num-threads", num_threads, "Worker threads per subcommand [1]");

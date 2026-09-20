@@ -251,7 +251,7 @@ Sketch Container::open(uint32_t rec, SketchLoad part) const
       packs.packed_view = {view_array<uint64_t>(wp, wend, packed_words, "packed bases"), packed_words};
       const uint64_t nmask_words = read_trivial<uint64_t>(wp, wend, "nmask words");
       packs.nmask_view = {view_array<uint64_t>(wp, wend, nmask_words, "N mask"), nmask_words};
-      packs.base_off_view = {view_array<uint64_t>(wp, wend, nwins + 1, "window base offsets"), nwins + 1};
+      packs.boffset_view = {view_array<uint64_t>(wp, wend, nwins + 1, "window base offsets"), nwins + 1};
     }
     gs.loaded_windows = true;
   }
@@ -423,8 +423,8 @@ window_sample_t SketchSC::sample_windows(const str& input_path, uint64_t& ntotal
     const uint64_t total_bases = nwins * (params.tau + k - 1);
     sample.packs.packed_v.reserve(static_cast<size_t>((total_bases + 31) / 32));
     sample.packs.nmask_v.reserve(static_cast<size_t>((total_bases + 63) / 64));
-    sample.packs.base_off_v.reserve(nwins + 1);
-    sample.packs.base_off_v.push_back(0);
+    sample.packs.boffset_v.reserve(nwins + 1);
+    sample.packs.boffset_v.push_back(0);
   }
 
   // Pass 2: re-stream and extract only the sampled windows.
@@ -474,7 +474,7 @@ window_sample_t SketchSC::sample_windows(const str& input_path, uint64_t& ntotal
         } else {
           seq_pack_t& packs = sample.packs;
           const uint64_t nbases = jy - jx + k - 1;
-          const uint64_t b0 = packs.base_off_v.back();
+          const uint64_t b0 = packs.boffset_v.back();
           packs.packed_v.resize(static_cast<size_t>((b0 + nbases + 31) / 32), 0);
           packs.nmask_v.resize(static_cast<size_t>((b0 + nbases + 63) / 64), 0);
           for (uint64_t t = 0; t < nbases; ++t) {
@@ -486,7 +486,7 @@ window_sample_t SketchSC::sample_windows(const str& input_path, uint64_t& ntotal
               packs.packed_v[static_cast<size_t>(b >> 5)] |= uint64_t(code) << (2 * (b & 31));
             }
           }
-          packs.base_off_v.push_back(b0 + nbases);
+          packs.boffset_v.push_back(b0 + nbases);
         }
 
         sample.wins_v.push_back(std::move(win));
@@ -535,7 +535,7 @@ void SketchSC::write_windows(std::ostream& os, const window_sample_t& sample)
     write_array(os, packs.packed_v.data(), packs.packed_v.size());
     write_trivial(os, static_cast<uint64_t>(packs.nmask_v.size()));
     write_array(os, packs.nmask_v.data(), packs.nmask_v.size());
-    write_array(os, packs.base_off_v.data(), packs.base_off_v.size());
+    write_array(os, packs.boffset_v.data(), packs.boffset_v.size());
   }
 }
 

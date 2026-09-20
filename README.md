@@ -19,13 +19,13 @@ gdiff works in two steps: **sketch** a reference, then **map** queries against i
 ### 1. Sketch a reference genome
 
 ```bash
-gdiff sketch -i reference.fasta -o reference.gs
+gdiff sketch -i reference.fasta -o reference.skc
 ```
 
 Multiple references can be sketched into one container in a single step (use `--num-threads` to sketch files in parallel; save order is not fixed):
 
 ```bash
-gdiff --num-threads 8 sketch -i ref_A.fasta ref_B.fasta ref_C.fasta -o combined.gs
+gdiff --num-threads 8 sketch -i ref_A.fasta ref_B.fasta ref_C.fasta -o combined.skc
 ```
 
 Uses sensible defaults (`k=27`, `w=33`, `h=11`). For large genomes, tune the LSH parameters to trade speed for sensitivity (see Options below).
@@ -44,10 +44,11 @@ You can provide multiple thresholds (up to 8) in one pass:
 gdiff map queries.fasta reference.skc -d 0.02 0.05 0.10 0.20 0.30 0.40 0.50 0.60 -l 500
 ```
 
-Or derive thresholds from the background null as tail probabilities:
+Without `-d`, thresholds come from the background null as tail probabilities (the default is `0.1 0.05 0.01 0.005`):
 
 ```bash
-gdiff map queries.fasta reference.skc --levels 0.05 0.01 -l 500
+gdiff map queries.fasta reference.skc -l 500
+gdiff map queries.fasta reference.skc --levels 0.2 0.1 0.05 0.02 -l 500
 ```
 
 To skip significance testing and just enumerate intervals:
@@ -58,33 +59,29 @@ gdiff map queries.fasta reference.skc -d 0.05 -l 500 --enum-only --sample-size 0
 
 ### 3. Merge sketches (optional)
 
-Combine sketches from multiple references into one file; gdiff maps against all of them in parallel. Prefer `gdiff sketch -i a.fa b.fa -o combined.gs` when starting from FASTA:
+Combine sketches from multiple references into one file; gdiff maps against all of them in parallel. Prefer `gdiff sketch -i a.fa b.fa -o combined.skc` when starting from FASTA:
 
 ```bash
-gdiff merge -i ref_A.gs ref_B.gs ref_C.gs -o combined.gs
+gdiff merge -i ref_A.skc ref_B.skc ref_C.skc -o combined.skc
 ```
 
 ### 4. Inspect a sketch
 
 ```bash
-gdiff info -i reference.gs
+gdiff info -i reference.skc
 ```
 
-### 5. Sample fixed-length distances
+### 5. Compare sketches (optional)
 
-Sample exact-length query regions and summarize their MLE distances:
+`dist` compares the sampled windows stored in sketches, so both inputs must have been created with `-l`:
 
 ```bash
-gdiff dist -i reference.gs -q queries.fasta -l 500 --sample-size 200 -o distance_summary.tsv
+gdiff dist ref_A.skc ref_B.skc -o distances.tsv
+gdiff dist combined.skc                 # every pair within one container
+gdiff dist --list-a a.txt --list-b b.txt
 ```
 
-Use `--output-samples` to write every valid sampled region and its distance
-instead of the per-reference summary (to stdout, or the file given by `-o`). The sample size applies to the entire query file, with
-each eligible sequence selected in proportion to its length via weighted
-reservoir sampling. Histograms are built only for sequences that claim sample
-slots and are discarded afterward. Use `-b/--bin-shift` to bin k-mers (as in
-`map`) and `--num-threads` to process references in parallel. Sampling is with
-replacement and is controlled by the global `--seed` option.
+Use `--output-samples` to write one row per sampled window instead of the per-pair summary. `--num-threads` processes pairs in parallel; the global `--seed` controls sampling at sketch time.
 
 ## Output format
 
@@ -130,13 +127,19 @@ In `--enum-only` mode, each row is an independent interval covering the k-mer bi
 
 | Option | Default | Description |
 |--------|--------|-------------|
-| `-i, --input-path` | (required) | Input FASTA/FASTQ file(s) or URL (gzip compatible) |
+| `-i, --input-path` | - | Input FASTA/FASTQ file(s) or URL (gzip compatible) |
+| `--input-list` | - | Read input paths from a file, one per line (optional `name<TAB>path`); combines with `-i` |
 | `-o, --output-path` | (required) | Output container (one or more sketches) |
-| `-k, --mer-len` | `27` | k-mer length (19–32) |
+| `-k, --mer-len` | `27` | k-mer length (19–31) |
 | `-w, --win-len` | `k+6` | Minimizer window length (>= k) |
-| `-h, --num-positions` | `max(floor(k/2)-2, k-16)` | Number of LSH positions (3–16) |
-| `--frac` | `1.0` | Keep k-mer if LSH(x) < frac · 2^2h; subsamples on top of minimizers |
-| `--num-threads` | `1` | Parallel input-file sketching threads |
+| `-h, --num-positions` | `max(floor(k/2)-2, k-16)` | Number of LSH positions |
+| `--frac` | `1.0` | Keep a k-mer if LSH(x) < frac · 2^2h; subsampling ratio |
+| `--strand-agnostic` / `--strand-aware` | `--strand-agnostic` | Canonical k-mers, or keep strand |
+| `-l` | `500` | Sampled window length in k-mers; **`0` stores buckets only** |
+| `--sample-size` | `1000` | Windows sampled across each genome |
+| `--keep-seq` | off | Store sampled windows as 2-bit packed bases instead of pre-resolved keys |
+
+`-l 0` produces a buckets-only sketch. `map` and `roll` work with it (they only need the reference index); `dist` needs sampled windows. By default sketches carry windows.
 
 ### `gdiff map`
 
@@ -144,59 +147,82 @@ Positional: `<query.fasta> <reference.skc>`.
 
 | Option | Default | Description |
 |--------|--------|-------------|
-| `-d, --dist-th` | - | Absolute distance threshold(s), up to 8; required unless `--levels` |
-| `--levels` | - | Two-sided tail probabilities (up to 4); thresholds are their empirical quantiles of the background; required unless `-d` |
+| `-d, --dist-th` | - | Absolute distance threshold(s): exactly 1 or 8; overrides `--levels` |
+| `--levels` | `0.1 0.05 0.01 0.005` | Two-sided tail probabilities: exactly 4; thresholds are their empirical quantiles |
 | `-l` | (required) | Minimum interval length in k-mers; also the background window length |
 | `-o, --output-path` | stdout | Write output to a file |
 | `--hdist-th` | `3` | Max Hamming distance for a k-mer hit (0–7) |
 | `--chisq` | `33.00051` | Chi-squared threshold for merging adjacent intervals |
 | `-b, --bin-shift` | `0` | Bin size = 2^b; groups consecutive k-mers |
-| `--sample-size` | `200` | Background windows sampled per reference (`0` = skip significance) |
+| `--sample-size` | `500` | Background windows sampled per reference (`0` = skip significance) |
 | `--enum-only` | off | Simple per-threshold enumeration instead of ordered removal |
 | `--per-sequence` | off | Measure significance against a per-query background |
 | `--verbosity` | `1` | Background and threshold report detail (0–1) |
-| `--num-threads` | `1` | Background-sampling and per-sequence scan threads |
 
-Distance thresholds may be given either directly (`-d`) or as tail probabilities of the background (`--levels`); the two are mutually exclusive. Providing more than one threshold runs them in one SIMD-wide pass.
+Distance thresholds may be given directly (`-d`, exactly 1 or 8 values) or as tail probabilities of the background (`--levels`, exactly 4 levels; the default). The two are mutually exclusive, and either way the run fills its SIMD lanes exactly: `-d` with 1 value uses the scalar path, everything else uses 8 lanes. Because the lower empirical quantiles often sit at the estimable floor (background windows that match almost perfectly), a floored lower quantile is lifted to the nearest higher distinct background distance and each later level takes the next distinct one; a warning says when that happens. If the background is too coarse to place eight distinct thresholds the run aborts, and `--sample-size` sets how finely the quantiles resolve.
 
-The background null is the empirical distribution of `-l`-long query windows scored against the reference. `PERCENTILE` and `FOLD` are the empirical rank and median ratio within that null; no parametric fit is used.
+The background null is the empirical distribution of `-l`-long query windows scored against the reference. `PERCENTILE` and `FOLD` are the empirical rank and median ratio within that null; no parametric fit is used. `map` only reads the reference's bucket index, so a buckets-only sketch (`-l 0`) is sufficient.
 
 ### `gdiff dist`
 
+Positional: `<sketch-a> [sketch-b]`.
+
 | Option | Default | Description |
 |--------|--------|-------------|
-| `-q, --query-path` | (required) | Query FASTA/FASTQ file or URL (gzip compatible) |
-| `-i, --sketch-path` | (required) | Container to query against |
-| `-l, --length` | (required) | Sampled region length in k-mers |
-| `-b, --bin-shift` | `0` | Bin size = 2^b; groups consecutive k-mers |
-| `--sample-size` | `200` | Regions sampled across the whole query file per reference |
-| `--hdist-th` | `4` | Max Hamming distance for a k-mer hit (0-7) |
-| `-o, --output-path` | stdout | Write summary output to a file |
-| `--output-samples` | off | Write per-sample output instead of the per-reference summary |
-| `--num-threads` | `1` | Parallel sketch/reference processing threads |
+| `--list-a`, `--list-b` | - | Read set A / set B as a list file of sketch containers |
+| `--hdist-th` | `3` | Maximum Hamming distance for a k-mer to match; capped at 2 for inputs >20 Mbp |
+| `--lr-th` | `10.828` | Likelihood-ratio cut for the reconciliation filter |
+| `--min-portion` | `0.66` | Apply the filter only if at least this fraction of windows exceeds `--lr-th` |
+| `-o, --output-path` | stdout | Write output to a file |
+| `--output-samples` | off | Write per-window sample rows instead of per-pair summaries |
 
-Summary rows contain:
+Inputs are containers whose sketches were created with `-l` (sampled windows). One positional compares every pair within that container; two compare the cross product of set A and set B. Pairs are reconciled across both directions.
+
+Summary output, one row per pair:
 
 ```
-QUERY_FILE  REF_ID  N  D_MED
+genome_a  genome_b  d  d_median  d_mean  d_upper  d_highest  d_ab  d_ba  n_ab  n_ba  n_ub  n_na  n_filtered
 ```
 
-`N` is the number of valid MLE samples. `D_MED` is the median of those
-distances. Sampled windows with no matching k-mer (zero hits within
-`--hdist-th`) have an undefined distance: they are excluded from the median
-and their count is reported on stderr. Sample detail rows contain one row per
-sampled window (unmapped windows carry NaN fields):
+`d` is the reconciled distance and `d_ab`/`d_ba` the two directional medians. `--output-samples` instead writes one row per sampled window:
 
 ```
 config  genome_a  genome_b  seq  start  end  strand  direction  d  lr_ub
 ```
 
-`LR_UB` is the likelihood-ratio statistic of the sample's distance against the
-sketch's max estimable distance.
+`LR_UB` is the likelihood-ratio statistic of the sample's distance against the sketch's maximum estimable distance. Coordinates are 1-based and inclusive; for strand-aware sketches each sample uses the lower of the forward and reverse-complement distances and reports the selected strand.
 
-Coordinates are 1-based and inclusive. For strand-aware sketches, each sample
-uses the lower of the forward and reverse-complement MLE distances and reports
-the selected strand.
+### `gdiff roll`
+
+Positional: `<query.fasta> <reference.skc>`.
+
+| Option | Default | Description |
+|--------|--------|-------------|
+| `-l` | (required) | Window length in k-mers |
+| `-s` | `-l` | Step between consecutive window starts |
+| `--hdist-th` | `3` | Maximum Hamming distance for a k-mer to match |
+| `-o, --output-path` | stdout | Write output to a file |
+
+### `gdiff merge`
+
+| Option | Default | Description |
+|--------|--------|-------------|
+| `-i, --sketch-paths` | (required) | Input containers to merge |
+| `-o, --output-path` | (required) | Path to store the merged container |
+
+### `gdiff info`
+
+| Option | Default | Description |
+|--------|--------|-------------|
+| `-i, --sketch-path` | (required) | Container to inspect |
+
+### Global options
+
+| Option | Default | Description |
+|--------|--------|-------------|
+| `--verbose` | off | Report progress even when stderr is not a terminal |
+| `--seed` | `0` | Random seed for the LSH and other randomness |
+| `--num-threads` | `1` | Worker threads per subcommand |
 
 ## Interactive visualization
 

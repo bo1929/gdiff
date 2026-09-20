@@ -1,21 +1,11 @@
 #ifndef _GDIFF_HPP
 #define _GDIFF_HPP
 
-#include <chrono>
-#include <ctime>
 #include <filesystem>
-#include "msg.hpp"
 #include "types.hpp"
-#include "random.hpp"
-#include "map.hpp"
-#include "dist.hpp"
-#include "sketch.hpp"
 #include "CLI11.hpp"
 
-#define VERSION "v0.1.0"
-#define PRINT_VERSION std::cerr << "gdiff version: " << VERSION << std::endl;
-
-extern uint32_t num_threads;
+inline constexpr const char* gdiff_version = "v0.2.0-rc";
 
 class MergeSC
 {

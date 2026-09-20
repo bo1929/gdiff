@@ -174,7 +174,7 @@ TEST_CASE("get_sdc values are finite") {
 
 } // TEST_SUITE
 
-TEST_SUITE("LLH<cm512_t>") {
+TEST_SUITE("LLH<cmlane_t>") {
 
 TEST_CASE("SIMD path produces same probabilities as scalar") {
   const uint32_t k = 27, h = 11, hdist_th = 4;
@@ -184,14 +184,14 @@ TEST_CASE("SIMD path produces same probabilities as scalar") {
   LLH<double> llh_scalar(k, h, rho, hdist_th, 0.1);
 
   // Create SIMD LLH with all 8 thresholds = 0.1
-  cm512_t dths{};
+  cmlane_t dths{};
   for (int i = 0; i < 8; ++i) dths[i] = 0.1;
-  LLH<cm512_t> llh_simd(k, h, rho, hdist_th, dths);
+  LLH<cmlane_t> llh_simd(k, h, rho, hdist_th, dths);
 
   // All 8 lanes should match the scalar fdc/sdc
   for (uint32_t d = 0; d <= hdist_th; ++d) {
-    cm512_t fdc = llh_simd.get_fdc(d);
-    cm512_t sdc = llh_simd.get_sdc(d);
+    cmlane_t fdc = llh_simd.get_fdc(d);
+    cmlane_t sdc = llh_simd.get_sdc(d);
     for (int i = 0; i < 8; ++i) {
       CHECK(fdc[i] == doctest::Approx(llh_scalar.get_fdc(d)).epsilon(tol));
       CHECK(sdc[i] == doctest::Approx(llh_scalar.get_sdc(d)).epsilon(tol));
@@ -203,15 +203,15 @@ TEST_CASE("SIMD path with varying thresholds") {
   const uint32_t k = 27, h = 11, hdist_th = 4;
   const double rho = 0.5;
 
-  cm512_t dths{};
+  cmlane_t dths{};
   for (int i = 0; i < 8; ++i) dths[i] = 0.05 * (i + 1);
-  LLH<cm512_t> llh_simd(k, h, rho, hdist_th, dths);
+  LLH<cmlane_t> llh_simd(k, h, rho, hdist_th, dths);
 
   // Each lane should match the corresponding scalar LLH
   for (int lane = 0; lane < 8; ++lane) {
     LLH<double> llh_scalar(k, h, rho, hdist_th, dths[lane]);
     for (uint32_t d = 0; d <= hdist_th; ++d) {
-      cm512_t fdc = llh_simd.get_fdc(d);
+      cmlane_t fdc = llh_simd.get_fdc(d);
       CHECK(fdc[lane] == doctest::Approx(llh_scalar.get_fdc(d)).epsilon(tol));
     }
   }
@@ -220,7 +220,7 @@ TEST_CASE("SIMD path with varying thresholds") {
 TEST_CASE("sign bitvector for mixed positive/negative thresholds") {
   const uint32_t k = 27, h = 11, hdist_th = 4;
   const double rho = 0.5;
-  cm512_t dths{};
+  cmlane_t dths{};
   dths[0] = 0.1;
   dths[1] = -0.1;
   dths[2] = 0.2;
@@ -230,7 +230,7 @@ TEST_CASE("sign bitvector for mixed positive/negative thresholds") {
   dths[6] = 0.4;
   dths[7] = -0.4;
 
-  LLH<cm512_t> llh(k, h, rho, hdist_th, dths);
+  LLH<cmlane_t> llh(k, h, rho, hdist_th, dths);
   auto [pos_bv, neg_bv] = llh.get_sign_bv();
 
   // Positive: lanes 0,2,4,6 -> bits 0,2,4,6 -> 0b01010101 = 0x55
