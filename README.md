@@ -83,44 +83,6 @@ gdiff dist --list-a a.txt --list-b b.txt
 
 Use `--output-samples` to write one row per sampled window instead of the per-pair summary. `--num-threads` processes pairs in parallel; the global `--seed` controls sampling at sketch time.
 
-## Output format
-
-The default (continuous) output is a tab-separated file with these columns:
-
-```
-QUERY_ID  SEQ_LEN  INTERVAL_START  INTERVAL_END  STRAND  IS_RC  REF_ID  DIST  MASK  D_INTERVAL  DIST_CONTIG  STRAND_DIFF  DIST_GENOME  PERCENTILE  FOLD  QVALUE  INFO  LR_UB
-```
-
-For strand-agnostic references the three strand columns (`STRAND`, `IS_RC`, `STRAND_DIFF`) are omitted, giving 15 columns. An example strand-aware row:
-
-```
-contig1  5200  120  3041  +  0  ref_A  0.04  1  (0, 0.05)  0.06  -0.02  0.05  0.003  0.8  0.012  8.3e+06  1200
-```
-
-| Column | Meaning |
-|--------|--------|
-| `QUERY_ID` | Query sequence name |
-| `SEQ_LEN` | Query length in base pairs |
-| `INTERVAL_START`, `INTERVAL_END` | 1-based coordinates of the detected interval |
-| `STRAND` | `+` = closer (lower distance), `-` = farther, `.` = unknown |
-| `IS_RC` | `0` = forward strand, `1` = reverse-complement |
-| `REF_ID` | Reference genome the interval was found against |
-| `DIST` | MLE evolutionary distance for this interval |
-| `MASK` | Which distance threshold(s) triggered this interval (bitmask) |
-| `D_INTERVAL` | Tightest bounds among satisfied thresholds, e.g. `(0, 0.05)` |
-| `DIST_CONTIG` | MLE distance of the entire query contig on this strand |
-| `STRAND_DIFF` | Difference between forward and reverse-complement contig distances |
-| `DIST_GENOME` | Genome-wide average distance across all queries |
-| `PERCENTILE` | Empirical significance of the interval distance within the background null (NaN = not tested) |
-| `FOLD` | Fold change: interval distance divided by null median |
-| `QVALUE` | Benjamini-Hochberg adjusted p-value (per strand) |
-| `INFO` | Observed Fisher information of the interval at `DIST` |
-| `LR_UB` | Likelihood-ratio statistic of `DIST` against the maximum estimable distance |
-
-Coordinates are 1-based and inclusive. Adjacent rows may share a boundary; the final row on each query strand spans to `SEQ_LEN`.
-
-In `--enum-only` mode, each row is an independent interval covering the k-mer bins that satisfy the threshold.
-
 ## Options
 
 ### `gdiff sketch`
