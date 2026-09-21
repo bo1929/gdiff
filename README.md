@@ -186,9 +186,62 @@ Positional: `<query.fasta> <reference.skc>`.
 | `--seed` | `0` | Random seed for the LSH and other randomness |
 | `--num-threads` | `1` | Worker threads per subcommand |
 
-## Interactive visualization
+## Visualization
 
-Use `plot.py` to explore intervals interactively:
+Two tools, two jobs.
+
+### `gviz.py` — one report for any output
+
+`gviz.py` turns a single `map`, `roll` or `dist` result file into a static HTML
+page: two or three panels and a filter bar. The panels never zoom, pan or hover —
+changing a filter redraws them, which is what keeps the page fast. Plotly.js comes
+from the CDN; `--inline` embeds it.
+
+```bash
+python gviz.py map-mus_pwk-v020rc.tsv            # 2 panels, 2.4 MB
+python gviz.py roll-mus_pwk-v020rc.tsv           # 3 panels, 3M windows in 4.5 s
+python gviz.py roll.tsv --seq chr7 --bins 6000   # one chromosome in fine bins, 0.7 MB
+python gviz.py dist-m1-v020rc.tsv --annotations genes.gff3 --open
+python gviz.py map.tsv --print-schema
+```
+
+Panels, position on x wherever the output has coordinates:
+
+| Input | Panels |
+|-------|--------|
+| `map` | interval track — one row per reference and direction, colour per reference, area ∝ length · significance along the sequence (-log10 q, q = 0.05 line) |
+| `roll` | distance profile per reference, binned and smoothed with a running median · reference x position heat map · unmapped-window map |
+| `dist` | pairwise distance matrix — square tiles, rows and columns in one shared order (nearest genomes adjacent), mirrored for all-by-all, values printed in the cells, empty tiles for pairs the file does not contain · estimator spread per pair · window accounting |
+| `dist --output-samples` | per-window profile · per-pair ECDF |
+
+Reading the report:
+
+- **Axes are pinned** to the full data extent (log axes to the enclosing powers of
+  ten), so filtering never rescales a plot or moves a label. Only the Sequence
+  selector changes the x range, because each sequence has its own length; `‹` and
+  `›` step through sequences, which are listed longest first.
+- **One sequence at a time** — the Sequence filter is a single select, so a 2.5 Gb
+  genome never becomes a smear. Sequences below 0.2 % of the assembly are left out
+  unless you pass `--keep-all`.
+- **Thresholds are named, not numbered in CLI terms**: the Threshold filter lists
+  e.g. `3 · closer d ≤ 0.000344`, reconstructed from the bracket each interval fell
+  into, and holds any combination.
+- **Colour** encodes a value (distance, -log10 q) with viridis; when colour encodes
+  a series it is the reference, in muted lichen tones.
+- `roll` drops unmapped windows instead of drawing gaps, averages each sequence
+  into ~1000 bins and smooths with a running median (`smoothing` control, default
+  5 points) so spikes do not drag the line; `log y` is a checkbox.
+- `--annotations genes.gff3` adds a gene track; a whole chromosome of genes is
+  dense by nature, so at most the 3,000 longest features are drawn and `--seq`
+  is the way to zoom in.
+
+Options: `--seq`, `--bins`, `--keep-all`, `--assembly-report`, `--annotations`,
+`--title`, `--inline`, `--kind`, `--print-schema`. Adding an output format means
+one branch in `kind_of`, a `prepare_*` and a `*_panels` function.
+
+### `plot.py` — phylogeny-aware interval explorer
+
+Use `plot.py` when a tree is part of the question:
 
 ```bash
 pip install -r plot-reqs.txt

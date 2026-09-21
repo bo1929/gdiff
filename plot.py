@@ -21,25 +21,6 @@ from plotrc import *  # noqa: F403
 # GDIFF TSV SCHEMA
 # =============================================================================
 
-GDIFF_COLUMNS = [
-    "QUERY_ID",
-    "SEQ_LEN",
-    "INTERVAL_START",
-    "INTERVAL_END",
-    "STRAND",
-    "IS_RC",
-    "REF_ID",
-    "DIST",
-    "MASK",
-    "D_INTERVAL",
-    "DIST_CONTIG",
-    "STRAND_DIFF",
-    "DIST_GENOME",
-    "PERCENTILE",
-    "FOLD",
-    "QVALUE",
-]
-
 PLOT_DIST_COL = "_PLOT_DIST"
 
 # STRAND: '+' = closer (lower-distance) strand, '-' = farther, '.' = unknown.
@@ -200,7 +181,8 @@ def is_enum_plot_mode(mode: str) -> bool:
 
 
 def load_gdiff_tsv(path: str) -> pd.DataFrame:
-    return normalize_gdiff_dataframe(pd.read_csv(path, sep="\t"))
+    # Every gdiff output is headed by `#` provenance lines, which pandas must be told to skip.
+    return normalize_gdiff_dataframe(pd.read_csv(path, sep="\t", comment="#"))
 
 
 # =============================================================================
@@ -2522,6 +2504,19 @@ def create_app(
     full_data = tree_data_for(full_tree, query)
     pruned_data = tree_data_for(pruned_tree, query) if has_pruned else full_data
     query_data = tree_data_for(query_tree, query) if has_query_pruned else full_data
+
+    # Enum mode bins intervals by distance threshold, so the plotting distance
+    # must be the D_INTERVAL bracket rather than the per-interval MLE DIST.
+    # DIST is finite whenever significance testing ran -- that is, for
+    # `map --enum-only` without `--sample-size 0`, since only the latter sets
+    # coordinates_only. Binning on DIST then yields one bin per distinct
+    # distance value (thousands) instead of the handful of thresholds the run
+    # actually used. Enum-lite files (DIST all NaN) already fall back to
+    # D_INTERVAL inside normalize_gdiff_dataframe; this makes the
+    # significance-tested variant behave identically. DIST_TH (legacy enum)
+    # already holds the threshold and is left alone.
+    if enum_ui and "DIST_TH" not in df.columns and "D_INTERVAL" in df.columns:
+        df[PLOT_DIST_COL] = df["D_INTERVAL"].map(parse_d_interval_upper)
 
     full_df = add_tip_order(df, full_data["tip_order"])
     pruned_df = add_tip_order(df, pruned_data["tip_order"]) if has_pruned else full_df
