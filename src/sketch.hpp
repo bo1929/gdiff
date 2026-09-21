@@ -61,10 +61,27 @@ private:
   friend class Container;
 };
 
-// One path per line, '#' lines skipped; "name<TAB>path" names the sketch.
 void read_path_list(const std::filesystem::path& list_path, vec<str>& paths, vec<str>& names);
 
-// True when two sketches may be compared or merged: everything but keep_seq must match.
+struct coord_win_t
+{
+  str qid;
+  uint64_t start = 0; // 1-based, inclusive
+  uint64_t end = 0;   // 1-based, inclusive
+};
+
+struct coord_group_t
+{
+  str genome;
+  vec<coord_win_t> wins_v;
+};
+
+// Parse a "genome<TAB>contig<TAB>start<TAB>finish" TSV; '#' lines and blanks are skipped.
+void read_coords_tsv(const std::filesystem::path& coords_path, vec<coord_group_t>& groups_v);
+
+// True when an input path from -i refers to the genome named in a --coords row.
+bool coord_genome_matches(const str& input_path, const str& genome);
+
 bool compatible_configs(const sketch_config_t& a, const sketch_config_t& b);
 
 class BaseLSH
@@ -115,13 +132,18 @@ private:
                        const Sketch& built,
                        const window_sample_t& sample);
   void write_windows(std::ostream& os, const window_sample_t& sample);
-  window_sample_t sample_windows(const str& input_path, uint64_t& ntotal_bp, uint64_t& nvalid_bp);
+  window_sample_t
+  sample_windows(const str& input_path, const vec<coord_win_t>& coords_v, uint64_t& ntotal_bp, uint64_t& nvalid_bp);
   sketch_config_t make_config(uint64_t timestamp) const;
+  // Spread the --coords rows over paths_v; warns about rows no input claims.
+  void resolve_coords();
 
   vec<str> paths_v;
   vec<str> rnames_v; // optional per-input names from --input-list
   std::filesystem::path input_list_path;
+  std::filesystem::path coords_path;
   std::filesystem::path sketch_path;
+  vec<vec<coord_win_t>> coords_v; // per input index; read-only once process() starts
   params params;
 };
 

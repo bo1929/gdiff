@@ -151,12 +151,8 @@ namespace {
   }
 
   // Per-window counts for one side; rc stays empty in canonical mode.
-  void query_windows(const Sketch& query,
-                     const Sketch& reference,
-                     uint32_t hdist_th,
-                     uint64_t nmers_limit,
-                     strand_counts_t& fw,
-                     strand_counts_t& rc)
+  void
+  query_windows(const Sketch& query, const Sketch& reference, uint32_t hdist_th, strand_counts_t& fw, strand_counts_t& rc)
   {
     const vec<window_t>& wins_v = query.get_windows().wins_v;
     const size_t nwins = wins_v.size();
@@ -186,7 +182,7 @@ namespace {
     str cseq;
     for (size_t wix = 0; wix < nwins; ++wix) {
       packs.unpack(wix, cseq);
-      const uint64_t nmers = std::min(nmers_limit, wins_v[wix].end - wins_v[wix].start);
+      const uint64_t nmers = wins_v[wix].end - wins_v[wix].start;
       if (canonical) {
         window_counts_t agg(hdist_th);
         scan_mers_range<true>(ctx, cseq.data(), 0, nmers, agg);
@@ -226,11 +222,9 @@ samples_t process_samples(const Sketch& query, const Sketch& reference, uint32_t
   const bool canonical = query.is_canonical();
   const vec<window_t>& wins_v = query.get_windows().wins_v;
   const size_t nwins = wins_v.size();
-  // Compatible sketches share a window length, so the query's is authoritative.
-  const uint64_t nmers_limit = query.get_config().tau;
 
   strand_counts_t fw, rc;
-  query_windows(query, reference, hdist_th, nmers_limit, fw, rc);
+  query_windows(query, reference, hdist_th, fw, rc);
 
   samples_t out;
   out.windows_v.reserve(nwins);

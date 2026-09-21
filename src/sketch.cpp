@@ -2,9 +2,11 @@
 
 #include <algorithm>
 #include <atomic>
+#include <charconv>
 #include <chrono>
 #include <numeric>
 #include <sstream>
+#include <unordered_map>
 
 #include "common.hpp"
 #include "container.hpp"
@@ -16,6 +18,14 @@
 #include "tpool.hpp"
 
 namespace {
+
+  // One window to store: the k-mer range [start, end) of source sequence bix.
+  struct win_req_t
+  {
+    uint64_t bix = 0;
+    uint64_t start = 0;
+    uint64_t end = 0;
+  };
 
   class strbuf_t : public std::streambuf
   {
@@ -151,7 +161,126 @@ namespace {
     write_array(os, pool.win_ix_v.data(), n);
   }
 
+  // Split on tabs; trailing empty fields are dropped so a trailing tab or CR is harmless.
+  vec<str> split_tabs(const str& line)
+  {
+    vec<str> fields_v;
+    size_t begin = 0;
+    while (true) {
+      const size_t tab = line.find('\t', begin);
+      if (tab == str::npos) {
+        fields_v.push_back(line.substr(begin));
+        break;
+      }
+      fields_v.push_back(line.substr(begin, tab - begin));
+      begin = tab + 1;
+    }
+    while (!fields_v.empty() && fields_v.back().empty())
+      fields_v.pop_back();
+    return fields_v;
+  }
+
+  bool parse_u64(const str& field, uint64_t& out)
+  {
+    const char* first = field.data();
+    const char* last = first + field.size();
+    const auto res = std::from_chars(first, last, out);
+    return res.ec == std::errc() && res.ptr == last;
+  }
+
+  // Resolve one input's --coords rows into k-mer ranges; rows that cannot be honored are
+  // warned about and dropped rather than silently misplaced.
+  void append_coord_windows(const vec<coord_win_t>& coords_v,
+                            const vec<str>& qid_v,
+                            const vec<uint64_t>& len_v,
+                            uint64_t k,
+                            vec<win_req_t>& reqs_v)
+  {
+    if (coords_v.empty()) return;
+
+    // Sequence ID -> source index; a repeated ID keeps the first occurrence.
+    std::unordered_map<str, size_t> ix_by_qid;
+    ix_by_qid.reserve(qid_v.size());
+    for (size_t i = 0; i < qid_v.size(); ++i)
+      ix_by_qid.emplace(qid_v[i], i);
+
+    for (const coord_win_t& cw : coords_v) {
+      const auto it = ix_by_qid.find(cw.qid);
+      if (it == ix_by_qid.end()) {
+        warn_msg(concat_msg("--coords: no sequence ", cw.qid, " in this input; window ", cw.start, "-", cw.end, " skipped"));
+        continue;
+      }
+      const uint64_t len = len_v[it->second];
+      const uint64_t end = std::min(cw.end, len);
+      // 1-based inclusive bases -> 0-based half-open k-mer indices.
+      if (end < cw.start + k - 1) {
+        warn_msg(concat_msg("--coords: ",
+                            cw.qid,
+                            ":",
+                            cw.start,
+                            "-",
+                            cw.end,
+                            end != cw.end ? concat_msg(" (clamped to the sequence end ", end, ")") : "",
+                            " spans fewer than k=",
+                            k,
+                            " bases; window skipped"));
+        continue;
+      }
+      if (end != cw.end) {
+        warn_msg(concat_msg(
+          "--coords: ", cw.qid, ":", cw.start, "-", cw.end, " runs past the sequence end (", len, "); clamped to ", end));
+      }
+      reqs_v.push_back({it->second, cw.start - 1, end + 1 - k});
+    }
+  }
+
 } // namespace
+
+void read_coords_tsv(const std::filesystem::path& coords_path, vec<coord_group_t>& groups_v)
+{
+  std::ifstream in(coords_path);
+  check_fstream(in, "Cannot open the coordinates file", coords_path.string());
+  groups_v.clear();
+
+  std::unordered_map<str, size_t> ix_by_genome;
+  str line;
+  uint64_t lineno = 0;
+  while (std::getline(in, line)) {
+    ++lineno;
+    const size_t first = line.find_first_not_of(" \t\r");
+    if (first == str::npos || line[first] == '#') continue;
+    const size_t last = line.find_last_not_of(" \t\r");
+    const vec<str> fields_v = split_tabs(line.substr(first, last - first + 1));
+    if (fields_v.size() != 4) {
+      error_exit(concat_msg(coords_path.string(),
+                            ":",
+                            lineno,
+                            ": expected 4 tab-separated fields (genome, contig, start, finish); got ",
+                            fields_v.size()));
+    }
+    coord_win_t win;
+    win.qid = fields_v[1];
+    if (fields_v[0].empty() || win.qid.empty() || !parse_u64(fields_v[2], win.start) || !parse_u64(fields_v[3], win.end) ||
+        win.start == 0 || win.end < win.start) {
+      error_exit(concat_msg(coords_path.string(),
+                            ":",
+                            lineno,
+                            ": expected genome<TAB>contig<TAB>start<TAB>finish with 1-based inclusive "
+                            "coordinates and start <= finish"));
+    }
+    const auto [it, inserted] = ix_by_genome.emplace(fields_v[0], groups_v.size());
+    if (inserted) groups_v.push_back({fields_v[0], {}});
+    groups_v[it->second].wins_v.push_back(std::move(win));
+  }
+  if (groups_v.empty()) warn_msg(concat_msg("--coords: no coordinate windows in ", coords_path.string()));
+}
+
+bool coord_genome_matches(const str& input_path, const str& genome)
+{
+  if (input_path == genome) return true;
+  const str input_name = std::filesystem::path(input_path).filename().string();
+  return input_name == genome || input_name == std::filesystem::path(genome).filename().string();
+}
 
 Sketch::Sketch(const sketch_config_t& cfg, str rname, Buckets&& buckets, double card, double rho)
   : rname(std::move(rname))
@@ -356,6 +485,10 @@ bool SketchSC::validate_configuration()
     is_invalid = true;
     cerr_msg("-l must be 0 (no windows) or at least k (-k); got ", params.tau);
   }
+  if (params.tau == 0 && !coords_path.empty()) {
+    is_invalid = true;
+    cerr_msg("--coords requires -l > 0; with -l 0 no windows are stored");
+  }
   if (params.sample_size == 0 || params.sample_size > 65535) {
     is_invalid = true;
     cerr_msg("--sample-size must be in [1, 65535]; got ", params.sample_size);
@@ -382,12 +515,14 @@ sketch_config_t SketchSC::make_config(uint64_t timestamp) const
   return cfg;
 }
 
-window_sample_t SketchSC::sample_windows(const str& input_path, uint64_t& ntotal_bp, uint64_t& nvalid_bp)
+window_sample_t
+SketchSC::sample_windows(const str& input_path, const vec<coord_win_t>& coords_v, uint64_t& ntotal_bp, uint64_t& nvalid_bp)
 {
   const lsh_masks_t masks = get_lsh_masks(k);
 
-  // Pass 1: sequence lengths only.
+  // Pass 1: sequence lengths and IDs. The IDs are what --coords rows are resolved against.
   vec<uint64_t> len_v;
+  vec<str> qid_v;
   ntotal_bp = 0;
   nvalid_bp = 0;
   {
@@ -398,6 +533,7 @@ window_sample_t SketchSC::sample_windows(const str& input_path, uint64_t& ntotal
       more = qs.read_next_batch();
       for (const qseq_t& q : qs.get_batch_v()) {
         len_v.push_back(q.seq.size());
+        qid_v.push_back(q.qid);
         ntotal_bp += q.seq.size();
         for (const char c : q.seq)
           if (SEQ_NT4_TABLE[static_cast<uint8_t>(c)] < 4) ++nvalid_bp;
@@ -405,48 +541,77 @@ window_sample_t SketchSC::sample_windows(const str& input_path, uint64_t& ntotal
     }
   }
 
-  if (params.tau == 0) return window_sample_t{}; // buckets-only sketch
-
-  // Which windows to keep, spread over every sequence of this input.
-  const window_plan_t wp = make_window_plan(len_v, k, params.tau, 0, params.sample_size, gen);
-  const uint64_t nwins = wp.nwins();
-
-  window_sample_t sample;
-  if (nwins == 0) {
-    warn_msg(concat_msg("No eligible windows in ", input_path, " for -l=", params.tau));
-    return sample;
+  if (params.tau == 0) {
+    if (!coords_v.empty()) error_exit("--coords requires -l > 0: with -l 0 no windows are stored");
+    return window_sample_t{}; // buckets-only sketch
   }
 
+  // Every window to store: the -l/--sample-size draw plus the --coords rows. A requested
+  // window keeps its own length, which need not be -l.
+  vec<win_req_t> reqs_v;
+  const window_plan_t wp = make_window_plan(len_v, k, params.tau, 0, params.sample_size, gen);
+  for (const window_plan_t::source_t& src : wp.sources_v)
+    for (const uint64_t start : src.starts_v)
+      reqs_v.push_back({src.bix, start, start + params.tau});
+  append_coord_windows(coords_v, qid_v, len_v, k, reqs_v);
+
+  if (reqs_v.empty()) {
+    warn_msg(concat_msg("No eligible windows in ", input_path, " for -l=", params.tau));
+    return window_sample_t{};
+  }
+
+  // Grouped by source and deduplicated: a requested window may repeat a sampled one.
+  std::sort(reqs_v.begin(), reqs_v.end(), [](const win_req_t& a, const win_req_t& b) {
+    if (a.bix != b.bix) return a.bix < b.bix;
+    if (a.start != b.start) return a.start < b.start;
+    return a.end < b.end;
+  });
+  reqs_v.erase(std::unique(reqs_v.begin(),
+                           reqs_v.end(),
+                           [](const win_req_t& a, const win_req_t& b) {
+                             return a.bix == b.bix && a.start == b.start && a.end == b.end;
+                           }),
+               reqs_v.end());
+  // win_ix_v indexes windows in 16 bits, so the stored count has to stay within its range.
+  if (reqs_v.size() > std::numeric_limits<uint16_t>::max()) {
+    error_exit(concat_msg("Too many windows for ", input_path, ": ", reqs_v.size(), " (max 65535); lower --sample-size"));
+  }
+  const uint64_t nwins = reqs_v.size();
+
+  window_sample_t sample;
   sample.wins_v.reserve(nwins);
   if (params.keep_seq) {
-    // Exact payload size for full-length windows: reserve once instead of resizing per window.
-    const uint64_t total_bases = nwins * (params.tau + k - 1);
+    // Exact payload size for the requested windows: reserve once instead of resizing per window.
+    uint64_t total_bases = 0;
+    for (const win_req_t& req : reqs_v)
+      total_bases += req.end - req.start + k - 1;
     sample.packs.packed_v.reserve(static_cast<size_t>((total_bases + 31) / 32));
     sample.packs.nmask_v.reserve(static_cast<size_t>((total_bases + 63) / 64));
     sample.packs.boffset_v.reserve(nwins + 1);
     sample.packs.boffset_v.push_back(0);
   }
 
-  // Pass 2: re-stream and extract only the sampled windows.
+  // Pass 2: re-stream and extract only the requested windows.
   QSeq qs(input_path);
   vec<uint64_t> tmp_fw_v, tmp_rc_v;
   size_t pidx = 0;
   size_t s_ix = 0;
   bool more = true;
-  while (more && pidx < wp.sources_v.size()) {
+  while (more && pidx < reqs_v.size()) {
     qs.clear();
     more = qs.read_next_batch();
     for (const qseq_t& q : qs.get_batch_v()) {
       const size_t scurr_ix = s_ix++;
-      while (pidx < wp.sources_v.size() && wp.sources_v[pidx].bix < scurr_ix)
+      while (pidx < reqs_v.size() && reqs_v[pidx].bix < scurr_ix)
         ++pidx;
-      if (pidx >= wp.sources_v.size()) break;
-      if (wp.sources_v[pidx].bix != scurr_ix) continue;
+      if (pidx >= reqs_v.size()) break;
+      if (reqs_v[pidx].bix != scurr_ix) continue;
       const uint64_t L = q.seq.size();
       const char* cseq = q.seq.data();
 
-      for (const uint64_t jx : wp.sources_v[pidx].starts_v) {
-        const uint64_t jy = jx + params.tau;
+      while (pidx < reqs_v.size() && reqs_v[pidx].bix == scurr_ix) {
+        const uint64_t jx = reqs_v[pidx].start;
+        const uint64_t jy = reqs_v[pidx].end;
         const uint16_t wix = static_cast<uint16_t>(sample.wins_v.size());
 
         window_t win;
@@ -575,6 +740,35 @@ scentry SketchSC::write_sketch(str& bytes,
   return e;
 }
 
+void SketchSC::resolve_coords()
+{
+  coords_v.assign(paths_v.size(), {});
+  if (coords_path.empty()) return;
+
+  vec<coord_group_t> groups_v;
+  read_coords_tsv(coords_path, groups_v);
+  uint64_t nforced = 0;
+  uint64_t nmatched_inputs = 0;
+  for (const coord_group_t& group : groups_v) {
+    uint64_t nmatched = 0;
+    for (size_t i = 0; i < paths_v.size(); ++i) {
+      if (!coord_genome_matches(paths_v[i], group.genome)) continue;
+      coords_v[i].insert(coords_v[i].end(), group.wins_v.begin(), group.wins_v.end());
+      ++nmatched;
+    }
+    if (nmatched == 0) {
+      warn_msg(concat_msg("--coords: no input matches ", group.genome, "; ", group.wins_v.size(), " window(s) ignored"));
+      continue;
+    }
+    nforced += group.wins_v.size() * nmatched;
+    nmatched_inputs += nmatched;
+    if (nmatched > 1) {
+      warn_msg(concat_msg("--coords: ", group.genome, " matches ", nmatched, " inputs; its windows go into each"));
+    }
+  }
+  cerr_msg("--coords: ", nforced, " window(s) for ", nmatched_inputs, " input(s) from ", coords_path.string());
+}
+
 void SketchSC::process()
 {
   if (!input_list_path.empty()) {
@@ -584,6 +778,7 @@ void SketchSC::process()
     rnames_v.insert(rnames_v.begin(), list_names_v.begin(), list_names_v.end());
   }
   if (paths_v.empty()) error_exit("No input files provided! Use -i <path> and/or --input-list <file>.");
+  resolve_coords();
 
   const uint64_t nsketches = paths_v.size();
   const uint32_t nthreads = std::max(1u, num_threads);
@@ -626,7 +821,7 @@ void SketchSC::process()
       Sketch built = build_sketch(input_path, make_config(timestamp), rname);
 
       uint64_t ntotal_bp = 0, nvalid_bp = 0;
-      window_sample_t sample = sample_windows(input_path, ntotal_bp, nvalid_bp);
+      window_sample_t sample = sample_windows(input_path, coords_v[i], ntotal_bp, nvalid_bp);
 
       pending_v[i].rel = write_sketch(pending_v[i].bytes, timestamp, ntotal_bp, nvalid_bp, built, sample);
       const uint64_t n = ndone.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -665,6 +860,11 @@ SketchSC::SketchSC(CLI::App& sc)
                 input_list_path,
                 "Read input paths from a file, one per line "
                 "(optional sketch name + TAB + path); combines with -i")
+    ->check(CLI::ExistingFile);
+  sc.add_option("--coords",
+                coords_path,
+                "Force extra windows into the pool from a TSV of "
+                "genome<TAB>contig<TAB>start<TAB>finish with 1-based inclusive base coordinates; combines with -i")
     ->check(CLI::ExistingFile);
   sc.add_option("-o,--output-path", sketch_path, "Path to store the resulting binary container")->required();
   sc.add_option("-k,--mer-len", k, "Length of k-mers [27]")->check(CLI::Range(19, 31));

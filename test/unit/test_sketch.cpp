@@ -7,9 +7,11 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <random>
 #include <set>
 #include <sstream>
+#include <tuple>
 
 namespace {
 
@@ -24,6 +26,13 @@ namespace {
     const std::string cmd = GDIFF_BIN + " sketch " + args + " -o " + path.string() + " >/dev/null 2>&1";
     if (std::system(cmd.c_str()) != 0) return {};
     return path;
+  }
+
+  // The exit status of a sketch command expected to fail; the container goes to `out`.
+  int run_sketch_rc(const std::string& args, const std::filesystem::path& out)
+  {
+    const std::string cmd = GDIFF_BIN + " sketch " + args + " -o " + out.string() + " >/dev/null 2>&1";
+    return std::system(cmd.c_str());
   }
 
   // The i-th (0-based) tab-separated field of a TSV line; empty when the line is too short.
@@ -97,6 +106,24 @@ namespace {
     for (const window_t& w : sk.get_windows().wins_v)
       v.push_back(w.start);
     return v;
+  }
+
+  // Write a --coords TSV body and return its path.
+  std::filesystem::path write_coords(const std::string& name, const std::string& body)
+  {
+    const auto p = test_util::path(name + ".tsv");
+    std::ofstream out(p);
+    out << body;
+    return p;
+  }
+
+  // Every window of a sketch as (qid, start, end), for membership checks.
+  std::set<std::tuple<std::string, uint64_t, uint64_t>> window_keys(const Sketch& sk)
+  {
+    std::set<std::tuple<std::string, uint64_t, uint64_t>> keys;
+    for (const window_t& w : sk.get_windows().wins_v)
+      keys.emplace(w.qid, w.start, w.end);
+    return keys;
   }
 
 } // namespace
@@ -335,6 +362,133 @@ TEST_SUITE("container")
     std::filesystem::remove(fa);
     std::filesystem::remove(pool);
     std::filesystem::remove(seq);
+  }
+
+  TEST_CASE("coords rows join the pool and keep their own span" * doctest::skip(!gdiff_available()))
+  {
+    const auto fa = test_util::write_fasta("cont_coord", 120000, 12);
+    // genome paths may be full paths or bare file names; rows are 1-based inclusive.
+    const std::string row_a = fa.string() + "\tcont_coord\t1001\t2000\n";
+    const std::string row_b = fa.filename().string() + "\tcont_coord\t50001\t51000\n";
+    const auto coords = write_coords("cont_coord", row_a + row_b);
+    const auto pool = run_sketch("cont_coord_pool", "-i " + fa.string() + " -l 500 --coords " + coords.string());
+    const auto seq = run_sketch("cont_coord_seq", "-i " + fa.string() + " -l 500 --keep-seq --coords " + coords.string());
+    REQUIRE_FALSE(pool.empty());
+    REQUIRE_FALSE(seq.empty());
+
+    // -l 500 (1000 bases) -> k-mer span [start, end - k + 1); both windows are wider than -l.
+    const std::set<std::tuple<std::string, uint64_t, uint64_t>> want{
+      {"cont_coord", 1000, 1974}, {"cont_coord", 50000, 50974}};
+
+    const Sketch ps = Container(pool).open(0), qs = Container(seq).open(0);
+    const auto pkeys = window_keys(ps), qkeys = window_keys(qs);
+    for (const auto& key : want) {
+      CHECK(pkeys.count(key) == 1);
+      CHECK(qkeys.count(key) == 1);
+    }
+    // The sampled draw is untouched: only the two requested windows are added.
+    CHECK(ps.get_windows().wins_v.size() == 1002);
+    CHECK(qs.get_windows().wins_v.size() == 1002);
+
+    // Random sequence: every k-mer in a requested window is valid, and both representations agree.
+    for (const window_t& w : ps.get_windows().wins_v) {
+      if (!want.count({w.qid, w.start, w.end})) continue;
+      CHECK(w.nvalid_fw == w.end - w.start);
+      CHECK(w.nvalid_rc == 0);
+      CHECK(qkeys.count({w.qid, w.start, w.end}) == 1);
+    }
+
+    std::filesystem::remove(fa);
+    std::filesystem::remove(coords);
+    std::filesystem::remove(pool);
+    std::filesystem::remove(seq);
+  }
+
+  TEST_CASE("coords windows reach dist with their requested coordinates" * doctest::skip(!gdiff_available()))
+  {
+    const auto fa = test_util::write_fasta("cont_cd", 120000, 13);
+    const auto coords = write_coords("cont_cd", fa.filename().string() + "\tcont_cd\t20001\t23000\n");
+    const auto pool = run_sketch("cont_cd_pool", "-i " + fa.string() + " -l 500 --coords " + coords.string());
+    const auto seq = run_sketch("cont_cd_seq", "-i " + fa.string() + " -l 500 --keep-seq --coords " + coords.string());
+    REQUIRE_FALSE(pool.empty());
+    REQUIRE_FALSE(seq.empty());
+
+    const std::string samples = run_dist("--output-samples " + pool.string() + " " + seq.string());
+    REQUIRE_FALSE(samples.empty());
+
+    // The pool and the keep-seq records have to score the 3000-base window identically, even
+    // though it is six times -l: the seq path must not truncate it to the configured -l. lr_ub
+    // is the sharp check: it counts the k-mers behind the estimate, so truncation shows up even
+    // where the two representations agree on d.
+    std::istringstream in(samples);
+    std::string line;
+    REQUIRE(std::getline(in, line)); // column header
+    std::map<std::string, std::string> d_by_direction, lr_by_direction;
+    while (std::getline(in, line)) {
+      if (line.empty()) continue;
+      // Filter on both endpoints, so a sampled window that merely starts at 20001 is ignored.
+      if (field(line, 4) != "20001" || field(line, 5) != "23000") continue;
+      CHECK(field(line, 3) == "cont_cd");
+      d_by_direction[field(line, 7)] = field(line, 8);
+      lr_by_direction[field(line, 7)] = field(line, 9);
+    }
+    REQUIRE(d_by_direction.count("ab") == 1);
+    REQUIRE(d_by_direction.count("ba") == 1);
+    CHECK(d_by_direction["ab"] == d_by_direction["ba"]);
+    CHECK(d_by_direction["ab"] != "nan");
+    CHECK(lr_by_direction["ab"] == lr_by_direction["ba"]);
+    CHECK(lr_by_direction["ab"] != "nan");
+
+    std::filesystem::remove(fa);
+    std::filesystem::remove(coords);
+    std::filesystem::remove(pool);
+    std::filesystem::remove(seq);
+  }
+
+  TEST_CASE("unusable coords rows are dropped and malformed ones rejected" * doctest::skip(!gdiff_available()))
+  {
+    const auto fa = test_util::write_fasta("cont_cdbad", 120000, 14);
+    const std::string genome = fa.filename().string();
+    // An unknown contig, a window shorter than k, a window clamped away, one clamped but kept,
+    // and a genome no input claims.
+    const std::string row_a = genome + "\tcont_nope\t1\t500\n";
+    const std::string row_b = genome + "\tcont_cdbad\t100\t110\n";
+    const std::string row_c = genome + "\tcont_cdbad\t119990\t121000\n";
+    const std::string row_d = genome + "\tcont_cdbad\t119000\t125000\n";
+    const std::string row_e = "other.fa\tcont_cdbad\t1\t500\n";
+    const auto coords = write_coords("cont_cdbad", row_a + row_b + row_c + row_d + row_e);
+
+    const auto skc = test_util::path("cont_cdbad.gs");
+    const auto log = test_util::path("cont_cdbad.log");
+    const std::string cmd = GDIFF_BIN + " sketch -i " + fa.string() + " -l 500 --coords " + coords.string() +
+                            " -o " + skc.string() + " >/dev/null 2> " + log.string();
+    REQUIRE(std::system(cmd.c_str()) == 0);
+
+    // Every unusable row is named in a warning; only the clamped-but-kept row reaches the pool.
+    const std::string err = test_util::read_file(log);
+    CHECK(err.find("no sequence cont_nope") != std::string::npos);
+    CHECK(err.find("spans fewer than k=27") != std::string::npos);
+    CHECK(err.find("(clamped to the sequence end 120000)") != std::string::npos);
+    CHECK(err.find("runs past the sequence end (120000); clamped to 120000") != std::string::npos);
+    CHECK(err.find("no input matches other.fa") != std::string::npos);
+    const auto keys = window_keys(Container(skc).open(0));
+    CHECK(keys.count({"cont_cdbad", 118999, 119974}) == 1); // 119000..120000 in k-mer indices
+    CHECK(keys.size() == 1001);
+
+    // A row without a contig is a hard error: it must never be read as whole-file offsets.
+    const auto bad = write_coords("cont_cdbad3", genome + "\t1001\t2000\n");
+    const auto junk = test_util::path("cont_cdbad_junk.gs");
+    CHECK(run_sketch_rc("-i " + fa.string() + " -l 500 --coords " + bad.string(), junk) != 0);
+
+    // --coords cannot be honored without windows.
+    CHECK(run_sketch_rc("-i " + fa.string() + " -l 0 --coords " + coords.string(), junk) != 0);
+
+    std::filesystem::remove(fa);
+    std::filesystem::remove(coords);
+    std::filesystem::remove(bad);
+    std::filesystem::remove(skc);
+    std::filesystem::remove(log);
+    std::filesystem::remove(junk);
   }
 
   TEST_CASE("seq windows unpack to the sampled length" * doctest::skip(!gdiff_available()))
