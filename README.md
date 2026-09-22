@@ -98,10 +98,12 @@ Use `--output-samples` to write one row per sampled window instead of the per-pa
 | `--frac` | `1.0` | Keep a k-mer if LSH(x) < frac · 2^2h; subsampling ratio |
 | `--strand-agnostic` / `--strand-aware` | `--strand-agnostic` | Canonical k-mers, or keep strand |
 | `-l` | `500` | Sampled window length in k-mers; **`0` stores buckets only** |
-| `--sample-size` | `1000` | Windows sampled across each genome |
+| `--sample-size` | `1000` | Windows sampled across each genome; capped by the eligible starts |
 | `--keep-seq` | off | Store sampled windows as 2-bit packed bases instead of pre-resolved keys |
 
 `-l 0` produces a buckets-only sketch. `map` and `roll` work with it (they only need the reference index); `dist` needs sampled windows. By default sketches carry windows.
+
+A window of `-l L` spans `L + k - 1` bases, so a sequence shorter than that contributes no windows and `--sample-size` is an upper bound rather than a promise: the draw cannot exceed the eligible starts across the input. `gdiff sketch` warns when it stores fewer than requested and `gdiff info -i <container>` reports the number actually stored (`Windows:`), which is also the number of rows `dist --output-samples` emits per direction.
 
 ### `gdiff map`
 

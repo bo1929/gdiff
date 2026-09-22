@@ -15,6 +15,7 @@
 #include <sstream>
 #include <string>
 #include <unistd.h>
+#include <vector>
 
 namespace test_util {
 
@@ -85,6 +86,24 @@ inline std::filesystem::path write_fasta(const std::string& name, uint64_t len, 
     if ((i + 1) % 80 == 0) out << "\n";
   }
   out << "\n";
+  return p;
+}
+
+// The same, but one record per requested contig length; the i-th record is named `<name>_<i>`.
+inline std::filesystem::path write_fasta_multi(const std::string& name, const std::vector<uint64_t>& lens, uint64_t seed)
+{
+  const auto p = path(name + ".fa");
+  std::mt19937_64 rng(seed);
+  const char bases[] = "ACGT";
+  std::ofstream out(p);
+  for (size_t r = 0; r < lens.size(); ++r) {
+    out << ">" << name << "_" << r << "\n";
+    for (uint64_t i = 0; i < lens[r]; ++i) {
+      out << bases[rng() & 3];
+      if ((i + 1) % 80 == 0) out << "\n";
+    }
+    out << "\n";
+  }
   return p;
 }
 

@@ -413,8 +413,30 @@ window_sample_t SketchSC::sample_windows(const str& input_path, uint64_t& ntotal
 
   window_sample_t sample;
   if (nwins == 0) {
-    warn_msg(concat_msg("No eligible windows in ", input_path, " for -l=", params.tau));
+    warn_msg(concat_msg("No eligible windows in ",
+                        input_path,
+                        " for -l=",
+                        params.tau,
+                        ": every sequence is shorter than the ",
+                        wp.nwinmers + k - 1,
+                        " bp a window spans"));
     return sample;
+  }
+  // The draw cannot exceed the eligible starts
+  if (nwins < params.sample_size) {
+    warn_msg(concat_msg("Only ",
+                        nwins,
+                        " window(s) stored for ",
+                        input_path,
+                        " (--sample-size ",
+                        params.sample_size,
+                        "): ",
+                        wp.sources_v.size(),
+                        " of ",
+                        len_v.size(),
+                        " sequence(s) reach the ",
+                        wp.nwinmers + k - 1,
+                        " bp a window spans"));
   }
 
   sample.wins_v.reserve(nwins);
@@ -444,8 +466,9 @@ window_sample_t SketchSC::sample_windows(const str& input_path, uint64_t& ntotal
       if (wp.sources_v[pidx].bix != scurr_ix) continue;
       const uint64_t L = q.seq.size();
       const char* cseq = q.seq.data();
+      const window_plan_t::source_t& src = wp.sources_v[pidx];
 
-      for (const uint64_t jx : wp.sources_v[pidx].starts_v) {
+      for (const uint64_t jx : src.starts_v) {
         const uint64_t jy = jx + params.tau;
         const uint16_t wix = static_cast<uint16_t>(sample.wins_v.size());
 
@@ -490,8 +513,9 @@ window_sample_t SketchSC::sample_windows(const str& input_path, uint64_t& ntotal
         }
 
         sample.wins_v.push_back(std::move(win));
-        ++pidx;
       }
+      // One plan entry per eligible sequence: advance only after all of its windows are stored.
+      ++pidx;
     }
   }
 

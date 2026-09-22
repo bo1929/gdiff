@@ -749,6 +749,50 @@ TEST_SUITE("CLI surface")
     CHECK(ca.open(0).get_buckets().get_nkmers() == cb.open(0).get_buckets().get_nkmers());
   }
 
+  TEST_CASE("windows are sampled across every contig, not just the first" *
+            doctest::skip(!gdiff_available()))
+  {
+    // 1000, 2000 and 3000 bp contigs carry 479, 1479 and 2479 eligible 500-mer starts: far more
+    // than the 200 requested, so the sample must be spread over all three sequences. A plan cursor
+    // that advanced once per emitted window instead of once per sequence stopped after the first.
+    const std::vector<uint64_t> lens{1000, 2000, 3000};
+    const auto fa = test_util::write_fasta_multi("spread_src", lens, 55);
+    const auto skc = run_sketch("spread_out", "-i " + fa.string() + " -l 500 -k 23 --sample-size 200");
+    REQUIRE_FALSE(skc.empty());
+
+    const Sketch sk = Container(skc).open(0, SketchLoad::Windows);
+    const vec<window_t>& wins = sk.get_windows().wins_v;
+    CHECK(wins.size() == 200);
+
+    std::set<std::string> qids;
+    for (const window_t& w : wins) {
+      qids.insert(w.qid);
+      CHECK(w.end - w.start == 500);
+      const size_t rec = static_cast<size_t>(std::stoul(w.qid.substr(w.qid.rfind('_') + 1)));
+      REQUIRE(rec < lens.size());
+      CHECK(w.end + sk.get_k() - 1 <= lens[rec]);
+    }
+    CHECK(qids.size() == 3);
+  }
+
+  TEST_CASE("the sampled-window count is capped by eligible starts" * doctest::skip(!gdiff_available()))
+  {
+    // A `-l 500` window spans 500 k-mers = 522 bases at k=23, so a 600 bp contig admits 79 starts
+    // and 50 contigs of 400 bp admit none. --sample-size is an upper bound, not a promise.
+    const auto short_fa = test_util::write_fasta_multi("cap_short", {600}, 56);
+    const auto short_skc = run_sketch("cap_short", "-i " + short_fa.string() + " -l 500 -k 23 --sample-size 200");
+    REQUIRE_FALSE(short_skc.empty());
+    const Sketch short_sk = Container(short_skc).open(0, SketchLoad::Windows);
+    CHECK(short_sk.get_windows().wins_v.size() == 79);
+
+    const std::vector<uint64_t> tiny_lens(50, 400);
+    const auto tiny_fa = test_util::write_fasta_multi("cap_tiny", tiny_lens, 57);
+    const auto tiny_skc = run_sketch("cap_tiny", "-i " + tiny_fa.string() + " -l 500 -k 23 --sample-size 200");
+    REQUIRE_FALSE(tiny_skc.empty());
+    const Sketch tiny_sk = Container(tiny_skc).open(0, SketchLoad::Windows);
+    CHECK(tiny_sk.get_windows().wins_v.empty());
+  }
+
   TEST_CASE("sketch --frac subsamples the retained k-mers" * doctest::skip(!gdiff_available()))
   {
     const auto fa = test_util::write_fasta("frac_src", 200000, 52);
