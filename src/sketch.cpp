@@ -691,15 +691,16 @@ SketchSC::SketchSC(CLI::App& sc)
                 "(optional sketch name + TAB + path); combines with -i")
     ->check(CLI::ExistingFile);
   sc.add_option("-o,--output-path", sketch_path, "Path to store the resulting binary container")->required();
-  sc.add_option("-k,--mer-len", k, "Length of k-mers [27]")->check(CLI::Range(19, 31));
-  sc.add_option("-w,--win-len", w, "Length of the minimizer window (w>=k) [k+6]")->check(CLI::PositiveNumber);
+  sc.add_option("-k,--mer-len", k, "Length of k-mers [23]")->check(CLI::Range(19, 31));
+  sc.add_option("-w,--win-len", w, "Length of the minimizer window (w>=k) [k]")->check(CLI::PositiveNumber);
   sc.add_option("-h,--num-positions", h, "Number of positions for the LSH [max(floor(k/2)-2, k-16)]")
     ->check(CLI::PositiveNumber);
-  sc.add_option("--frac", frac, "Keep a k-mer if LSH(x) < frac * 2^(2h); i.e., subsampling ratio [1.0]")
+  sc.add_option("--frac", frac, "Keep a k-mer if LSH(x) < frac * 2^(2h); i.e., subsampling ratio [0.5]")
     ->check(CLI::Range(std::numeric_limits<double>::min(), 1.0));
-  sc.add_flag(
-    "--strand-agnostic,!--strand-aware", canonical, "A (canonical) strand-agnostic (default) or strand-aware sketch");
-  sc.add_option("-l", params.tau, "Length of sampled windows in k-mers; 0 stores buckets only [500]")
+  sc.add_flag("--canonical,!--no-canonical",
+              canonical,
+              "Canonical k-mers only by default; --no-canonical extract k-mers from the reference strand");
+  sc.add_option("-l", params.tau, "Length of sampled windows in k-mers; 0 stores buckets only [333]")
     ->check(CLI::NonNegativeNumber);
   sc.add_option("--sample-size", params.sample_size, "Windows sampled across each genome [1000]")
     ->check(CLI::Range(1, 65535));
@@ -709,7 +710,7 @@ SketchSC::SketchSC(CLI::App& sc)
   sc.callback([&]() {
     // -w and -h are independent: each falls back to its own k-derived default.
     if (!(sc.count("-w") + sc.count("--win-len"))) {
-      w = k + 6;
+      w = k;
     }
     if (!(sc.count("-h") + sc.count("--num-positions"))) {
       // floor(k/2) - 2, but never below k - 16: drop_ppos_lr packs 2(k - h) bits into enc_t.

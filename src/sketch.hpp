@@ -74,10 +74,10 @@ public:
   void set_nrows();
   void set_default_params()
   {
-    k = 27;
-    w = k + 6;
-    h = 11;
-    frac = 1.0;
+    k = 23;
+    w = k;
+    h = 9;
+    frac = 0.5;
     canonical = true;
     nrows = uint32_t(1) << (2 * h); // recomputed by set_nrows()
   }
@@ -97,7 +97,7 @@ class SketchSC : public BaseLSH
 public:
   struct params
   {
-    uint64_t tau = 500;
+    uint64_t tau = 333;
     uint64_t sample_size = 1000;
     bool keep_seq = false;
   };

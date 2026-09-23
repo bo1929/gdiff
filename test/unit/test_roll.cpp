@@ -92,7 +92,7 @@ TEST_SUITE("roll")
     const auto skc = make_sketch(fa, "roll_geom", "");
     REQUIRE_FALSE(skc.empty());
 
-    // k defaults to 27, so a window of 100 k-mers spans 100 + 27 - 1 = 126 bases.
+    // k defaults to 23, so a window of 100 k-mers spans 100 + 23 - 1 = 122 bases.
     const auto stepped = roll_lines(fa, skc, "-l 100 -s 50");
     REQUIRE_FALSE(stepped.empty());
     CHECK(stepped[0] == "seq\tstart\tend\tstrand\treference\td");
@@ -102,14 +102,14 @@ TEST_SUITE("roll")
     REQUIRE(first.size() == 6);
     CHECK(first[0] == "roll_geom");
     CHECK(first[1] == "1");
-    CHECK(first[2] == "126");
+    CHECK(first[2] == "122");
     CHECK(first[3] == ".");
     CHECK(first[4] == "roll_geom.fa");
     CHECK(as_double(first[5]) < 1e-6); // self-match
 
     const auto second = fields(stepped[2]);
     CHECK(second[1] == "51");
-    CHECK(second[2] == "176");
+    CHECK(second[2] == "172");
 
     // No -s: the step falls back to -l, so the windows are disjoint.
     const auto disjoint = roll_lines(fa, skc, "-l 100");
@@ -121,7 +121,7 @@ TEST_SUITE("roll")
   TEST_CASE("strand-aware: both directions, one column each" * doctest::skip(!gdiff_available()))
   {
     const auto fa = test_util::write_fasta("roll_aware", 4000, 4);
-    const auto skc = make_sketch(fa, "roll_aware", "--strand-aware");
+    const auto skc = make_sketch(fa, "roll_aware", "--no-canonical");
     REQUIRE_FALSE(skc.empty());
 
     const auto lines = roll_lines(fa, skc, "-l 100 -s 500");

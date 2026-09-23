@@ -28,7 +28,7 @@ Multiple references can be sketched into one container in a single step (use `--
 gdiff --num-threads 8 sketch -i ref_A.fasta ref_B.fasta ref_C.fasta -o combined.skc
 ```
 
-Uses sensible defaults (`k=27`, `w=33`, `h=11`). For large genomes, tune the LSH parameters to trade speed for sensitivity (see Options below).
+Uses sensible defaults (`k=23`, `w=23`, `h=9`). For large genomes, tune the LSH parameters to trade speed for sensitivity (see Options below).
 
 ### 2. Map queries to find divergent intervals
 
@@ -92,12 +92,12 @@ Use `--output-samples` to write one row per sampled window instead of the per-pa
 | `-i, --input-path` | - | Input FASTA/FASTQ file(s) or URL (gzip compatible) |
 | `--input-list` | - | Read input paths from a file, one per line (optional `name<TAB>path`); combines with `-i` |
 | `-o, --output-path` | (required) | Output container (one or more sketches) |
-| `-k, --mer-len` | `27` | k-mer length (19–31) |
-| `-w, --win-len` | `k+6` | Minimizer window length (>= k) |
+| `-k, --mer-len` | `23` | k-mer length (19–31) |
+| `-w, --win-len` | `k` | Minimizer window length (>= k) |
 | `-h, --num-positions` | `max(floor(k/2)-2, k-16)` | Number of LSH positions |
-| `--frac` | `1.0` | Keep a k-mer if LSH(x) < frac · 2^2h; subsampling ratio |
-| `--strand-agnostic` / `--strand-aware` | `--strand-agnostic` | Canonical k-mers, or keep strand |
-| `-l` | `500` | Sampled window length in k-mers; **`0` stores buckets only** |
+| `--frac` | `0.5` | Keep a k-mer if LSH(x) < frac · 2^2h; subsampling ratio |
+| `--canonical` / `--no-canonical` | `--canonical` | Canonical (strand-agnostic) k-mers, or keep forward/reverse separate |
+| `-l` | `333` | Sampled window length in k-mers; **`0` stores buckets only** |
 | `--sample-size` | `1000` | Windows sampled across each genome; capped by the eligible starts |
 | `--keep-seq` | off | Store sampled windows as 2-bit packed bases instead of pre-resolved keys |
 

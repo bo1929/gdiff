@@ -114,8 +114,8 @@ TEST_SUITE("container")
     REQUIRE(sf.size() == 1);
 
     const sketch_config_t& cfg = sf.get_config();
-    CHECK(cfg.k == 27);
-    CHECK(cfg.h == 11);
+    CHECK(cfg.k == 23);
+    CHECK(cfg.h == 9);
     CHECK(cfg.canonical);
     CHECK(cfg.frac == doctest::Approx(0.5));
     CHECK(cfg.ppos_v.size() == cfg.h);
@@ -153,7 +153,7 @@ TEST_SUITE("container")
     REQUIRE_FALSE(no_w.empty());
     const Container sf_now(no_w);
     CHECK(sf_now.get_config().h == 9);
-    CHECK(sf_now.get_config().w == 29); // k + 6
+    CHECK(sf_now.get_config().w == 23); // k
 
     // k - h <= 16 (enc_t holds 2(k - h) bits), so h clamps up at large k.
     const auto k31 = run_sketch("cont_hdef_k31", "-i " + fa.string() + " -k 31");
@@ -383,7 +383,7 @@ TEST_SUITE("container")
   {
     const auto fa = test_util::write_fasta("cont_sa", 120000, 9);
     const auto ag = run_sketch("cont_ag", "-i " + fa.string());
-    const auto sa = run_sketch("cont_sa", "-i " + fa.string() + " --strand-aware");
+    const auto sa = run_sketch("cont_sa", "-i " + fa.string() + " --no-canonical");
     REQUIRE_FALSE(ag.empty());
     REQUIRE_FALSE(sa.empty());
 
@@ -633,7 +633,7 @@ TEST_SUITE("merge and info")
   TEST_CASE("merge refuses containers whose configuration differs" * doctest::skip(!gdiff_available()))
   {
     const auto fa = test_util::write_fasta("mg_cfg", 60000, 44);
-    const auto k27 = run_sketch("mg_k27", "-i " + fa.string());
+    const auto k27 = run_sketch("mg_k27", "-i " + fa.string() + " -k 27");
     const auto k23 = run_sketch("mg_k23", "-i " + fa.string() + " -k 23");
     REQUIRE_FALSE(k27.empty());
     REQUIRE_FALSE(k23.empty());
@@ -679,11 +679,11 @@ TEST_SUITE("merge and info")
     REQUIRE_FALSE(report.empty());
 
     CHECK(info_value(report, "Sketches:") == "2");
-    CHECK(info_value(report, "k (mer len):") == "27");
-    CHECK(info_value(report, "w (win len):") == "33");
-    CHECK(info_value(report, "h (LSH pos):") == "11");
+    CHECK(info_value(report, "k (mer len):") == "23");
+    CHECK(info_value(report, "w (win len):") == "23");
+    CHECK(info_value(report, "h (LSH pos):") == "9");
     CHECK(info_value(report, "canonical:") == "true");
-    CHECK(info_value(report, "-l (window len):") == "500");
+    CHECK(info_value(report, "-l (window len):") == "333");
     CHECK(info_value(report, "--sample-size:") == "1000");
     CHECK(info_value(report, "--keep-seq:") == "false");
     CHECK(info_value(report, "seed:") == "0");
@@ -796,7 +796,7 @@ TEST_SUITE("CLI surface")
   TEST_CASE("sketch --frac subsamples the retained k-mers" * doctest::skip(!gdiff_available()))
   {
     const auto fa = test_util::write_fasta("frac_src", 200000, 52);
-    const auto all = run_sketch("frac_all", "-i " + fa.string());
+    const auto all = run_sketch("frac_all", "-i " + fa.string() + " --frac 1.0");
     const auto half = run_sketch("frac_half", "-i " + fa.string() + " --frac 0.5");
     REQUIRE_FALSE(all.empty());
     REQUIRE_FALSE(half.empty());

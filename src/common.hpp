@@ -14,7 +14,7 @@
 #include <string>
 #include <vector>
 
-inline constexpr const char* gdiff_version = "v0.2.0-rc";
+inline constexpr const char* gdiff_version = "v0.2.1-rc";
 
 inline str invocation;
 

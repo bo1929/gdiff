@@ -131,7 +131,7 @@ struct intmap_fixture_t
     if (!sketch_available(sdir, ref_name)) {
       std::filesystem::create_directories(sdir);
       std::string cmd = "./gdiff sketch -k 27 -w 31 -h 11";
-      if (strand_aware) cmd += " --strand-aware";
+      if (strand_aware) cmd += " --no-canonical";
       cmd += " -i " + GENOMES_DIR + ref_name + ".fna.gz -o " + sdir + ref_name + ".gs 2>/dev/null";
       if (std::system(cmd.c_str()) != 0) {
         throw std::runtime_error("sketch creation failed");

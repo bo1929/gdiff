@@ -22,7 +22,9 @@ cd "$SCRIPT_DIR"
 
 GDIFF="../gdiff"
 NPROC="${NPROC:-4}"
-SKETCHING_OPTS="-k 27 -w 31 -h 11"
+# Pin every sketch parameter that feeds downstream output, so the committed gt/ files stay valid
+# when a default changes: -k/-w/-h plus --frac and -l (the sampled-window length).
+SKETCHING_OPTS="-k 27 -w 31 -h 11 --frac 1.0 -l 500"
 
 if [ ! -x "$GDIFF" ]; then
   echo "ERROR: gdiff binary not found at $GDIFF"
@@ -327,7 +329,7 @@ EXPECT_AWARE="seq seq_len start end strand is_rc reference d mask d_bin d_q d_di
 agnostic_header="$(strip_comments "$WORK/map_ref.tsv" | head -n 1 | tr '\t' ' ')"
 [ "$agnostic_header" = "$EXPECT_AGNOSTIC" ] || fail "strand-agnostic map header changed: $agnostic_header"
 
-"$GDIFF" sketch -k 27 -w 31 -h 11 --strand-aware -i "genomes/${first_query}.fna.gz" \
+"$GDIFF" sketch -k 27 -w 31 -h 11 --no-canonical -i "genomes/${first_query}.fna.gz" \
   -o "$WORK/aware.gs" >/dev/null 2>&1
 "$GDIFF" map -d 0.10 -l 9900 --hdist-th 4 --sample-size 100 "genomes/${first_query}.fna.gz" \
   "$WORK/aware.gs" > "$WORK/aware.tsv" 2>/dev/null
