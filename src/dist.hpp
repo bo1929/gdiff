@@ -48,7 +48,7 @@ public:
   {
     bool output_samples = false;
     uint32_t hdist_th = 3;
-    double lr_th = 10.828;
+    double lr_th = 6.635;
     double min_portion = 0.66;
   };
 
