@@ -1,4 +1,5 @@
 #include "doctest/doctest.h"
+#include "dist.hpp"
 #include "map.hpp"
 #include <algorithm>
 #include <cmath>
@@ -317,3 +318,24 @@ TEST_CASE("exactly four levels are required") {
 }
 
 } // TEST_SUITE
+
+TEST_SUITE("hdist threshold")
+{
+  TEST_CASE("the >20 Mbp cap applies only to an unset --hdist-th")
+  {
+    const uint64_t small = 19ull * 1000 * 1000;
+    const uint64_t large = 20ull * 1000 * 1000;
+
+    // Unset: a large input is capped to 2, a small one keeps the default.
+    CHECK(hdist_th_for(large, 0xFFFFFFFFu) == 2);
+    CHECK(hdist_th_for(small, 0xFFFFFFFFu) == 3);
+
+    // Explicit: the requested value is honoured whatever the length.
+    CHECK(hdist_th_for(large, 3) == 3);
+    CHECK(hdist_th_for(large, 5) == 5);
+
+    // An explicit request at or below the cap is unchanged.
+    CHECK(hdist_th_for(large, 2) == 2);
+    CHECK(hdist_th_for(large, 1) == 1);
+  }
+}

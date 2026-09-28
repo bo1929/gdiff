@@ -9,7 +9,7 @@ namespace {
   // A bound well above the default cut; a window is kept unless a test says otherwise.
   constexpr double keep_lr = 100.0;
   // Mirrors dist's current CLI defaults.
-  constexpr double lr_th_default = 10.828;
+  constexpr double lr_th_default = 6.635;
   constexpr double min_portion_default = 0.66;
 
   mle_t mle(double d, double s = keep_lr) { return mle_t{d, s}; }

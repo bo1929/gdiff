@@ -40,6 +40,8 @@ struct summary_t
 
 summary_t summarize_symmetric(vec<mle_t> ab_v, vec<mle_t> ba_v, double lr_th, double min_portion);
 
+uint32_t hdist_th_for(uint64_t nvalid_bp, uint32_t requested);
+
 // Compare sets of sketches: every pair, both sides, reconcile data points after sorting.
 class DistSC
 {
@@ -47,7 +49,7 @@ public:
   struct params
   {
     bool output_samples = false;
-    uint32_t hdist_th = 3;
+    uint32_t hdist_th = 0xFFFFFFFFu;
     double lr_th = 6.635;
     double min_portion = 0.66;
   };

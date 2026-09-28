@@ -294,6 +294,13 @@ samples_t process_samples(const Sketch& query, const Sketch& reference, uint32_t
 
 constexpr uint64_t hcompl_bp_min = 20ull * 1000 * 1000; // 20 Mbp of valid bp
 constexpr uint64_t hcompl_hdist_th = 2u;
+constexpr uint32_t default_hdist_th = 3u;
+
+uint32_t hdist_th_for(uint64_t nvalid_bp, uint32_t requested)
+{
+  if (requested != 0xFFFFFFFFu) return requested;
+  return nvalid_bp >= hcompl_bp_min ? static_cast<uint32_t>(hcompl_hdist_th) : default_hdist_th;
+}
 
 namespace {
   void print_pair_progress(uint64_t done_jobs, uint64_t total_jobs)
@@ -488,12 +495,11 @@ void DistSC::estimate_distances()
     const entry_t& sentry = entries_v[source_ix];
     const Sketch source = sentry.file->open(sentry.rix, SketchLoad::Buckets);
 
-    // One threshold per source: its length caps whatever was asked for.
     const uint64_t nvalid_bp = source.get_nvalid_bp();
-    const uint32_t hdist_cap = nvalid_bp >= hcompl_bp_min ? hcompl_hdist_th : params.hdist_th;
-    const uint32_t hdist_th = std::min(params.hdist_th, hdist_cap);
-    if (hdist_th != params.hdist_th) {
-      warn_pmsg(source.get_rname(), nvalid_bp, " valid bp: --hdist-th is set to ", hdist_th, " (was ", params.hdist_th, ")");
+    const uint32_t hdist_th = hdist_th_for(nvalid_bp, params.hdist_th);
+    const uint32_t hdist_was = params.hdist_th == 0xFFFFFFFFu ? default_hdist_th : params.hdist_th;
+    if (hdist_th != hdist_was) {
+      warn_pmsg(source.get_rname(), nvalid_bp, " valid bp: --hdist-th is set to ", hdist_th, " (was ", hdist_was, ")");
     }
 
     pool.parallel_for(batch_end - batch_start, 1, [&](uint64_t i) {
@@ -576,10 +582,9 @@ DistSC::DistSC(CLI::App& sc)
   sc.add_option("--list-b", list_b_path, "Set B as a list file of sketch containers")
     ->excludes("sketch-b")
     ->check(CLI::ExistingFile);
-  sc.add_option(
-      "--hdist-th", params.hdist_th, "Maximum Hamming distance for k-mer search; capped at 2 for inputs >20 Mbp [3]")
+  sc.add_option("--hdist-th", params.hdist_th, "Maximum Hamming distance for k-mer search [3 if input <20 Mb, otherwise 2]")
     ->check(CLI::Range(0, static_cast<int>(hdist_bound)));
-  sc.add_option("--lr-th", params.lr_th, "Likelihood-ratio cut for the reconciliation filter [10.828]")
+  sc.add_option("--lr-th", params.lr_th, "Likelihood-ratio cut for the reconciliation filter [6.635]")
     ->check(CLI::NonNegativeNumber);
   sc.add_option("--min-portion",
                 params.min_portion,
@@ -595,7 +600,7 @@ DistSC::DistSC(CLI::App& sc)
 
 bool DistSC::validate_configuration()
 {
-  if (params.hdist_th > hdist_bound) {
+  if (params.hdist_th != 0xFFFFFFFFu && params.hdist_th > hdist_bound) {
     cerr_msg("--hdist-th must be in [0, ", hdist_bound, "]; got ", params.hdist_th);
     return false;
   }

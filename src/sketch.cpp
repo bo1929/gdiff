@@ -699,7 +699,7 @@ SketchSC::SketchSC(CLI::App& sc)
     ->check(CLI::Range(std::numeric_limits<double>::min(), 1.0));
   sc.add_flag("--canonical,!--no-canonical",
               canonical,
-              "Canonical k-mers only by default; --no-canonical extract k-mers from the reference strand");
+              "Canonical k-mers only by default; --no-canonical extracts k-mers based on the reference strand");
   sc.add_option("-l", params.tau, "Length of sampled windows in k-mers; 0 stores buckets only [333]")
     ->check(CLI::NonNegativeNumber);
   sc.add_option("--sample-size", params.sample_size, "Windows sampled across each genome [1000]")
