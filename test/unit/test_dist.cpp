@@ -44,17 +44,18 @@ TEST_CASE("apply_empirical_significance skips short pools and unmapped records")
   CHECK(std::isnan(unmapped.percentile));
 }
 
-TEST_CASE("benjamini_hochberg_correction with canonical-only records") {
+TEST_CASE("benjamini_hochberg_correction adjusts canonical records on the two-sided scale") {
   vec<record_t> records;
   records.emplace_back(0, 100, interval_t{1, 50}, false, 0.1, 10.0, 0);
   records.emplace_back(0, 100, interval_t{51, 100}, false, 0.12, 10.0, 0);
-  records[0].percentile = 0.05;
+  records[0].percentile = 0.05; // canonical records are one-sided (d_diff NaN)
   records[1].percentile = 0.10;
 
   benjamini_hochberg_correction(records);
 
-  CHECK(records[0].qvalue == doctest::Approx(0.10));
-  CHECK(records[1].qvalue == doctest::Approx(0.10));
+  // Two-sided p are 0.10 and 0.20; BH with m = 2 gives 0.20 at both ranks.
+  CHECK(records[0].qvalue == doctest::Approx(0.20));
+  CHECK(records[1].qvalue == doctest::Approx(0.20));
 }
 
 TEST_CASE("benjamini_hochberg_correction leaves NaN qvalues untouched") {
@@ -66,8 +67,25 @@ TEST_CASE("benjamini_hochberg_correction leaves NaN qvalues untouched") {
 
   benjamini_hochberg_correction(records);
 
-  CHECK(records[0].qvalue == doctest::Approx(0.05));
+  // One record: the two-sided p is 0.10 and the family size is 1.
+  CHECK(records[0].qvalue == doctest::Approx(0.10));
   CHECK(std::isnan(records[1].qvalue));
+}
+
+TEST_CASE("two_sided_p doubles the one-sided percentile and passes two-sided through") {
+  record_t q(0, 100, interval_t{1, 50}, false, 0.1, 10.0, 0); // d_diff NaN: one-sided
+  q.percentile = 0.05;
+  CHECK_FALSE(is_two_sided(q));
+  CHECK(two_sided_p(q) == doctest::Approx(0.10));
+
+  q.percentile = 0.90;
+  CHECK(two_sided_p(q) == doctest::Approx(0.20)); // 2 * min(0.9, 0.1)
+
+  record_t pref(0, 100, interval_t{1, 50}, false, 0.1, 10.0, 0);
+  pref.d_diff = -0.1; // fw is the closer strand, so this fw record is two-sided
+  pref.percentile = 0.05;
+  CHECK(is_two_sided(pref));
+  CHECK(two_sided_p(pref) == doctest::Approx(0.05));
 }
 
 } // TEST_SUITE

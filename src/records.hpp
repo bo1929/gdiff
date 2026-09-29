@@ -53,7 +53,7 @@ struct record_t
   double d_diff = nanx();     // strand difference encoding; see strand_diff()
   double fold = nanx();       // fold change: d / median(background samples)
   double percentile = nanx(); // two-sided percentile for the closer strand (reference), otherwise cdf
-  double qvalue = nanx();     // Benjamini-Hochberg adjusted percentile
+  double qvalue = nanx();     // Benjamini-Hochberg adjusted two-sided p-value
   double lr_ub;               // likelihood-ratio statistic vs max estimable distance (extreme match counts)
 
   record_t(uint64_t bix, uint64_t L, interval_t seq_iv, bool is_rc, double d, double I, size_t th_ix, double lr_ub = nanx())
@@ -95,6 +95,23 @@ inline interval_t get_coordinates(const interval_t& bin_iv, uint64_t bin_shift, 
 // Minimum background windows for an empirical percentile to mean anything.
 inline constexpr size_t min_null_samples = 8;
 
+// True when a record is tested two-sided: it sits on the strand the query-level comparison prefers.
+// NaN (neither strand finite) is one-sided; a signed infinity (only one strand finite) already
+// prefers that finite strand, so the finite strand is two-sided.
+inline bool is_two_sided(const record_t& r)
+{
+  return !std::isnan(r.d_diff) && (r.is_rc == (r.d_diff > 0.0));
+}
+
+// The two-sided empirical p behind `percentile`, used by the q-value so that every record is
+// adjusted on the same scale: `percentile` already holds the two-sided value for a two-sided
+// record, and the one-sided CDF for the rest.
+inline double two_sided_p(const record_t& r)
+{
+  if (!std::isfinite(r.percentile)) return r.percentile;
+  return is_two_sided(r) ? r.percentile : std::min(1.0, 2.0 * std::min(r.percentile, 1.0 - r.percentile));
+}
+
 // Empirical percentile of r.d within a sorted background pool; sets percentile and fold.
 inline void apply_empirical_significance(record_t& r, const vec<double>& pool_v)
 {
@@ -102,15 +119,12 @@ inline void apply_empirical_significance(record_t& r, const vec<double>& pool_v)
   assert(std::is_sorted(pool_v.begin(), pool_v.end()));
   const size_t le = static_cast<size_t>(std::upper_bound(pool_v.begin(), pool_v.end(), r.d) - pool_v.begin());
   const double prob = static_cast<double>(le) / static_cast<double>(pool_v.size());
-  // Two-sided for a record on the strand the query-level comparison prefers. `d_diff` is NaN, or
-  // a signed infinity when only one strand is finite; those take the one-sided test.
-  const bool two_sided = !std::isnan(r.d_diff) && (r.is_rc == (r.d_diff > 0.0));
-  r.percentile = std::clamp(two_sided ? 2.0 * std::min(prob, 1.0 - prob) : prob, 0.0, 1.0);
+  r.percentile = std::clamp(is_two_sided(r) ? 2.0 * std::min(prob, 1.0 - prob) : prob, 0.0, 1.0);
   const double median = linear_quantile(pool_v, 0.5);
   if (median > eps) r.fold = r.d / median;
 }
 
-// Per-strand Benjamini-Hochberg adjustment of record percentiles into qvalues.
+// Per-strand Benjamini-Hochberg adjustment of the two-sided p-values into qvalues.
 inline void benjamini_hochberg_correction(vec<record_t>& records_v)
 {
   for (bool is_rc : {false, true}) {
@@ -119,15 +133,16 @@ inline void benjamini_hochberg_correction(vec<record_t>& records_v)
       if (records_v[i].is_rc == is_rc && std::isfinite(records_v[i].percentile)) idx_v.push_back(i);
     if (idx_v.empty()) continue;
 
-    std::sort(
-      idx_v.begin(), idx_v.end(), [&](size_t a, size_t b) { return records_v[a].percentile < records_v[b].percentile; });
+    std::sort(idx_v.begin(), idx_v.end(), [&](size_t a, size_t b) {
+      return two_sided_p(records_v[a]) < two_sided_p(records_v[b]);
+    });
 
     const double m = static_cast<double>(idx_v.size());
     double q_min = 1.0;
-    // Walk from the largest percentile down; `rank` counts from 1, so `i + 1` is the rank.
+    // Walk from the largest two-sided p down; `rank` counts from 1, so `i + 1` is the rank.
     for (size_t i = idx_v.size(); i-- > 0;) {
       record_t& r = records_v[idx_v[i]];
-      q_min = std::min(q_min, std::min(1.0, r.percentile * m / static_cast<double>(i + 1)));
+      q_min = std::min(q_min, std::min(1.0, two_sided_p(r) * m / static_cast<double>(i + 1)));
       r.qvalue = q_min;
     }
   }

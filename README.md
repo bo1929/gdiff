@@ -134,8 +134,8 @@ Positional: `<sketch-a> [sketch-b]`.
 | Option | Default | Description |
 |--------|--------|-------------|
 | `--list-a`, `--list-b` | - | Read set A / set B as a list file of sketch containers |
-| `--hdist-th` | `3` | Maximum Hamming distance for a k-mer to match; capped at 2 for inputs >20 Mbp |
-| `--lr-th` | `10.828` | Likelihood-ratio cut for the reconciliation filter |
+| `--hdist-th` | `3` | Maximum Hamming distance for a k-mer to match; the default is capped to 2 for inputs >20 Mbp, an explicit value is used as given |
+| `--lr-th` | `6.635` | Likelihood-ratio cut for the reconciliation filter |
 | `--min-portion` | `0.66` | Apply the filter only if at least this fraction of windows exceeds `--lr-th` |
 | `-o, --output-path` | stdout | Write output to a file |
 | `--output-samples` | off | Write per-window sample rows instead of per-pair summaries |
