@@ -105,6 +105,10 @@ struct gamma_fit_t
   double scale = nanx();
 };
 
+// A two-parameter gamma needs more evidence than an empirical quantile does: below this the
+// derivation falls back to the empirical quantiles of the same sample.
+inline constexpr size_t min_gamma_samples = 30;
+
 // Distances of the background windows whose lr_ub beats `lr_th`, falling back to every valid window
 // when at most `min_portion` of them survive (the rule `dist` applies to its reconciled windows).
 vec<double> lr_filtered_sample(const vec<sample_point_t>& points_v, double lr_th, double min_portion);
@@ -112,10 +116,15 @@ vec<double> lr_filtered_sample(const vec<sample_point_t>& points_v, double lr_th
 // Method-of-moments gamma fit; false when the sample is too small or degenerate (zero variance).
 bool fit_gamma_mom(const vec<double>& sample_v, gamma_fit_t& fit);
 
+// Empirical two-sided quantiles of `sample_v` (sorted); the fallback when a gamma cannot be placed.
+bool empirical_thresholds_from_levels(const vec<double>& sample_v, const vec<double>& levels_v, vec<double>& out_v);
+
 // Two-sided thresholds for `levels_v` as quantiles of the gamma fitted to `sample_v`, which must be
 // sorted. A tail quantile that reaches the estimable floor is lifted to the nearest observed
-// distance, as before. Returns false when 8 distinct ordered thresholds cannot be placed, in which
-// case the caller skips the sketch; `fit_out`, when given, receives the fitted parameters.
+// distance. When the gamma is rejected (too few samples, no variance, or quantiles that cannot be
+// placed) this falls back to the empirical quantiles of the same sample; it returns false only when
+// that fails too, in which case the caller skips the sketch. `fit_out` receives the fitted
+// parameters on the gamma path and NaN on the empirical one, so the caller can report which was used.
 bool thresholds_from_levels(const vec<double>& sample_v,
                             const vec<double>& levels_v,
                             vec<double>& out_v,

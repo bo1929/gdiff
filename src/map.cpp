@@ -172,7 +172,7 @@ vec<double> lr_filtered_sample(const vec<sample_point_t>& points_v, double lr_th
 bool fit_gamma_mom(const vec<double>& sample_v, gamma_fit_t& fit)
 {
   fit = {};
-  if (sample_v.size() < min_null_samples) return false;
+  if (sample_v.size() < min_gamma_samples) return false;
 
   const double n = static_cast<double>(sample_v.size());
   double mean = 0.0;
@@ -194,19 +194,62 @@ bool fit_gamma_mom(const vec<double>& sample_v, gamma_fit_t& fit)
   return std::isfinite(fit.shape) && std::isfinite(fit.scale) && fit.shape > 0.0 && fit.scale > 0.0;
 }
 
-bool thresholds_from_levels(const vec<double>& sample_v,
-                            const vec<double>& levels_v,
-                            vec<double>& out_v,
-                            gamma_fit_t* fit_out)
+namespace {
+  // Quantiles of the fitted gamma, lifted to the nearest observed distance when a tail reaches the
+  // estimable floor. `lifted` reports whether that happened, so the caller warns only when the
+  // gamma path is the one actually accepted.
+  bool gamma_thresholds(const gamma_fit_t& fit,
+                        const vec<double>& sample_v,
+                        const vec<double>& levels_v,
+                        vec<double>& out_v,
+                        bool& lifted)
+  {
+    const boost::math::gamma_distribution<double> gamma(fit.shape, fit.scale);
+    vec<double> levels = levels_v;
+    std::sort(levels.begin(), levels.end()); // tightest alpha first
+
+    lifted = false;
+    double prev_low = d_eps;
+    double prev_high = d_ub - d_eps;
+    for (const double alpha : levels) {
+      double t_low = 0.0;
+      double t_high = 0.0;
+      try {
+        t_low = boost::math::quantile(gamma, alpha / 2.0);
+        t_high = boost::math::quantile(gamma, 1.0 - alpha / 2.0);
+      } catch (const std::exception&) {
+        return false;
+      }
+      if (!std::isfinite(t_low) || !std::isfinite(t_high)) return false;
+
+      if (!(t_low > prev_low)) {
+        const auto it = std::upper_bound(sample_v.begin(), sample_v.end(), prev_low);
+        if (it == sample_v.end()) return false;
+        t_low = *it;
+        lifted = true;
+      }
+      if (!(t_high < prev_high)) {
+        const auto it = std::lower_bound(sample_v.begin(), sample_v.end(), prev_high);
+        if (it == sample_v.begin()) return false;
+        t_high = *std::prev(it);
+        lifted = true;
+      }
+      if (!(t_low < t_high) || !(t_low > d_eps) || !(t_high < d_ub - d_eps)) return false;
+      out_v.push_back(t_low);
+      out_v.push_back(t_high);
+      prev_low = t_low;
+      prev_high = t_high;
+    }
+    std::sort(out_v.begin(), out_v.end());
+    return true;
+  }
+} // namespace
+
+bool empirical_thresholds_from_levels(const vec<double>& sample_v, const vec<double>& levels_v, vec<double>& out_v)
 {
   out_v.clear();
-  if (levels_v.size() != 4) return false;
+  if (sample_v.size() < min_null_samples || levels_v.size() != 4) return false;
 
-  gamma_fit_t fit;
-  if (!fit_gamma_mom(sample_v, fit)) return false;
-  if (fit_out != nullptr) *fit_out = fit;
-
-  const boost::math::gamma_distribution<double> gamma(fit.shape, fit.scale);
   vec<double> levels = levels_v;
   std::sort(levels.begin(), levels.end()); // tightest alpha first
 
@@ -214,24 +257,14 @@ bool thresholds_from_levels(const vec<double>& sample_v,
   double prev_low = d_eps;
   double prev_high = d_ub - d_eps;
   for (const double alpha : levels) {
-    double t_low = 0.0;
-    double t_high = 0.0;
-    try {
-      t_low = boost::math::quantile(gamma, alpha / 2.0);
-      t_high = boost::math::quantile(gamma, 1.0 - alpha / 2.0);
-    } catch (const std::exception&) {
-      return false;
-    }
-    if (!std::isfinite(t_low) || !std::isfinite(t_high)) return false;
-
-    // A quantile that reaches the estimable floor carries no threshold information, so fall back to
-    // the nearest observed distance, exactly as the empirical derivation did.
+    double t_low = linear_quantile(sample_v, alpha / 2.0);
     if (!(t_low > prev_low)) {
       const auto it = std::upper_bound(sample_v.begin(), sample_v.end(), prev_low);
       if (it == sample_v.end()) return false;
       t_low = *it;
       lifted = true;
     }
+    double t_high = linear_quantile(sample_v, 1.0 - alpha / 2.0);
     if (!(t_high < prev_high)) {
       const auto it = std::lower_bound(sample_v.begin(), sample_v.end(), prev_high);
       if (it == sample_v.begin()) return false;
@@ -245,8 +278,38 @@ bool thresholds_from_levels(const vec<double>& sample_v,
     prev_high = t_high;
   }
   std::sort(out_v.begin(), out_v.end());
-  if (lifted)
-    warn_msg("--levels: some gamma quantiles reach the background floor; using the nearest observed distance");
+  if (lifted) warn_msg("--levels: some quantiles reach the background floor; using the nearest higher distinct distances");
+  return true;
+}
+
+bool thresholds_from_levels(const vec<double>& sample_v,
+                            const vec<double>& levels_v,
+                            vec<double>& out_v,
+                            gamma_fit_t* fit_out)
+{
+  out_v.clear();
+  if (levels_v.size() != 4) return false;
+
+  // NOTE (estimator): the fit is method of moments -- closed form, no iteration; its job is only to
+  // smooth the background, the robustness comes from the lr/min-portion filter upstream. An MLE or
+  // trimmed alternative would live inside fit_gamma_mom.
+  // NOTE (floor): floored windows (d below d_eps) are a point mass a continuous gamma cannot
+  // represent, and they still take part in this fit, which pulls the shape down and the lower
+  // quantiles towards the floor; the lift below catches those.
+  gamma_fit_t fit;
+  bool lifted = false;
+  if (fit_gamma_mom(sample_v, fit) && gamma_thresholds(fit, sample_v, levels_v, out_v, lifted)) {
+    if (lifted)
+      warn_msg("--levels: some gamma quantiles reach the background floor; using the nearest observed distance");
+    if (fit_out != nullptr) *fit_out = fit;
+    return true;
+  }
+
+  // Rejected (too few samples, no variance, or quantiles that cannot be placed): fall back to the
+  // empirical quantiles of the same sample rather than skipping the sketch.
+  out_v.clear();
+  if (!empirical_thresholds_from_levels(sample_v, levels_v, out_v)) return false;
+  if (fit_out != nullptr) *fit_out = gamma_fit_t{}; // NaN marks the empirical path for the caller
   return true;
 }
 
@@ -301,12 +364,14 @@ void IntMap<T>::map_sequences(std::ostream& sout, const str& rname, ThreadPool& 
   } else {
     gamma_fit_t fit;
     if (!thresholds_from_levels(fit_v, opts.levels_v, th_v, &fit)) {
-      // The background cannot place WIDTH distinct quantiles for this sketch; skip it rather than
-      // aborting the whole run. Other sketches in the container are unaffected.
+      // Neither the gamma nor the empirical fallback could place WIDTH distinct quantiles for this
+      // sketch; skip it rather than aborting the whole run. Other sketches are unaffected.
       warn_pmsg(rname, "skipped: --levels do not resolve into 8 distinct thresholds; the background is too coarse");
       return;
     }
     gamma_fit = fit;
+    if (!std::isfinite(gamma_fit.shape))
+      warn_pmsg(rname, "--levels: gamma fit rejected; fell back to empirical quantiles");
   }
 
   const T dist_th = make_dist_th<T>(th_v);
@@ -565,6 +630,14 @@ void IntMap<T>::report_null(const str& rname) const
              " (n=",
              fit_v.size(),
              ", floored=",
+             null_floored,
+             ")");
+  else if (!opts.levels_v.empty())
+    cerr_msg("[",
+             rname,
+             "] --levels: gamma fit rejected, empirical quantiles over n=",
+             fit_v.size(),
+             " (floored=",
              null_floored,
              ")");
   for (const double t : th_v)

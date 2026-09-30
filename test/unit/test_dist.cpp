@@ -362,6 +362,38 @@ TEST_CASE("the lr filter keeps evidence-bearing windows only when enough survive
   CHECK(kept.size() == 4);
 }
 
+TEST_CASE("a rejected gamma falls back to empirical quantiles") {
+  // Twelve distinct values: enough for the empirical quantiles, too few for a two-parameter fit.
+  vec<double> sample;
+  for (int i = 0; i < 12; ++i)
+    sample.push_back(0.02 + 0.02 * static_cast<double>(i));
+
+  gamma_fit_t fit;
+  vec<double> th;
+  REQUIRE(thresholds_from_levels(sample, {0.1, 0.05, 0.01, 0.005}, th, &fit));
+  CHECK_FALSE(std::isfinite(fit.shape)); // NaN marks the empirical fallback
+  REQUIRE(th.size() == 8);
+  for (size_t i = 1; i < th.size(); ++i)
+    CHECK(th[i - 1] < th[i]);
+  for (const double t : th) {
+    CHECK(t > d_eps);
+    CHECK(t < d_ub - d_eps);
+  }
+}
+
+TEST_CASE("the empirical fallback lifts floored quantiles to distinct distances") {
+  vec<double> sample(20, 0.0); // floored mass, still counted by the quantile
+  for (int i = 0; i < 200; ++i)
+    sample.push_back(0.02 + 0.0005 * static_cast<double>(i));
+
+  vec<double> th;
+  REQUIRE(empirical_thresholds_from_levels(sample, {0.1, 0.05, 0.01, 0.005}, th));
+  REQUIRE(th.size() == 8);
+  for (size_t i = 1; i < th.size(); ++i)
+    CHECK(th[i - 1] < th[i]);
+  CHECK(th.front() == doctest::Approx(0.02)); // first distance above the floor
+}
+
 } // TEST_SUITE
 
 TEST_SUITE("hdist threshold")
