@@ -231,8 +231,8 @@ void IntMap<T>::map_sequences(std::ostream& sout, const str& rname, ThreadPool& 
     if (th_v.size() != 1 && th_v.size() != WIDTH)
       error_exit(concat_msg("-d needs exactly 1 or ", WIDTH, " thresholds; got ", th_v.size()));
   } else if (!thresholds_from_levels(null_v, opts.levels_v, th_v)) {
-    error_exit(
-      concat_msg("--levels do not resolve into 8 distinct thresholds for sketch ", rname, "; the background is too coarse"));
+    warn_pmsg(rname, "skipped: --levels do not resolve into 8 distinct thresholds; the background is too coarse");
+    return;
   }
 
   const T dist_th = make_dist_th<T>(th_v);
