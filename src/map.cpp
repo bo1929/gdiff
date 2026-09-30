@@ -9,7 +9,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <exception>
 #include <limits>
+#include <boost/math/distributions/gamma.hpp>
 #include <simde/x86/avx512.h>
 #include <sys/mman.h>
 
@@ -150,11 +152,61 @@ namespace {
 // value is lifted to the next distinct background distance above d_eps; each later level
 // takes the next distinct distance after the previous threshold. The four upper quantiles
 // are handled symmetrically. Succeeds only when this yields eight distinct in-range values.
-bool thresholds_from_levels(const vec<double>& pool_v, const vec<double>& levels_v, vec<double>& out_v)
+vec<double> lr_filtered_sample(const vec<sample_point_t>& points_v, double lr_th, double min_portion)
+{
+  // The same rule `dist` applies to its reconciled windows: a window's likelihood-ratio bound is
+  // its evidence, and the filtered set is only used when enough windows carry it.
+  vec<double> all_v;
+  vec<double> kept_v;
+  for (const sample_point_t& p : points_v) {
+    if (!is_valid_distance(p.d)) continue;
+    all_v.push_back(p.d);
+    if (!std::isnan(p.s) && p.s > lr_th) kept_v.push_back(p.d);
+  }
+  const double portion =
+    all_v.empty() ? 0.0 : static_cast<double>(kept_v.size()) / static_cast<double>(all_v.size());
+  if (portion > min_portion) return kept_v;
+  return all_v;
+}
+
+bool fit_gamma_mom(const vec<double>& sample_v, gamma_fit_t& fit)
+{
+  fit = {};
+  if (sample_v.size() < min_null_samples) return false;
+
+  const double n = static_cast<double>(sample_v.size());
+  double mean = 0.0;
+  for (const double x : sample_v)
+    mean += x;
+  mean /= n;
+  if (!(mean > 0.0)) return false;
+
+  double var = 0.0;
+  for (const double x : sample_v) {
+    const double dx = x - mean;
+    var += dx * dx;
+  }
+  var /= n - 1.0;
+  if (!(var > 0.0)) return false;
+
+  fit.shape = (mean * mean) / var;
+  fit.scale = var / mean;
+  return std::isfinite(fit.shape) && std::isfinite(fit.scale) && fit.shape > 0.0 && fit.scale > 0.0;
+}
+
+bool thresholds_from_levels(const vec<double>& sample_v,
+                            const vec<double>& levels_v,
+                            vec<double>& out_v,
+                            gamma_fit_t* fit_out)
 {
   out_v.clear();
-  if (pool_v.size() < min_null_samples || levels_v.size() != 4) return false;
+  if (levels_v.size() != 4) return false;
 
+  gamma_fit_t fit;
+  if (!fit_gamma_mom(sample_v, fit)) return false;
+  if (fit_out != nullptr) *fit_out = fit;
+
+  const boost::math::gamma_distribution<double> gamma(fit.shape, fit.scale);
   vec<double> levels = levels_v;
   std::sort(levels.begin(), levels.end()); // tightest alpha first
 
@@ -162,17 +214,27 @@ bool thresholds_from_levels(const vec<double>& pool_v, const vec<double>& levels
   double prev_low = d_eps;
   double prev_high = d_ub - d_eps;
   for (const double alpha : levels) {
-    double t_low = linear_quantile(pool_v, alpha / 2.0);
+    double t_low = 0.0;
+    double t_high = 0.0;
+    try {
+      t_low = boost::math::quantile(gamma, alpha / 2.0);
+      t_high = boost::math::quantile(gamma, 1.0 - alpha / 2.0);
+    } catch (const std::exception&) {
+      return false;
+    }
+    if (!std::isfinite(t_low) || !std::isfinite(t_high)) return false;
+
+    // A quantile that reaches the estimable floor carries no threshold information, so fall back to
+    // the nearest observed distance, exactly as the empirical derivation did.
     if (!(t_low > prev_low)) {
-      const auto it = std::upper_bound(pool_v.begin(), pool_v.end(), prev_low);
-      if (it == pool_v.end()) return false;
+      const auto it = std::upper_bound(sample_v.begin(), sample_v.end(), prev_low);
+      if (it == sample_v.end()) return false;
       t_low = *it;
       lifted = true;
     }
-    double t_high = linear_quantile(pool_v, 1.0 - alpha / 2.0);
     if (!(t_high < prev_high)) {
-      const auto it = std::lower_bound(pool_v.begin(), pool_v.end(), prev_high);
-      if (it == pool_v.begin()) return false;
+      const auto it = std::lower_bound(sample_v.begin(), sample_v.end(), prev_high);
+      if (it == sample_v.begin()) return false;
       t_high = *std::prev(it);
       lifted = true;
     }
@@ -183,7 +245,8 @@ bool thresholds_from_levels(const vec<double>& pool_v, const vec<double>& levels
     prev_high = t_high;
   }
   std::sort(out_v.begin(), out_v.end());
-  if (lifted) warn_msg("--levels: some quantiles reach the background floor; using the nearest higher distinct distances");
+  if (lifted)
+    warn_msg("--levels: some gamma quantiles reach the background floor; using the nearest observed distance");
   return true;
 }
 
@@ -219,6 +282,11 @@ void IntMap<T>::build_null(ThreadPool& pool)
   std::sort(null_v.begin(), null_v.end());
   for (auto& v : null_seq_v)
     std::sort(v.begin(), v.end());
+
+  // The --levels gamma is fitted to the lr-filtered sample; the empirical percentile above keeps
+  // using the full pool.
+  fit_v = lr_filtered_sample(points, opts.lr_th, opts.min_portion);
+  std::sort(fit_v.begin(), fit_v.end());
 }
 
 template<typename T>
@@ -230,9 +298,15 @@ void IntMap<T>::map_sequences(std::ostream& sout, const str& rname, ThreadPool& 
     // Also guards direct (non-CLI) construction; the CLI checks this in validate_configuration.
     if (th_v.size() != 1 && th_v.size() != WIDTH)
       error_exit(concat_msg("-d needs exactly 1 or ", WIDTH, " thresholds; got ", th_v.size()));
-  } else if (!thresholds_from_levels(null_v, opts.levels_v, th_v)) {
-    warn_pmsg(rname, "skipped: --levels do not resolve into 8 distinct thresholds; the background is too coarse");
-    return;
+  } else {
+    gamma_fit_t fit;
+    if (!thresholds_from_levels(fit_v, opts.levels_v, th_v, &fit)) {
+      // The background cannot place WIDTH distinct quantiles for this sketch; skip it rather than
+      // aborting the whole run. Other sketches in the container are unaffected.
+      warn_pmsg(rname, "skipped: --levels do not resolve into 8 distinct thresholds; the background is too coarse");
+      return;
+    }
+    gamma_fit = fit;
   }
 
   const T dist_th = make_dist_th<T>(th_v);
@@ -481,6 +555,18 @@ void IntMap<T>::report_null(const str& rname) const
            null_floored,
            ") median=",
            linear_quantile(null_v, 0.5));
+  if (std::isfinite(gamma_fit.shape))
+    cerr_msg("[",
+             rname,
+             "] --levels gamma fit: shape=",
+             gamma_fit.shape,
+             " scale=",
+             gamma_fit.scale,
+             " (n=",
+             fit_v.size(),
+             ", floored=",
+             null_floored,
+             ")");
   for (const double t : th_v)
     cerr_msg("[", rname, "] threshold=", t);
 }
@@ -601,6 +687,7 @@ void BackgroundSampler::evaluate(ThreadPool& pool)
         agg.clear();
         scan_mers_range<true>(ctx, cseq, jx, jy, agg);
         p.d = llhf.mle(agg.hist(), agg.u);
+        p.s = compute_lr_ub(llhf, p.d, agg.u + hist_total(agg.hist(), hdist_th));
       }
     } else {
       swindow_counts_t agg(hdist_th);
@@ -612,7 +699,11 @@ void BackgroundSampler::evaluate(ThreadPool& pool)
         scan_mers_range<false>(ctx, cseq, jx, jy, agg);
         const double d_fw = llhf.mle(agg.hist_fw(), agg.u_fw);
         const double d_rc = llhf.mle(agg.hist_rc(), agg.u_rc);
-        p.d = select_strand_distance(d_fw, d_rc).first;
+        const auto picked = select_strand_distance(d_fw, d_rc);
+        p.d = picked.first;
+        const bool is_rc = picked.second == '-';
+        p.s = compute_lr_ub(
+          llhf, p.d, (is_rc ? agg.u_rc : agg.u_fw) + hist_total(is_rc ? agg.hist_rc() : agg.hist_fw(), hdist_th));
       }
     }
   });
@@ -755,8 +846,17 @@ MapSC::MapSC(CLI::App& sc)
     ->expected(1, rwidth);
   sc.add_option("--levels",
                 params.levels_v,
-                "Two-sided tail probabilities: exactly 4; thresholds are their empirical quantiles [0.1 0.05 0.01 0.005]")
+                "Two-sided tail probabilities: exactly 4; thresholds are quantiles of a gamma fitted to the "
+                "lr-filtered background [0.1 0.05 0.01 0.005]")
     ->expected(4);
+  sc.add_option("--lr-th",
+                params.lr_th,
+                "A background window is kept for the --levels gamma fit when its lr_ub exceeds this [6.635]")
+    ->check(CLI::NonNegativeNumber);
+  sc.add_option("--min-portion",
+                params.min_portion,
+                "Fit --levels on the lr-filtered background iff at least this portion survives [0.66]")
+    ->check(CLI::Range(0.0, 1.0));
   sc.add_option("--sample-size", params.sample_size, "Background windows sampled per reference (0: skip) [500]")
     ->check(CLI::NonNegativeNumber);
   sc.add_flag("--enum-only,!--no-enum-only", params.enum_only, "Enumerate intervals without ordered removal [false]");

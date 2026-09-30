@@ -2,6 +2,7 @@
 #include "dist.hpp"
 #include "map.hpp"
 #include <algorithm>
+#include <boost/math/distributions/gamma.hpp>
 #include <cmath>
 #include <random>
 
@@ -283,15 +284,18 @@ TEST_CASE("a zero median leaves the fold undefined") {
 
 } // TEST_SUITE
 
-TEST_SUITE("thresholds_from_levels") {
+TEST_SUITE("gamma background thresholds") {
 
-TEST_CASE("four levels resolve into eight distinct in-range thresholds") {
-  vec<double> pool;
+TEST_CASE("four levels resolve into eight distinct in-range gamma quantiles") {
+  vec<double> sample;
   for (int i = 0; i < 1000; ++i)
-    pool.push_back(0.05 + 0.0001 * static_cast<double>(i));
+    sample.push_back(0.05 + 0.0001 * static_cast<double>(i));
 
+  gamma_fit_t fit;
   vec<double> th;
-  REQUIRE(thresholds_from_levels(pool, {0.1, 0.05, 0.01, 0.005}, th));
+  REQUIRE(thresholds_from_levels(sample, {0.1, 0.05, 0.01, 0.005}, th, &fit));
+  CHECK(fit.shape > 0.0);
+  CHECK(fit.scale > 0.0);
   REQUIRE(th.size() == 8);
   for (size_t i = 1; i < th.size(); ++i)
     CHECK(th[i - 1] < th[i]);
@@ -301,38 +305,61 @@ TEST_CASE("four levels resolve into eight distinct in-range thresholds") {
   }
 }
 
-TEST_CASE("floored lower quantiles are lifted to distinct distances") {
-  vec<double> pool(20, 0.0); // floored mass, still counted by the quantile
-  for (int i = 0; i < 200; ++i)
-    pool.push_back(0.02 + 0.0005 * static_cast<double>(i));
+TEST_CASE("method of moments recovers a known gamma") {
+  const double shape = 4.0;
+  const double scale = 0.02;
+  const boost::math::gamma_distribution<double> gamma(shape, scale);
+  const size_t n = 20000;
+  vec<double> sample;
+  sample.reserve(n);
+  for (size_t i = 0; i < n; ++i)
+    sample.push_back(boost::math::quantile(gamma, (static_cast<double>(i) + 0.5) / static_cast<double>(n)));
 
-  vec<double> th;
-  REQUIRE(thresholds_from_levels(pool, {0.1, 0.05, 0.01, 0.005}, th));
-  REQUIRE(th.size() == 8);
-  for (size_t i = 1; i < th.size(); ++i)
-    CHECK(th[i - 1] < th[i]);
-  CHECK(th.front() == doctest::Approx(0.02)); // first distance above the floor
+  gamma_fit_t fit;
+  REQUIRE(fit_gamma_mom(sample, fit));
+  CHECK(fit.shape == doctest::Approx(shape).epsilon(0.02));
+  CHECK(fit.scale == doctest::Approx(scale).epsilon(0.02));
 }
 
-TEST_CASE("a coarse pool fails instead of duplicating lanes") {
-  const vec<double> pool(min_null_samples, 0.1);
+TEST_CASE("a degenerate sample fails instead of duplicating lanes") {
+  const vec<double> sample(min_null_samples, 0.1);
   vec<double> th;
-  CHECK_FALSE(thresholds_from_levels(pool, {0.1, 0.05, 0.01, 0.005}, th));
+  CHECK_FALSE(thresholds_from_levels(sample, {0.1, 0.05, 0.01, 0.005}, th));
 }
 
-TEST_CASE("a short pool fails") {
-  const vec<double> pool{0.1, 0.2, 0.3};
+TEST_CASE("a short sample fails") {
+  const vec<double> sample{0.1, 0.2, 0.3};
   vec<double> th;
-  CHECK_FALSE(thresholds_from_levels(pool, {0.1, 0.05, 0.01, 0.005}, th));
+  CHECK_FALSE(thresholds_from_levels(sample, {0.1, 0.05, 0.01, 0.005}, th));
 }
 
 TEST_CASE("exactly four levels are required") {
-  vec<double> pool;
+  vec<double> sample;
   for (int i = 0; i < 1000; ++i)
-    pool.push_back(0.05 + 0.0001 * static_cast<double>(i));
+    sample.push_back(0.05 + 0.0001 * static_cast<double>(i));
   vec<double> th;
-  CHECK_FALSE(thresholds_from_levels(pool, {0.05, 0.01}, th));
-  CHECK_FALSE(thresholds_from_levels(pool, {0.1, 0.05, 0.01, 0.005, 0.001}, th));
+  CHECK_FALSE(thresholds_from_levels(sample, {0.05, 0.01}, th));
+  CHECK_FALSE(thresholds_from_levels(sample, {0.1, 0.05, 0.01, 0.005, 0.001}, th));
+}
+
+TEST_CASE("the lr filter keeps evidence-bearing windows only when enough survive") {
+  const auto point = [](double d, double s) {
+    sample_point_t p;
+    p.d = d;
+    p.s = s;
+    return p;
+  };
+
+  // Three of four windows carry evidence: portion 0.75 > 0.66, so only those are kept.
+  vec<sample_point_t> points{point(0.10, 50.0), point(0.20, 40.0), point(0.30, 30.0), point(0.90, 1.0)};
+  vec<double> kept = lr_filtered_sample(points, 6.635, 0.66);
+  REQUIRE(kept.size() == 3);
+  CHECK(kept.back() == doctest::Approx(0.30));
+
+  // Only one of four survives: the fallback keeps every valid window.
+  points = {point(0.10, 50.0), point(0.20, 1.0), point(0.30, 1.0), point(0.40, nanx())};
+  kept = lr_filtered_sample(points, 6.635, 0.66);
+  CHECK(kept.size() == 4);
 }
 
 } // TEST_SUITE
