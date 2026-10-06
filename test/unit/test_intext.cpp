@@ -267,8 +267,7 @@ TEST_CASE("merge when chi-square below threshold") {
 
 TEST_SUITE("IntExt<double>::extract_histogram") {
 
-TEST_CASE("extract_histogram returns correct counts for enum_only=false") {
-  // Need enum_only=false for hdisthist_v to be allocated
+TEST_CASE("extract_histogram returns correct counts when the histogram is kept") {
   auto params = map_params<double>(0.1, 4, 2, 0, 33.0);
   LLH<double> llhf(27, 11, 0.5, 4, 0.1);
   const uint64_t nbins = 10;
@@ -999,7 +998,7 @@ TEST_CASE("skip_mer splits extraction at the flagged bin") {
     for (uint64_t i = 12; i < 25; ++i) { ext.aggregate_mer(0, i); ext.aggregate_mer(0, i); }
   };
 
-  // Baseline: no skips -> one interval spans the gap (1-based bin 11).
+  // Baseline: no skips -> one interval spans the gap (0-based bin 10).
   IntExt<double> ext_ns(params, llhf, nbins, nbins);
   inject(ext_ns);
   finish_ext_scan(ext_ns, llhf, nanx());
@@ -1007,7 +1006,7 @@ TEST_CASE("skip_mer splits extraction at the flagged bin") {
   ext_ns.expand_intervals(33.0);
   bool covers_gap = false;
   for (const auto& iv : ext_ns.get_intervals_v(0))
-    covers_gap = covers_gap || (iv.a <= 11 && 11 <= iv.b);
+    covers_gap = covers_gap || (iv.a <= 10 && 10 < iv.b); // intervals are half-open [a, b)
   CHECK(covers_gap);
 
   // Skip at 0-based bin 10: no interval crosses it.
@@ -1023,9 +1022,9 @@ TEST_CASE("skip_mer splits extraction at the flagged bin") {
   CHECK(iv_v.size() >= 2);
   bool left = false, right = false;
   for (const auto& iv : iv_v) {
-    CHECK(!(iv.a <= 11 && 11 <= iv.b));
+    CHECK(!(iv.a <= 10 && 10 < iv.b));
     left = left || (iv.b <= 10);
-    right = right || (iv.a >= 12);
+    right = right || (iv.a >= 11);
   }
   CHECK(left);
   CHECK(right);

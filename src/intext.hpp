@@ -40,6 +40,15 @@ inline double lane_at(T v, size_t ix)
   }
 }
 
+// Lanes that survived the likelihood-ratio bounds; a false lane is never extracted.
+// A threshold that cannot separate anything produces no records at all.
+inline arr<bool, rwidth> all_lanes_active()
+{
+  arr<bool, rwidth> active{};
+  active.fill(true);
+  return active;
+}
+
 template<typename T>
 struct map_params
 {
@@ -49,6 +58,7 @@ struct map_params
   uint64_t bin_shift; // Bin index = site >> bin_shift
   uint64_t bin_size;  // 2^bin_shift
   double chisq;       // Chi-square threshold for interval merging
+  arr<bool, rwidth> active = all_lanes_active();
 
   map_params(T dist_th, uint32_t hdist_th, uint64_t tau, uint64_t bin_shift, double chisq)
     : dist_th(dist_th)
@@ -74,7 +84,7 @@ public:
   void skip_mer(uint64_t i);
   void aggregate_mer(uint32_t hdist_min, uint64_t i);
   void set_query_distance(double d_q);
-  void extract_intervals_mx(uint64_t tau, uint64_t lix, uint64_t rix, size_t ix = 0);
+  void extract_intervals_mx(uint64_t tau_eff, uint64_t lix, uint64_t rix, size_t ix = 0);
   void expand_intervals(double chisq_th, size_t ix = 0);
   void total_histogram(vec<uint64_t>& v, uint64_t& u, uint64_t& t) const;
   void extract_histogram(uint64_t a, uint64_t b, vec<uint64_t>& v, uint64_t& u, uint64_t& t) const;
@@ -109,13 +119,13 @@ private:
   vec<T> sdps_v;                           // S[i] = sum(s_0, ..., s_{i}), S[0] = 0 (shifted by 1 w.r.t. sdc_v)
   vec<T> fdpmax_v;                         // H[i] = max(C_1, ..., C_{i}), H_0 = -inf, H_{n+1} = inf
   vec<T> fdsmin_v;                         // L[i] = min(C_{i}, ..., C_n), L_0 = inf, L_{n+1}= -inf
-  vec<size_t> thrank_v;                    // extraction order for this strand (depends on d_q)
+  vec<size_t> thrank_v;                    // extraction order for this strand: most extreme lane first
   arr<bool, WIDTH> thneg_v{};              // which thresholds need a sign flip
-  arr<vec<interval_t>, WIDTH> intervals_v; // 1-based inclusive bin coordinates per threshold
+  arr<vec<interval_t>, WIDTH> intervals_v; // half-open bin ranges [a, b) per threshold: bins a .. b-1
   vec<uint8_t> skip_v;                     // 0-based per-bin N-run break flags (lazy)
   bool wskip = false;                      // whether any bin was flagged by skip_mer
 
-  void extract_mx(uint64_t tau, uint64_t lix, uint64_t rix, size_t ix);
+  void extract_mx(uint64_t tau_eff, uint64_t lix, uint64_t rix, size_t ix);
   void apply_threshold_signs();
 };
 

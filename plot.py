@@ -123,6 +123,9 @@ def parse_d_interval_upper(val) -> float:
 def normalize_gdiff_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     """Add optional columns and a unified distance column for plotting."""
     df = df.copy()
+    # `map` renamed the PERCENTILE column to PVALUE when it became a two-sided p-value.
+    if "PVALUE" in df.columns and "PERCENTILE" not in df.columns:
+        df = df.rename(columns={"PVALUE": "PERCENTILE"})
     for col in ("STRAND_DIFF", "QVALUE", "DIST_CONTIG", "DIST_GENOME", "FOLD"):
         if col not in df.columns:
             df[col] = np.nan

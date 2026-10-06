@@ -68,8 +68,9 @@ void LSHF::set_lshf()
     mask_drop_lr += (0x0000000100000001ull << npos_v[i]);
     mask_drop_bp += (0x0000000000000003ull << (npos_v[i] * 2));
   }
-  for (uint32_t i = 0; i < 16 - (k - h); ++i) {
-    mask_drop_lr += 0x0000000000000001ull << (i + k);
+  const int n_fill = 16 - (static_cast<int>(k) - static_cast<int>(h));
+  for (int i = 0; i < n_fill; ++i) {
+    mask_drop_lr += 0x0000000000000001ull << (static_cast<uint32_t>(i) + k);
   }
   for (int i = ppos_v.size() - 1; i >= 0; --i) {
     mask_hash_lr += (0x0000000100000001ull << ppos_v[i]);

@@ -54,7 +54,7 @@ gdiff map queries.fasta reference.skc --levels 0.2 0.1 0.05 0.02 -l 500
 To skip significance testing and just enumerate intervals:
 
 ```bash
-gdiff map queries.fasta reference.skc -d 0.05 -l 500 --enum-only --sample-size 0
+gdiff map queries.fasta reference.skc -d 0.05 -l 500 --sample-size 0
 ```
 
 ### 3. Merge sketches (optional)
@@ -112,20 +112,26 @@ Positional: `<query.fasta> <reference.skc>`.
 | Option | Default | Description |
 |--------|--------|-------------|
 | `-d, --dist-th` | - | Absolute distance threshold(s): exactly 1 or 8; overrides `--levels` |
-| `--levels` | `0.1 0.05 0.01 0.005` | Two-sided tail probabilities: exactly 4; thresholds are their empirical quantiles |
-| `-l` | (required) | Minimum interval length in k-mers; also the background window length |
+| `--levels` | `0.02 0.01 0.005 0.004` | Two-sided tail probabilities: exactly 4; thresholds are their background quantiles |
+| `-l` | (required) | Minimum interval length in k-mers (rounded up to whole `-b` bins); also the background window length |
 | `-o, --output-path` | stdout | Write output to a file |
 | `--hdist-th` | `3` | Max Hamming distance for a k-mer hit (0–7) |
-| `--chisq` | `33.00051` | Chi-squared threshold for merging adjacent intervals |
+| `--chisq` | `33.00051` | Chi-squared threshold for merging overlapping intervals |
 | `-b, --bin-shift` | `0` | Bin size = 2^b; groups consecutive k-mers |
-| `--sample-size` | `500` | Background windows sampled per reference (`0` = skip significance) |
-| `--enum-only` | off | Simple per-threshold enumeration instead of ordered removal |
+| `--sample-size` | `500` | Background windows sampled per reference; `0` skips the test, otherwise at least `100` |
+| `--iterative-removal` | off | Let each threshold claim its intervals and search only the remaining gaps; off, every threshold enumerates its own intervals |
+| `--lr-th` | `6.635` | `--levels`: a background window or threshold must clear this likelihood ratio |
+| `--min-portion` | `0.66` | `--levels`: apply the likelihood-ratio filter only when this fraction survives |
+| `--bg-model` | `empirical` | `--levels` thresholds from `empirical` quantiles of the pool or a `gamma` fit to the filtered pool |
+| `--no-lane-gate` | off | `--levels`: keep thresholds outside the likelihood-ratio bounds |
 | `--per-sequence` | off | Measure significance against a per-query background |
 | `--verbosity` | `1` | Background and threshold report detail (0–1) |
 
-Distance thresholds may be given directly (`-d`, exactly 1 or 8 values) or as tail probabilities of the background (`--levels`, exactly 4 levels; the default). The two are mutually exclusive, and either way the run fills its SIMD lanes exactly: `-d` with 1 value uses the scalar path, everything else uses 8 lanes. Because the lower empirical quantiles often sit at the estimable floor (background windows that match almost perfectly), a floored lower quantile is lifted to the nearest higher distinct background distance and each later level takes the next distinct one; a warning says when that happens. If the background is too coarse to place eight distinct thresholds the run aborts, and `--sample-size` sets how finely the quantiles resolve.
+Distance thresholds may be given directly (`-d`, exactly 1 or 8 values) or as tail probabilities of the background (`--levels`, exactly 4 levels; the default). The two are mutually exclusive, and either way the run fills its SIMD lanes exactly: `-d` with 1 value uses the scalar path, everything else uses 8 lanes. Because the lower empirical quantiles often sit at the estimable floor (background windows that match almost perfectly), a floored lower quantile is lifted to the nearest higher distinct background distance and each later level takes the next distinct one; a warning says when that happens. If the background is too coarse to place eight distinct thresholds the run skips that reference, and `--sample-size` sets how finely the quantiles resolve.
 
-The background null is the empirical distribution of `-l`-long query windows scored against the reference. `PERCENTILE` and `FOLD` are the empirical rank and median ratio within that null; no parametric fit is used. `map` only reads the reference's bucket index, so a buckets-only sketch (`-l 0`) is sufficient.
+By default every threshold enumerates its own maximal intervals, so records from different thresholds can overlap. With `--iterative-removal` the thresholds are walked from the most extreme inward and each one searches only the gaps the earlier ones left, so a region is reported once, under the tightest threshold that claimed it.
+
+The background null is the empirical distribution of `-l`-long query windows scored against the reference. `PVALUE` is the two-sided empirical tail probability of a record's distance in that null and `FOLD` is `d` over the pool median; no parametric fit is used. `QVALUE` is the Benjamini–Hochberg adjustment of `PVALUE`, computed per strand, so the two columns are always on the same scale. `map` only reads the reference's bucket index, so a buckets-only sketch (`-l 0`) is sufficient.
 
 ### `gdiff dist`
 
@@ -151,10 +157,10 @@ genome_a  genome_b  d  d_median  d_mean  d_upper  d_highest  d_ab  d_ba  n_ab  n
 `d` is the reconciled distance and `d_ab`/`d_ba` the two directional medians. `--output-samples` instead writes one row per sampled window:
 
 ```
-config  genome_a  genome_b  seq  start  end  strand  direction  d  lr_ub
+config  genome_a  genome_b  seq  start  end  [strand]  direction  d  lr_ub
 ```
 
-`LR_UB` is the likelihood-ratio statistic of the sample's distance against the sketch's maximum estimable distance. Coordinates are 1-based and inclusive; for strand-aware sketches each sample uses the lower of the forward and reverse-complement distances and reports the selected strand.
+`LR_UB` is the likelihood-ratio statistic of the sample's distance against the sketch's maximum estimable distance. Coordinates are 1-based and inclusive; for strand-aware sketches each sample uses the lower of the forward and reverse-complement distances and reports the selected strand, while a canonical sketch drops the `strand` column.
 
 ### `gdiff roll`
 

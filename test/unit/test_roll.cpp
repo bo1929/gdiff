@@ -95,17 +95,16 @@ TEST_SUITE("roll")
     // k defaults to 23, so a window of 100 k-mers spans 100 + 23 - 1 = 122 bases.
     const auto stepped = roll_lines(fa, skc, "-l 100 -s 50");
     REQUIRE_FALSE(stepped.empty());
-    CHECK(stepped[0] == "seq\tstart\tend\tstrand\treference\td");
+    CHECK(stepped[0] == "seq\tstart\tend\treference\td");
     CHECK(stepped.size() == 1 + 78); // (enmers - tau) / step + 1 = (3974 - 100) / 50 + 1
 
     const auto first = fields(stepped[1]);
-    REQUIRE(first.size() == 6);
+    REQUIRE(first.size() == 5);
     CHECK(first[0] == "roll_geom");
     CHECK(first[1] == "1");
     CHECK(first[2] == "122");
-    CHECK(first[3] == ".");
-    CHECK(first[4] == "roll_geom.fa");
-    CHECK(as_double(first[5]) < 1e-6); // self-match
+    CHECK(first[3] == "roll_geom.fa");
+    CHECK(as_double(first[4]) < 1e-6); // self-match
 
     const auto second = fields(stepped[2]);
     CHECK(second[1] == "51");
@@ -183,7 +182,7 @@ TEST_SUITE("roll")
     for (size_t i = 0; i < strict.size(); ++i) {
       const auto a = fields(strict[i]);
       const auto b = fields(loose[i]);
-      REQUIRE(a.size() == 6);
+      REQUIRE(a.size() == 5);
       CHECK(a[1] == b[1]); // start
       CHECK(a[2] == b[2]); // end
     }

@@ -270,18 +270,35 @@ samples_t process_samples(const Sketch& query, const Sketch& reference, uint32_t
     out.windows_v.push_back(mle);
 
     if (output_samples) {
-      write_tsv(ss,
-                "gdiff",
-                is_ba ? reference.get_rname() : query.get_rname(),
-                is_ba ? query.get_rname() : reference.get_rname(),
-                wins_v[wix].qid,
-                wins_v[wix].start + 1,
-                wins_v[wix].end + query.get_k() - 1,
-                strand,
-                is_ba ? "ba" : "ab",
-                mle.d,
-                mle.s)
-        << '\n';
+      const char* direction = is_ba ? "ba" : "ab";
+      const str& first_name = is_ba ? reference.get_rname() : query.get_rname();
+      const str& second_name = is_ba ? query.get_rname() : reference.get_rname();
+      if (canonical) {
+        write_tsv(ss,
+                  "gdiff",
+                  first_name,
+                  second_name,
+                  wins_v[wix].qid,
+                  wins_v[wix].start + 1,
+                  wins_v[wix].end + query.get_k() - 1,
+                  direction,
+                  mle.d,
+                  mle.s)
+          << '\n';
+      } else {
+        write_tsv(ss,
+                  "gdiff",
+                  first_name,
+                  second_name,
+                  wins_v[wix].qid,
+                  wins_v[wix].start + 1,
+                  wins_v[wix].end + query.get_k() - 1,
+                  strand,
+                  direction,
+                  mle.d,
+                  mle.s)
+          << '\n';
+      }
     }
   }
 
@@ -362,10 +379,14 @@ void DistSC::resolve_list(const std::filesystem::path& path, vec<uint32_t>& out)
   }
 }
 
-void DistSC::emit_header(std::ostream& os) const
+void DistSC::emit_header(std::ostream& os, bool canonical) const
 {
   if (params.output_samples) {
-    write_tsv(os, "config", "genome_a", "genome_b", "seq", "start", "end", "strand", "direction", "d", "lr_ub") << '\n';
+    if (canonical) {
+      write_tsv(os, "config", "genome_a", "genome_b", "seq", "start", "end", "direction", "d", "lr_ub") << '\n';
+    } else {
+      write_tsv(os, "config", "genome_a", "genome_b", "seq", "start", "end", "strand", "direction", "d", "lr_ub") << '\n';
+    }
   } else {
     write_tsv(os,
               "genome_a",
@@ -460,7 +481,7 @@ void DistSC::estimate_distances()
   });
   std::ostream& os = *output_stream;
   write_provenance(os);
-  emit_header(os);
+  emit_header(os, entries_v.front().file->get_config().canonical);
   if (pairs_v.empty()) {
     cerr_msg("No pairs to compare");
     os.flush();

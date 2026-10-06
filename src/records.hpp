@@ -41,28 +41,35 @@ using mask_t = uint32_t;
 
 struct record_t
 {
-  uint64_t bix;      // batch index of the source query
-  uint64_t L;        // effective query length (enmers + k - 1)
-  interval_t seq_iv; // 1-based inclusive coordinates on query
-  bool is_rc;        // Is the source query on the reverse-complement strand?
-  double d;          // MLE distance for this interval in [d_eps, d_ub]
-  double I;          // Observed Fisher information I(d)
-  size_t th_ix;      // Threshold index; no_threshold marks background gaps (not reported anymore)
+  uint64_t bix;       // batch index of the source query
+  uint64_t L;         // effective query length (enmers + k - 1)
+  interval_t seq_iv;  // 1-based inclusive coordinates on query
+  bool is_rc;         // Is the source query on the reverse-complement strand?
+  double d;           // MLE distance for this interval in [d_eps, d_ub]
+  double fisher_info; // Observed Fisher information at d
+  size_t th_ix;       // Threshold index; no_threshold marks background gaps (not reported anymore)
   // Per-query fields, filled once both strands' distances are known
-  double d_q = nanx();        // MLE distance for the source strand
-  double d_diff = nanx();     // strand difference encoding; see strand_diff()
-  double fold = nanx();       // fold change: d / median(background samples)
-  double percentile = nanx(); // two-sided percentile for the closer strand (reference), otherwise cdf
-  double qvalue = nanx();     // Benjamini-Hochberg adjusted two-sided p-value
-  double lr_ub;               // likelihood-ratio statistic vs max estimable distance (extreme match counts)
+  double d_q = nanx();    // MLE distance for the source strand
+  double d_diff = nanx(); // strand difference encoding; see strand_diff()
+  double fold = nanx();   // fold change: d / median(background samples)
+  double pvalue = nanx(); // empirical two-sided p-value against the background pool
+  double qvalue = nanx(); // Benjamini-Hochberg adjusted p-value
+  double lr_ub;           // likelihood-ratio statistic vs max estimable distance (extreme match counts)
 
-  record_t(uint64_t bix, uint64_t L, interval_t seq_iv, bool is_rc, double d, double I, size_t th_ix, double lr_ub = nanx())
+  record_t(uint64_t bix,
+           uint64_t L,
+           interval_t seq_iv,
+           bool is_rc,
+           double d,
+           double fisher_info,
+           size_t th_ix,
+           double lr_ub = nanx())
     : bix(bix)
     , L(L)
     , seq_iv(seq_iv)
     , is_rc(is_rc)
     , d(d)
-    , I(I)
+    , fisher_info(fisher_info)
     , th_ix(th_ix)
     , lr_ub(lr_ub)
   {
@@ -92,57 +99,42 @@ inline interval_t get_coordinates(const interval_t& bin_iv, uint64_t bin_shift, 
   return {a, b};
 }
 
-// Minimum background windows for an empirical percentile to mean anything.
+// Minimum background windows for a p-value to mean anything. `map` raises this to a tenth of its
+// `--sample-size`; 8 is the floor for callers that do not carry a sample size.
 inline constexpr size_t min_null_samples = 8;
 
-// True when a record is tested two-sided: it sits on the strand the query-level comparison prefers.
-// NaN (neither strand finite) is one-sided; a signed infinity (only one strand finite) already
-// prefers that finite strand, so the finite strand is two-sided.
-inline bool is_two_sided(const record_t& r)
+// Empirical two-sided p-value of r.d within a sorted background pool; sets pvalue and fold. Both
+// tails are treated alike, so a record that is unusually *similar* and one that is unusually
+// *divergent* are scored on the same scale - the scale `benjamini_hochberg_correction` consumes,
+// which is why the reported column and the q-value can never disagree.
+inline void apply_empirical_significance(record_t& r, const vec<double>& pool_v, size_t min_samples = min_null_samples)
 {
-  return !std::isnan(r.d_diff) && (r.is_rc == (r.d_diff > 0.0));
-}
-
-// The two-sided empirical p behind `percentile`, used by the q-value so that every record is
-// adjusted on the same scale: `percentile` already holds the two-sided value for a two-sided
-// record, and the one-sided CDF for the rest.
-inline double two_sided_p(const record_t& r)
-{
-  if (!std::isfinite(r.percentile)) return r.percentile;
-  return is_two_sided(r) ? r.percentile : std::min(1.0, 2.0 * std::min(r.percentile, 1.0 - r.percentile));
-}
-
-// Empirical percentile of r.d within a sorted background pool; sets percentile and fold.
-inline void apply_empirical_significance(record_t& r, const vec<double>& pool_v)
-{
-  if (!is_valid_distance(r.d) || pool_v.size() < min_null_samples) return;
+  if (!is_valid_distance(r.d) || pool_v.size() < min_samples) return;
   assert(std::is_sorted(pool_v.begin(), pool_v.end()));
   const size_t le = static_cast<size_t>(std::upper_bound(pool_v.begin(), pool_v.end(), r.d) - pool_v.begin());
   const double prob = static_cast<double>(le) / static_cast<double>(pool_v.size());
-  r.percentile = std::clamp(is_two_sided(r) ? 2.0 * std::min(prob, 1.0 - prob) : prob, 0.0, 1.0);
+  r.pvalue = std::clamp(2.0 * std::min(prob, 1.0 - prob), 0.0, 1.0);
   const double median = linear_quantile(pool_v, 0.5);
   if (median > eps) r.fold = r.d / median;
 }
 
-// Per-strand Benjamini-Hochberg adjustment of the two-sided p-values into qvalues.
+// Per-strand Benjamini-Hochberg adjustment of the p-values into qvalues.
 inline void benjamini_hochberg_correction(vec<record_t>& records_v)
 {
   for (bool is_rc : {false, true}) {
     vec<size_t> idx_v;
     for (size_t i = 0; i < records_v.size(); ++i)
-      if (records_v[i].is_rc == is_rc && std::isfinite(records_v[i].percentile)) idx_v.push_back(i);
+      if (records_v[i].is_rc == is_rc && std::isfinite(records_v[i].pvalue)) idx_v.push_back(i);
     if (idx_v.empty()) continue;
 
-    std::sort(idx_v.begin(), idx_v.end(), [&](size_t a, size_t b) {
-      return two_sided_p(records_v[a]) < two_sided_p(records_v[b]);
-    });
+    std::sort(idx_v.begin(), idx_v.end(), [&](size_t a, size_t b) { return records_v[a].pvalue < records_v[b].pvalue; });
 
     const double m = static_cast<double>(idx_v.size());
     double q_min = 1.0;
-    // Walk from the largest two-sided p down; `rank` counts from 1, so `i + 1` is the rank.
+    // Walk from the largest p down; `rank` counts from 1, so `i + 1` is the rank.
     for (size_t i = idx_v.size(); i-- > 0;) {
       record_t& r = records_v[idx_v[i]];
-      q_min = std::min(q_min, std::min(1.0, two_sided_p(r) * m / static_cast<double>(i + 1)));
+      q_min = std::min(q_min, std::min(1.0, r.pvalue * m / static_cast<double>(i + 1)));
       r.qvalue = q_min;
     }
   }

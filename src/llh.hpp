@@ -299,4 +299,65 @@ inline double compute_lr_ub(const LLH<T>& llhf, double d, uint64_t n_total)
   return likelihood_ratio_statistic(llhf.nll(d, v.data(), u), nll_ub);
 }
 
+template<typename T>
+inline double compute_lr_lb(const LLH<T>& llhf, double d, uint64_t n_total)
+{
+  if (!is_valid_distance(d) || n_total == 0) return nanx();
+  arr<uint64_t, hdist_bound + 1> v{};
+  v[0] = n_total;
+  double nll_lb = nanx();
+  const double d_lb_est = llhf.mle(v.data(), 0, &nll_lb);
+  if (!is_valid_distance(d_lb_est)) return nanx();
+  return likelihood_ratio_statistic(llhf.nll(d, v.data(), 0), nll_lb);
+}
+
+struct a_range_t
+{
+  double t_min = nanx();
+  double t_max = nanx();
+  bool is_ok = false;
+};
+
+template<typename T>
+inline a_range_t admissible_distance_range(const LLH<T>& llhf, uint64_t n_total, double lr_th)
+{
+  a_range_t r;
+  if (n_total == 0 || !std::isfinite(lr_th) || lr_th < 0.0) return r;
+
+  const double d_max_est = max_estimable_distance(llhf, n_total);
+  if (!is_valid_distance(d_max_est)) return r;
+
+  // t_min: lr_lb grows with d, so bisect for lr_lb(t) = lr_th.
+  if (!(compute_lr_lb(llhf, d_max_est, n_total) > lr_th)) return r; // nothing is resolvable
+  double d_low = d_eps;
+  double d_high = d_max_est;
+  for (int it = 0; it < 50; ++it) {
+    const double mid = 0.5 * (d_low + d_high);
+    if (compute_lr_lb(llhf, mid, n_total) > lr_th)
+      d_high = mid;
+    else
+      d_low = mid;
+  }
+  const double t_min = d_high;
+
+  // t_max: lr_ub falls towards the ceiling on [t_min, d_max_est], so bisect for lr_ub(t) = lr_th.
+  if (!(compute_lr_ub(llhf, t_min, n_total) > lr_th)) return r; // the whole range sits at the ceiling
+  d_low = t_min;
+  d_high = d_max_est;
+  for (int it = 0; it < 50; ++it) {
+    const double mid = 0.5 * (d_low + d_high);
+    if (compute_lr_ub(llhf, mid, n_total) > lr_th)
+      d_low = mid;
+    else
+      d_high = mid;
+  }
+  const double t_max = d_low;
+
+  if (!(t_min < t_max) || !(t_min > d_eps) || !(t_max < d_ub - eps)) return r;
+  r.t_min = t_min;
+  r.t_max = t_max;
+  r.is_ok = true;
+  return r;
+}
+
 #endif

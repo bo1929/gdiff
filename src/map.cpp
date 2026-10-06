@@ -63,10 +63,10 @@ namespace {
                 "d_bin",
                 "d_q",
                 "d_acc",
-                "percentile",
+                "pvalue",
                 "fold",
                 "qvalue",
-                "info",
+                "fisher_info",
                 "lr_ub")
         << '\n';
     } else {
@@ -84,10 +84,10 @@ namespace {
                 "d_q",
                 "d_diff",
                 "d_acc",
-                "percentile",
+                "pvalue",
                 "fold",
                 "qvalue",
-                "info",
+                "fisher_info",
                 "lr_ub")
         << '\n';
     }
@@ -116,10 +116,10 @@ namespace {
                 d_bin,
                 r.d_q,
                 d_acc,
-                r.percentile,
+                r.pvalue,
                 r.fold,
                 r.qvalue,
-                r.I,
+                r.fisher_info,
                 r.lr_ub)
         << '\n';
     } else {
@@ -137,10 +137,10 @@ namespace {
                 r.d_q,
                 r.d_diff,
                 d_acc,
-                r.percentile,
+                r.pvalue,
                 r.fold,
                 r.qvalue,
-                r.I,
+                r.fisher_info,
                 r.lr_ub)
         << '\n';
     }
@@ -163,8 +163,7 @@ vec<double> lr_filtered_sample(const vec<sample_point_t>& points_v, double lr_th
     all_v.push_back(p.d);
     if (!std::isnan(p.s) && p.s > lr_th) kept_v.push_back(p.d);
   }
-  const double portion =
-    all_v.empty() ? 0.0 : static_cast<double>(kept_v.size()) / static_cast<double>(all_v.size());
+  const double portion = all_v.empty() ? 0.0 : static_cast<double>(kept_v.size()) / static_cast<double>(all_v.size());
   if (portion > min_portion) return kept_v;
   return all_v;
 }
@@ -245,10 +244,14 @@ namespace {
   }
 } // namespace
 
-bool empirical_thresholds_from_levels(const vec<double>& sample_v, const vec<double>& levels_v, vec<double>& out_v)
+bool empirical_thresholds_from_levels(const vec<double>& sample_v,
+                                      const vec<double>& levels_v,
+                                      vec<double>& out_v,
+                                      size_t min_samples,
+                                      bool warn_lift)
 {
   out_v.clear();
-  if (sample_v.size() < min_null_samples || levels_v.size() != 4) return false;
+  if (sample_v.size() < min_samples || levels_v.size() != 4) return false;
 
   vec<double> levels = levels_v;
   std::sort(levels.begin(), levels.end()); // tightest alpha first
@@ -278,13 +281,15 @@ bool empirical_thresholds_from_levels(const vec<double>& sample_v, const vec<dou
     prev_high = t_high;
   }
   std::sort(out_v.begin(), out_v.end());
-  if (lifted) warn_msg("--levels: some quantiles reach the background floor; using the nearest higher distinct distances");
+  if (lifted && warn_lift)
+    warn_msg("--levels: some quantiles reach the background floor; using the nearest higher distinct distances");
   return true;
 }
 
 bool thresholds_from_levels(const vec<double>& sample_v,
                             const vec<double>& levels_v,
                             vec<double>& out_v,
+                            size_t min_samples,
                             gamma_fit_t* fit_out)
 {
   out_v.clear();
@@ -299,8 +304,7 @@ bool thresholds_from_levels(const vec<double>& sample_v,
   gamma_fit_t fit;
   bool lifted = false;
   if (fit_gamma_mom(sample_v, fit) && gamma_thresholds(fit, sample_v, levels_v, out_v, lifted)) {
-    if (lifted)
-      warn_msg("--levels: some gamma quantiles reach the background floor; using the nearest observed distance");
+    if (lifted) warn_msg("--levels: some gamma quantiles reach the background floor; using the nearest observed distance");
     if (fit_out != nullptr) *fit_out = fit;
     return true;
   }
@@ -308,7 +312,7 @@ bool thresholds_from_levels(const vec<double>& sample_v,
   // Rejected (too few samples, no variance, or quantiles that cannot be placed): fall back to the
   // empirical quantiles of the same sample rather than skipping the sketch.
   out_v.clear();
-  if (!empirical_thresholds_from_levels(sample_v, levels_v, out_v)) return false;
+  if (!empirical_thresholds_from_levels(sample_v, levels_v, out_v, min_samples)) return false;
   if (fit_out != nullptr) *fit_out = gamma_fit_t{}; // NaN marks the empirical path for the caller
   return true;
 }
@@ -329,12 +333,14 @@ IntMap<T>::IntMap(const map_opts& opts, const Sketch& sketch, const vec<qseq_t>&
 template<typename T>
 void IntMap<T>::build_null(ThreadPool& pool)
 {
+  // One (possibly empty) pool per query sequence, so `null_seq_v[r.bix]` is in range even when the
+  // significance test is switched off with --sample-size 0.
+  null_seq_v.assign(batch_v.size(), {});
   if (opts.sample_size == 0) return;
 
   BackgroundSampler sampler(sketch, batch_v, opts.tau, opts.bin_shift, opts.hdist_th);
   const vec<sample_point_t> points = sampler.sample(opts.sample_size, opts.per_sequence, pool);
 
-  null_seq_v.assign(batch_v.size(), {});
   null_v.clear();
   for (const sample_point_t& p : points) {
     if (!is_valid_distance(p.d)) continue;
@@ -356,26 +362,69 @@ template<typename T>
 void IntMap<T>::map_sequences(std::ostream& sout, const str& rname, ThreadPool& pool)
 {
   build_null(pool);
+  // A record is tested only against a pool of at least a tenth of the requested --sample-size.
+  const size_t min_samples = std::max<size_t>(1, opts.sample_size / 10);
   if (opts.levels_v.empty()) {
     th_v = sorted_unique(opts.thresholds_v);
     // Also guards direct (non-CLI) construction; the CLI checks this in validate_configuration.
     if (th_v.size() != 1 && th_v.size() != WIDTH)
       error_exit(concat_msg("-d needs exactly 1 or ", WIDTH, " thresholds; got ", th_v.size()));
   } else {
-    gamma_fit_t fit;
-    if (!thresholds_from_levels(fit_v, opts.levels_v, th_v, &fit)) {
-      // Neither the gamma nor the empirical fallback could place WIDTH distinct quantiles for this
-      // sketch; skip it rather than aborting the whole run. Other sketches are unaffected.
-      warn_pmsg(rname, "skipped: --levels do not resolve into 8 distinct thresholds; the background is too coarse");
-      return;
+    // Two ways to place the low lanes. The empirical quantiles of the full background are the
+    // faithful local estimate and the default; the gamma smooths and extrapolates, but its lower
+    // tail can sit tighter than the data supports (see --bg-model).
+    if (opts.bg_model == "gamma") {
+      gamma_fit_t fit;
+      if (!thresholds_from_levels(fit_v, opts.levels_v, th_v, min_samples, &fit)) {
+        // Neither the gamma nor the empirical fallback could place WIDTH distinct quantiles for this
+        // sketch; skip it rather than aborting the whole run. Other sketches are unaffected.
+        warn_pmsg(rname, "skipped: --levels do not resolve into 8 distinct thresholds; the background is too coarse");
+        return;
+      }
+      gamma_fit = fit;
+      if (!std::isfinite(gamma_fit.shape))
+        warn_pmsg(rname, "--levels: gamma fit rejected; fell back to empirical quantiles");
+    } else {
+      // The gate below reports and drops any lane that lands on the floor, so the generic lift
+      // warning is only useful when the gate is off.
+      if (!empirical_thresholds_from_levels(null_v, opts.levels_v, th_v, min_samples, opts.no_lane_gate)) {
+        warn_pmsg(rname, "skipped: --levels do not resolve into 8 distinct thresholds; the background is too coarse");
+        return;
+      }
+      gamma_fit = gamma_fit_t{}; // NaN marks the empirical path
     }
-    gamma_fit = fit;
-    if (!std::isfinite(gamma_fit.shape))
-      warn_pmsg(rname, "--levels: gamma fit rejected; fell back to empirical quantiles");
+
+    // A threshold outside the likelihood-ratio bounds cannot separate anything: below the floor it
+    // is indistinguishable from perfect identity, at or above the ceiling from the weakest
+    // detectable match. Drop those lanes rather than lifting them to an observed distance.
+    if (!opts.no_lane_gate) {
+      const LLH<double> probe = make_llhf(sketch, opts.hdist_th);
+      const uint64_t n_win = get_nwinmers(opts.tau, opts.bin_shift);
+      ar = admissible_distance_range<double>(probe, n_win, opts.lr_th);
+      size_t n_active = 0;
+      for (size_t i = 0; i < th_v.size(); ++i) {
+        const bool is_ok = ar.is_ok && th_v[i] >= ar.t_min && th_v[i] <= ar.t_max;
+        active_v[i] = is_ok;
+        if (is_ok) {
+          ++n_active;
+        } else if (opts.verbosity >= 1) {
+          warn_pmsg(rname,
+                    "--levels: dropping threshold ",
+                    th_v[i],
+                    ar.is_ok ? concat_msg(" outside [", ar.t_min, ", ", ar.t_max, "]")
+                             : std::string(" (no admissible range for this window length)"));
+        }
+      }
+      if (n_active == 0) {
+        warn_pmsg(rname, "skipped: none of the ", th_v.size(), " thresholds survives the likelihood-ratio bounds");
+        return;
+      }
+    }
   }
 
   const T dist_th = make_dist_th<T>(th_v);
   map_params<T> dparams(dist_th, opts.hdist_th, opts.tau, opts.bin_shift, opts.chisq);
+  dparams.active = active_v;
   const LLH<T> llhf(k, hpos, sketch.get_rho(), opts.hdist_th, dist_th);
 
   for (size_t bix = 0; bix < batch_v.size(); ++bix)
@@ -384,7 +433,7 @@ void IntMap<T>::map_sequences(std::ostream& sout, const str& rname, ThreadPool& 
   d_acc = llhf.mle(acc_v.data(), u_acc);
   for (record_t& r : records_v) {
     const vec<double>& pool_v = opts.per_sequence ? null_seq_v[r.bix] : null_v;
-    apply_empirical_significance(r, pool_v);
+    apply_empirical_significance(r, pool_v, min_samples);
   }
   benjamini_hochberg_correction(records_v);
 
@@ -412,8 +461,9 @@ void IntMap<T>::scan_sequence(const map_params<T>& params, const LLH<T>& llhf, s
   if (params.tau_bin > nbins)
     warn_pmsg(batch_v[bix].qid, "requested minimum exceeds the query; using the full query as the effective minimum");
 
-  // tau_eff is the minimum interval span minus one: extraction compares spans against > tau_eff.
-  const uint64_t tau_eff = std::min(params.tau_bin, nbins) - 1;
+  // Minimum interval span in bins: extraction keeps a run only when `right - left >= tau_eff`, and
+  // the run then covers exactly the bins its score difference covers.
+  const uint64_t tau_eff = std::min(params.tau_bin, nbins);
   const size_t srprev = records_v.size();
   const scan_ctx_t ctx = make_scan_ctx(sketch, params.bin_shift, params.hdist_th);
 
@@ -430,10 +480,10 @@ void IntMap<T>::scan_sequence(const map_params<T>& params, const LLH<T>& llhf, s
     ext.set_query_distance(d_q);
     ext.extrema_scan();
 
-    if (opts.enum_only)
-      extract_simple_intervals(ext, llhf, false, tau_eff, bix);
+    if (opts.iterative_removal)
+      extract_iterative_intervals(ext, llhf, false, tau_eff, bix);
     else
-      extract_ordered_intervals(ext, llhf, false, tau_eff, bix);
+      extract_lane_intervals(ext, llhf, false, tau_eff, bix);
 
     for (size_t ri = srprev; ri < records_v.size(); ++ri) {
       records_v[ri].d_q = d_q;
@@ -464,12 +514,12 @@ void IntMap<T>::scan_sequence(const map_params<T>& params, const LLH<T>& llhf, s
   for (auto* ext : {&ext_fw, &ext_rc})
     ext->extrema_scan();
 
-  if (opts.enum_only) {
-    extract_simple_intervals(ext_fw, llhf, false, tau_eff, bix);
-    extract_simple_intervals(ext_rc, llhf, true, tau_eff, bix);
+  if (opts.iterative_removal) {
+    extract_iterative_intervals(ext_fw, llhf, false, tau_eff, bix);
+    extract_iterative_intervals(ext_rc, llhf, true, tau_eff, bix);
   } else {
-    extract_ordered_intervals(ext_fw, llhf, false, tau_eff, bix);
-    extract_ordered_intervals(ext_rc, llhf, true, tau_eff, bix);
+    extract_lane_intervals(ext_fw, llhf, false, tau_eff, bix);
+    extract_lane_intervals(ext_rc, llhf, true, tau_eff, bix);
   }
 
   for (size_t ri = srprev; ri < records_v.size(); ++ri) {
@@ -483,20 +533,30 @@ void IntMap<T>::scan_sequence(const map_params<T>& params, const LLH<T>& llhf, s
   add_to_acc(acc_v, u_acc, is_rc ? v_q_rc : v_q_fw_v, is_rc ? u_q_rc : u_q_fw);
 }
 
+// Default mode: every lane enumerates its own maximal runs over the whole sequence.
 template<typename T>
-void IntMap<T>::extract_simple_intervals(IntExt<T>& ext, const LLH<T>& llhf, bool is_rc, uint64_t tau_eff, size_t bix)
+void IntMap<T>::extract_lane_intervals(IntExt<T>& ext, const LLH<T>& llhf, bool is_rc, uint64_t tau_eff, size_t bix)
 {
   const uint64_t nbins = ext.get_nbins();
-  for (size_t ix = 0; ix < WIDTH; ++ix) {
+  // thrank_v holds the lanes that survived the likelihood-ratio bounds, so an inadmissible
+  // threshold is never extracted in either mode.
+  for (size_t ix : ext.get_thrank_v()) {
+    // The extractor's indices are the 0-based bin boundaries of the prefix sums: a run [a, b)
+    // covers bins a .. b-1, and `emit_record` takes the same range. Runs start at boundary 1
+    // because boundary 0 is the score origin (the record-high search looks at `fdpmax[a - 1]`), so
+    // an interval never includes the sequence's first k-mer; the fallback below does cover it.
+    // `nbins` is the last boundary.
     ext.extract_intervals_mx(tau_eff, 1, nbins, ix);
     ext.expand_intervals(opts.chisq, ix);
     for (const auto& iv : ext.get_intervals_v(ix))
-      emit_record(ext, llhf, bix, iv.a, iv.b + 1, ix, is_rc);
+      emit_record(ext, llhf, bix, iv.a, iv.b, ix, is_rc);
   }
 }
 
+// --iterative-removal: lanes are walked from the most extreme threshold inward, and each lane
+// extracts only in the gaps the earlier lanes left, so records do not repeat across thresholds.
 template<typename T>
-void IntMap<T>::extract_ordered_intervals(IntExt<T>& ext, const LLH<T>& llhf, bool is_rc, uint64_t tau_eff, size_t bix)
+void IntMap<T>::extract_iterative_intervals(IntExt<T>& ext, const LLH<T>& llhf, bool is_rc, uint64_t tau_eff, size_t bix)
 {
   const uint64_t nbins = ext.get_nbins();
   bp_v.clear();
@@ -518,10 +578,12 @@ void IntMap<T>::extract_ordered_intervals(IntExt<T>& ext, const LLH<T>& llhf, bo
   for (size_t ix : thrank) {
     merge_from(sbprev);
 
+    // `bp_v` holds half-open 0-based bin ranges [a, b), the same range a record covers. Each gap
+    // is the unclaimed span between two claims, and only gaps that can still hold a full interval
+    // are searched. `prev` starts at boundary 1 for the same reason the extractor does.
     uint64_t prev = 1;
-    // Find gaps between existing intervals and extract new ones.
     for (const auto& s : bp_v) {
-      if (s.a_bin >= prev + tau_eff + 1) run_range(prev, s.a_bin - 1, ix);
+      if (s.a_bin >= prev + tau_eff) run_range(prev, s.a_bin, ix);
       prev = std::max(prev, s.b_bin);
     }
     if (nbins >= prev + tau_eff) run_range(prev, nbins, ix);
@@ -530,25 +592,26 @@ void IntMap<T>::extract_ordered_intervals(IntExt<T>& ext, const LLH<T>& llhf, bo
     const auto& iv_v = ext.get_intervals_v(ix);
     const size_t nprev = bp_v.size();
     for (const auto& iv : iv_v)
-      bp_v.push_back({iv.a, iv.b + 1, ix});
+      bp_v.push_back({iv.a, iv.b, ix});
     sbprev = nprev;
   }
   merge_from(sbprev);
 
   if (bp_v.empty()) {
     if (!ext.is_wskip()) {
-      // No intervals extracted; report the full query.
-      emit_record(ext, llhf, bix, 1, nbins + 1, no_threshold, is_rc);
+      // No interval crossed a threshold; report the full query.
+      emit_record(ext, llhf, bix, 0, nbins, no_threshold, is_rc);
     } else {
-      // One record per skip-free segment of at least tau_eff + 1 bins.
+      // One record per skip-free segment of at least tau_eff bins. `x` counts the 1-based bins the
+      // histogram uses, so a segment is the 0-based range [a - 1, x - 1).
       uint64_t a = 1;
       for (uint64_t x = 1; x <= nbins; ++x) {
         if (ext.is_skip(x)) {
-          if (x > a + tau_eff) emit_record(ext, llhf, bix, a, x, no_threshold, is_rc);
+          if (x - a >= tau_eff) emit_record(ext, llhf, bix, a - 1, x - 1, no_threshold, is_rc);
           a = x + 1;
         }
       }
-      if (nbins >= a + tau_eff) emit_record(ext, llhf, bix, a, nbins + 1, no_threshold, is_rc);
+      if (nbins + 1 - a >= tau_eff) emit_record(ext, llhf, bix, a - 1, nbins, no_threshold, is_rc);
     }
   } else {
     for (const auto& s : bp_v)
@@ -569,22 +632,25 @@ void IntMap<T>::emit_record(IntExt<T>& ext,
   const uint64_t enmers = L - k + 1;
 
   uint64_t u = 0, t = 0;
-  ext.extract_histogram(a_bin - 1, b_bin - 1, scratch_v, u, t);
+  // The scored range [a_bin, b_bin) is also the reported range, so the distance, the Fisher
+  // information and the likelihood ratios describe exactly the interval the extractor selected.
+  ext.extract_histogram(a_bin, b_bin, scratch_v, u, t);
   if (t == 0) ++nunmapped;
 
-  // d / I / lr_ub for this interval; NaN without hits or a valid MLE.
+  // d / fisher_info / lr_ub for this interval; NaN without hits or a valid MLE.
   const double d = t == 0 ? nanx() : llhf.mle(scratch_v.data(), u);
-  double I = nanx();
+  double fisher_info = nanx();
   double lr_ub = nanx();
   if (is_valid_distance(d)) {
-    const double raw_I = llhf.compute_fisher_info(scratch_v.data(), u, d);
-    I = (std::isfinite(raw_I) && raw_I > 0.0) ? raw_I : nanx();
+    const double raw_info = llhf.compute_fisher_info(scratch_v.data(), u, d);
+    fisher_info = (std::isfinite(raw_info) && raw_info > 0.0) ? raw_info : nanx();
     lr_ub = compute_lr_ub(llhf, d, t + u);
   }
 
-  const interval_t bin_iv{a_bin, b_bin};
+  // get_coordinates takes the 1-based inclusive bin range covering the same k-mers.
+  const interval_t bin_iv{a_bin + 1, b_bin + 1};
   const interval_t seq_iv = get_coordinates(bin_iv, opts.bin_shift, enmers, k);
-  records_v.emplace_back(bix, L, seq_iv, is_rc, d, I, th_ix, lr_ub);
+  records_v.emplace_back(bix, L, seq_iv, is_rc, d, fisher_info, th_ix, lr_ub);
 }
 
 template<typename T>
@@ -592,15 +658,21 @@ xy_t IntMap<T>::get_distance_bin(const record_t& r, const LLH<T>& llhf) const
 {
   xy_t d_range{d_eps, d_ub};
   if (r.th_ix != no_threshold) {
+    // The bracket names the band the record was *called* in, so it is derived from the lane's
+    // threshold and never from the reported distance, which a merged interval may have drifted
+    // away from. A low lane reports [inner, t) and a high lane (t, outer]: with
+    // --iterative-removal the inner/outer end is the next threshold of the ladder, because those
+    // lanes share the sequence between them, while the default mode has every lane on its own and
+    // reports from the domain bound instead.
     const double t_i = lane_at(llhf.get_extrema(), r.th_ix);
     const bool is_low = std::isnan(r.d_q) || t_i <= r.d_q;
     const size_t pos = static_cast<size_t>(std::lower_bound(th_v.begin(), th_v.end(), t_i) - th_v.begin());
     if (is_low) {
-      d_range.first = (pos > 0) ? th_v[pos - 1] : d_eps;
+      d_range.first = (opts.iterative_removal && pos > 0) ? th_v[pos - 1] : d_eps;
       d_range.second = t_i;
     } else {
       d_range.first = t_i;
-      d_range.second = (pos + 1 < th_v.size()) ? th_v[pos + 1] : d_ub;
+      d_range.second = (opts.iterative_removal && pos + 1 < th_v.size()) ? th_v[pos + 1] : d_ub;
     }
   } else {
     const double d = is_valid_distance(r.d) ? r.d : r.d_q;
@@ -620,7 +692,9 @@ void IntMap<T>::report_null(const str& rname) const
            null_floored,
            ") median=",
            linear_quantile(null_v, 0.5));
-  if (std::isfinite(gamma_fit.shape))
+  if (opts.levels_v.empty()) {
+    // -d supplied the thresholds; there is no background model to report.
+  } else if (opts.bg_model == "gamma" && std::isfinite(gamma_fit.shape)) {
     cerr_msg("[",
              rname,
              "] --levels gamma fit: shape=",
@@ -632,16 +706,25 @@ void IntMap<T>::report_null(const str& rname) const
              ", floored=",
              null_floored,
              ")");
-  else if (!opts.levels_v.empty())
+  } else {
+    const bool is_gamma_fallback = (opts.bg_model == "gamma");
     cerr_msg("[",
              rname,
-             "] --levels: gamma fit rejected, empirical quantiles over n=",
-             fit_v.size(),
+             is_gamma_fallback ? "] --levels: gamma fit rejected, empirical quantiles over n="
+                               : "] --levels: empirical quantiles of the full pool, n=",
+             is_gamma_fallback ? fit_v.size() : null_v.size(),
              " (floored=",
              null_floored,
              ")");
-  for (const double t : th_v)
-    cerr_msg("[", rname, "] threshold=", t);
+  }
+  if (!opts.no_lane_gate && !opts.levels_v.empty()) {
+    if (ar.is_ok)
+      cerr_msg("[", rname, "] threshold bounds (lr_th=", opts.lr_th, "): [", ar.t_min, ", ", ar.t_max, "]");
+    else
+      cerr_msg("[", rname, "] threshold bounds (lr_th=", opts.lr_th, "): none resolvable");
+  }
+  for (size_t i = 0; i < th_v.size(); ++i)
+    cerr_msg("[", rname, "] threshold=", th_v[i], active_v[i] ? "" : " (dropped)");
 }
 
 template<typename T>
@@ -836,6 +919,11 @@ bool MapSC::validate_configuration()
       }
     }
   }
+  if (params.sample_size != 0 && params.sample_size < min_sample_size) {
+    is_invalid = true;
+    cerr_msg(
+      "--sample-size must be 0 (skip the significance test) or at least ", min_sample_size, "; got ", params.sample_size);
+  }
   if (params.hdist_th > hdist_bound) {
     is_invalid = true;
     cerr_msg("--hdist-th must be in [0, ", hdist_bound, "] with the current SIMD histogram layout; got ", params.hdist_th);
@@ -900,7 +988,17 @@ void MapSC::map()
 
 MapSC::MapSC(CLI::App& sc)
 {
-  params.levels_v = {0.1, 0.05, 0.01, 0.005};
+  // Variable-width vector options keep consuming following tokens while the required positionals
+  // still look outnumbered, so `--dist-th 0.05 <query> <ref> -o out` swallowed both paths, and so
+  // did `--levels 0.1 0.05 0.01 0.005 <query> <ref>`. Validating the optional extras stops the scan
+  // at the first token that is not a number; the per-option checks make that validation reject
+  // paths.
+  sc.validate_optional_arguments();
+  // The loosest level sets how much of the genome is called: 0.1 put the loosest low lane at the
+  // 0.05 quantile and covered ~18 % of mouse chr7 per reference. 0.02 covers ~5-7 % and scores a
+  // higher F1 against the known chr7 introgression, because the loosest lanes were mostly noise.
+  // The tightest level needs ~1/(alpha/2) background windows to be estimable, hence --sample-size.
+  params.levels_v = {0.02, 0.01, 0.005, 0.004};
   sc.add_option("query-path", query_path, "Query FASTA/FASTQ file <path> (or URL) (gzip compatible)")
     ->required()
     ->check(url_validator | CLI::ExistingFile);
@@ -916,23 +1014,38 @@ MapSC::MapSC(CLI::App& sc)
   sc.add_option("--chisq", params.chisq, "Chi-square threshold for merging overlapping intervals [33.00051]")
     ->check(CLI::NonNegativeNumber);
   sc.add_option("-d,--dist-th", params.thresholds_v, "Distance threshold(s): exactly 1 or 8 - overrides --levels")
-    ->expected(1, rwidth);
+    ->expected(1, rwidth)
+    ->check(CLI::PositiveNumber);
   sc.add_option("--levels",
                 params.levels_v,
-                "Two-sided tail probabilities: exactly 4; thresholds are quantiles of a gamma fitted to the "
-                "lr-filtered background [0.1 0.05 0.01 0.005]")
-    ->expected(4);
+                "Two-sided tail probabilities: exactly 4; thresholds are quantiles of the background "
+                "[0.02 0.01 0.005 0.004]")
+    ->expected(4)
+    ->check(CLI::Range(1e-8, 0.5));
   sc.add_option("--lr-th",
                 params.lr_th,
-                "A background window is kept for the --levels gamma fit when its lr_ub exceeds this [6.635]")
+                "A background window is kept for the --levels gamma fit when its lr_ub exceeds this, and a "
+                "--levels threshold must be resolvable at this likelihood ratio [6.635]")
     ->check(CLI::NonNegativeNumber);
   sc.add_option("--min-portion",
                 params.min_portion,
                 "Fit --levels on the lr-filtered background iff at least this portion survives [0.66]")
     ->check(CLI::Range(0.0, 1.0));
-  sc.add_option("--sample-size", params.sample_size, "Background windows sampled per reference (0: skip) [500]")
+  sc.add_option("--bg-model",
+                params.bg_model,
+                "Where --levels thresholds come from: 'empirical' quantiles of the full background pool, "
+                "or a 'gamma' fitted to the lr-filtered pool [empirical]")
+    ->check(CLI::IsMember({"empirical", "gamma"}));
+  sc.add_option("--sample-size",
+                params.sample_size,
+                "Background windows sampled per reference; 0 skips the test, otherwise at least 100 [500]")
     ->check(CLI::NonNegativeNumber);
-  sc.add_flag("--enum-only,!--no-enum-only", params.enum_only, "Enumerate intervals without ordered removal [false]");
+  sc.add_flag(
+    "--no-lane-gate", params.no_lane_gate, "Keep --levels thresholds that fall outside the likelihood-ratio bounds [off]");
+  sc.add_flag("--iterative-removal",
+              params.iterative_removal,
+              "Let each threshold claim its intervals and search only the remaining gaps; off, every "
+              "threshold enumerates its own intervals [off]");
   sc.add_flag("--per-sequence", params.per_sequence, "Measure significance against a per-query background [per-reference]");
   sc.add_option("--verbosity", params.verbosity, "Background and threshold report detail (0-1) [1]")->check(CLI::Range(0, 1));
   sc.callback([&]() {

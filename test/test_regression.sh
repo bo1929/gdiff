@@ -5,8 +5,8 @@ set -euo pipefail
 #
 # Phases 1-2 pin `map` against the committed ground truth in gt/, comparing the complete row
 # (column header included) rather than a stable prefix:
-#   gt/*.enum.txt  -- expected enum-only output
-#   gt/*.cont.txt  -- expected continuous-mode output
+#   gt/*.enum.txt  -- expected per-threshold enumeration output (the default mode)
+#   gt/*.cont.txt  -- expected --iterative-removal output
 # A legitimate change to any column, including the significance ones, means regenerating gt/:
 # delete the files and re-run, and the bootstrap below rewrites them.
 #
@@ -67,10 +67,10 @@ while read -r name; do
 done < genome_names.txt
 wait
 
-# -- Phase 1: enum-only mode ---------------------------------------------------
-echo "=== Phase 1: enum-only regression ==="
+# -- Phase 1: per-threshold enumeration (default) ------------------------------
+echo "=== Phase 1: enumeration regression ==="
 mkdir -p "$WORK/est"
-ENUM_OPTS="-d 0.10 -l 9900 --hdist-th 4 --chisq 10000 --enum-only"
+ENUM_OPTS="-d 0.10 -l 9900 --hdist-th 4 --chisq 10000"
 while IFS=$'\t' read -r query ref; do
   "$GDIFF" map $ENUM_OPTS \
     "genomes/${query}.fna.gz" \
@@ -103,17 +103,17 @@ if [ "$ENUM_GT_MISSING" -eq 1 ]; then
     strip_comments "$WORK/est/query_${query}-ref_${ref}.enum.txt" > "gt/query_${query}-ref_${ref}.enum.txt"
   done < genome_pairs.txt
   ENUM_FAIL=0
-  echo "PASS: enum-only ground truth generated (first run)."
+  echo "PASS: enumeration ground truth generated (first run)."
 elif [ "$ENUM_FAIL" -ne 0 ]; then
-  echo "FAIL: enum-only output differs from ground truth"
+  echo "FAIL: enumeration output differs from ground truth"
   printf "%b" "$ENUM_DETAIL"
 else
-  echo "PASS: enum-only"
+  echo "PASS: enumeration"
 fi
 
-# -- Phase 2: continuous mode (default, no --enum-only) ------------------------
-echo "=== Phase 2: continuous regression ==="
-CONT_OPTS="-d 0.10 -l 9900 --hdist-th 4 --chisq 33.00051"
+# -- Phase 2: iterative removal ------------------------------------------------
+echo "=== Phase 2: iterative-removal regression ==="
+CONT_OPTS="-d 0.10 -l 9900 --hdist-th 4 --chisq 33.00051 --iterative-removal"
 while IFS=$'\t' read -r query ref; do
   "$GDIFF" map $CONT_OPTS \
     "genomes/${query}.fna.gz" \
@@ -174,6 +174,11 @@ if "$GDIFF" map -d 0.1 -l 9900 \
   "genomes/${first_query}.fna.gz" "$WORK/does_not_exist.gs" >/dev/null 2>&1; then
   fail "map accepted a missing reference container"
 fi
+# A p-value needs a usable pool: 0 (test off) or at least 100 background windows.
+if "$GDIFF" map -d 0.10 -l 9900 --sample-size 50 \
+  "genomes/${first_query}.fna.gz" "$WORK/sketches/${first_ref}.gs" >/dev/null 2>&1; then
+  fail "map accepted --sample-size 50, below the minimum pool"
+fi
 echo "PASS: refused inputs"
 
 # -- Phase 4: map option equivalence ------------------------------------------
@@ -196,6 +201,15 @@ has_data "$WORK/map_ref.tsv" || fail "map produced no records at all"
 strip_comments "$WORK/map_o.tsv" > "$WORK/map_o.data"
 cmp -s "$WORK/map_ref.data" "$WORK/map_o.data" || fail "map -o differs from the stdout report"
 
+# -d immediately before the positionals must not swallow them (regression: the following -o
+# became unreachable and the run died with "query-path is required").
+"$GDIFF" map -d 0.10 "genomes/${first_query}.fna.gz" "$WORK/sketches/${first_ref}.gs" \
+  -o "$WORK/map_d_first_o.tsv" $MAP_BASE >/dev/null 2>&1 \
+  || fail "map -d before the positionals with -o failed"
+strip_comments "$WORK/map_d_first_o.tsv" > "$WORK/map_d_first_o.data"
+cmp -s "$WORK/map_ref.data" "$WORK/map_d_first_o.data" \
+  || fail "map -d before the positionals differs from the reference report"
+
 # The worker count must not change the records.
 "$GDIFF" --num-threads 4 map -d 0.10 $MAP_BASE \
   "genomes/${first_query}.fna.gz" "$WORK/sketches/${first_ref}.gs" > "$WORK/map_t4.tsv" 2>/dev/null
@@ -206,9 +220,29 @@ cmp -s "$WORK/map_ref.data" "$WORK/map_t4.data" || fail "map output depends on -
 map_once "$WORK/map_levels.tsv" --levels 0.1 0.05 0.01 0.005
 has_data "$WORK/map_levels.tsv" || fail "map --levels produced no output"
 
+# --levels immediately before the positionals must not swallow them either (same CLI11 trap).
+"$GDIFF" map --levels 0.1 0.05 0.01 0.005 "genomes/${first_query}.fna.gz" \
+  "$WORK/sketches/${first_ref}.gs" -o "$WORK/map_levels_first_o.tsv" $MAP_BASE >/dev/null 2>&1 \
+  || fail "map --levels before the positionals with -o failed"
+strip_comments "$WORK/map_levels_first_o.tsv" > "$WORK/map_levels_first_o.data"
+cmp -s <(strip_comments "$WORK/map_levels.tsv") "$WORK/map_levels_first_o.data" \
+  || fail "map --levels before the positionals differs from the reference report"
+
 # --per-sequence and -b are alternate modes, not failures.
 map_once "$WORK/map_perseq.tsv" -d 0.10 --per-sequence
 has_data "$WORK/map_perseq.tsv" || fail "map --per-sequence produced no output"
+
+# --sample-size 0 switches the test off; with --per-sequence the per-query pools must still exist
+# (an out-of-range lookup here used to crash the run) and no record may carry a p-value. The
+# iterative mode reports the whole query when nothing crosses, so records are guaranteed.
+"$GDIFF" map -d 0.10 -l 9900 --hdist-th 4 --sample-size 0 --per-sequence --iterative-removal \
+  "genomes/${first_query}.fna.gz" "$WORK/sketches/${first_ref}.gs" \
+  > "$WORK/map_perseq0.tsv" 2>/dev/null || fail "map --sample-size 0 --per-sequence failed"
+n_perseq0="$(strip_comments "$WORK/map_perseq0.tsv" | awk 'NR>1' | wc -l | tr -d ' ')"
+[ "$n_perseq0" -gt 0 ] || fail "map --sample-size 0 --per-sequence produced no records"
+if strip_comments "$WORK/map_perseq0.tsv" | awk -F'\t' 'NR>1 && $11 != "nan" { found=1 } END { exit !found }'; then
+  fail "--sample-size 0 still reported p-values"
+fi
 map_once "$WORK/map_b2.tsv" -d 0.10 -b 2
 has_data "$WORK/map_b2.tsv" || fail "map -b 2 produced no output"
 echo "PASS: map option equivalence"
@@ -242,8 +276,11 @@ cmp -s "$WORK/dist_pos.data" "$WORK/dist_o.data" || fail "dist -o differs from t
 has_data "$WORK/dist_samples.tsv" || fail "dist --output-samples produced no output"
 [ "$(strip_comments "$WORK/dist_samples.tsv" | head -n 1 | cut -f1)" = "config" ] ||
   fail "dist --output-samples header changed"
-[ "$(strip_comments "$WORK/dist_samples.tsv" | head -n 1 | cut -f8)" = "direction" ] ||
+[ "$(strip_comments "$WORK/dist_samples.tsv" | head -n 1 | cut -f7)" = "direction" ] ||
   fail "dist --output-samples lost the direction column"
+# The sketch is canonical, so the samples carry no strand column.
+strip_comments "$WORK/dist_samples.tsv" | head -n 1 | grep -q "strand" &&
+  fail "dist --output-samples kept a strand column for a canonical sketch"
 echo "PASS: dist"
 
 # -- Phase 6: roll -------------------------------------------------------------
@@ -251,6 +288,9 @@ echo "=== Phase 6: roll ==="
 "$GDIFF" roll -l 100 -s 500 "genomes/${first_query}.fna.gz" "$sketch_a" > "$WORK/roll.tsv" 2>/dev/null
 has_data "$WORK/roll.tsv" || fail "roll produced no output"
 [ "$(strip_comments "$WORK/roll.tsv" | head -n 1 | cut -f1)" = "seq" ] || fail "roll header changed"
+# The sketch is canonical, so the profile carries no strand column either.
+[ "$(strip_comments "$WORK/roll.tsv" | head -n 1 | awk -F'\t' '{ print NF }')" -eq 5 ] ||
+  fail "roll kept a strand column for a canonical sketch"
 
 "$GDIFF" roll -l 100 -s 500 -o "$WORK/roll_o.tsv" \
   "genomes/${first_query}.fna.gz" "$sketch_a" >/dev/null 2>&1
@@ -323,8 +363,8 @@ echo "PASS: provenance header"
 echo "=== Phase 9: map output schema ==="
 # `map` names its columns so `plot.py` can find them by name instead of by position; the
 # strand-aware variant is not covered by the gt/ files above.
-EXPECT_AGNOSTIC="seq seq_len start end reference d mask d_bin d_q d_acc percentile fold qvalue info lr_ub"
-EXPECT_AWARE="seq seq_len start end strand is_rc reference d mask d_bin d_q d_diff d_acc percentile fold qvalue info lr_ub"
+EXPECT_AGNOSTIC="seq seq_len start end reference d mask d_bin d_q d_acc pvalue fold qvalue fisher_info lr_ub"
+EXPECT_AWARE="seq seq_len start end strand is_rc reference d mask d_bin d_q d_diff d_acc pvalue fold qvalue fisher_info lr_ub"
 
 agnostic_header="$(strip_comments "$WORK/map_ref.tsv" | head -n 1 | tr '\t' ' ')"
 [ "$agnostic_header" = "$EXPECT_AGNOSTIC" ] || fail "strand-agnostic map header changed: $agnostic_header"

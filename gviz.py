@@ -34,12 +34,15 @@ ALIASES = {
     "length": "seq_len", "interval_start": "start", "interval_end": "end",
     "ref_id": "reference", "dist": "d", "dist_th": "d", "d_interval": "d_bin",
     "dist_contig": "d_q", "dist_genome": "d_acc", "strand_diff": "d_diff",
-    "i": "info", "distance": "d", "median": "d_median", "alternative_mean": "d_mean",
+    "i": "fisher_info", "info": "fisher_info", "distance": "d", "median": "d_median",
+    "alternative_mean": "d_mean",
     "max_unfiltered_distance": "d_upper", "max_distance": "d_highest",
     "num_na": "n_na", "num_filtered": "n_filtered", "n_lr_zero": "n_ub",
+    # map renamed the two-sided empirical p-value column from percentile to pvalue
+    "pvalue": "percentile",
 }
 NUM = {"seq_len", "start", "end", "d", "mask", "d_q", "d_acc", "d_diff", "percentile",
-       "fold", "qvalue", "info", "lr_ub", "d_fw", "d_rc", "is_rc", "d_median",
+       "fold", "qvalue", "fisher_info", "lr_ub", "d_fw", "d_rc", "is_rc", "d_median",
        "d_mean", "d_upper", "d_highest", "d_ab", "d_ba", "n_ab", "n_ba", "n_ub",
        "n_na", "n_filtered"}
 CAT = {"seq", "reference", "config", "direction", "strand", "genome_a", "genome_b"}
@@ -86,7 +89,7 @@ def read_table(path, kind=None):
     first = re.split(sep, body[0].strip())
     if any(isnum(f) for f in first[1:4]):        # old `detect` output: 14 unnamed columns
         names = ["seq", "seq_len", "start", "end", "reference", "d", "legacy_dir", "_xl",
-                 "dist_th", "d_bin", "d_q", "info", "_n_kmers", "_n_hits"]
+                 "dist_th", "d_bin", "d_q", "fisher_info", "_n_kmers", "_n_hits"]
         df = pd.read_csv(path, sep=sep, comment="#", header=None, names=names,
                          engine="python" if sep != "\t" else "c")
         kind = "map"
@@ -117,7 +120,7 @@ def parse_flags(cmd):
                 if tok not in {"-d", "--levels"}:
                     break
             out.setdefault(tok, []).extend(vals)
-        elif tok in ("--enum-only", "--per-sequence"):
+        elif tok in ("--enum-only", "--iterative-removal", "--per-sequence"):
             out[tok.lstrip("-")] = True
     return out
 
@@ -249,7 +252,7 @@ def prepare_map(df, run, args):
               "with the value recovered from the bracket it fell into: the lower half is closer "
               "to the reference than the background, the upper half farther")
 
-    if run["opts"].get("enum-only"):
+    if not run["opts"].get("iterative-removal"):
         args.note("this run enumerated intervals per threshold, so intervals may overlap")
     if nbits and not df["tested"].any():
         args.note("no interval carries a percentile: significance was not tested in this run")
@@ -597,8 +600,10 @@ def chips(run, kind, n):
         out.append(("levels", " ".join(o["--levels"])))
     if o.get("-d"):
         out.append(("-d", " ".join(o["-d"])))
-    if o.get("enum-only"):
-        out.append(("enum-only", "per-threshold enumeration"))
+    if o.get("iterative-removal"):
+        out.append(("iterative-removal", "each lane fills the gaps"))
+    else:
+        out.append(("per-threshold", "intervals may overlap"))
     if o.get("per-sequence"):
         out.append(("per-sequence", "background per query"))
     for flag, label in (("-l", "window (k-mers)"), ("-s", "step"), ("-b", "bin shift")):

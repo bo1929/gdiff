@@ -156,7 +156,7 @@ namespace {
       const uint64_t j = r0 + off;
       const double d_fw = counts_fw.mle(rctx.llhf);
       if constexpr (Canonical) {
-        write_tsv(os, q.qid, j + 1, j + rctx.tau + rctx.k - 1, '.', rctx.reference.get_rname(), d_fw) << '\n';
+        write_tsv(os, q.qid, j + 1, j + rctx.tau + rctx.k - 1, rctx.reference.get_rname(), d_fw) << '\n';
       } else {
         const double d_rc = counts_rc.mle(rctx.llhf);
         write_tsv(os, q.qid, j + 1, j + rctx.tau + rctx.k - 1, rctx.reference.get_rname(), d_fw, d_rc) << '\n';
@@ -228,7 +228,7 @@ void RollSC::roll()
   std::ostream& os = *output_stream;
   write_provenance(os);
   if (canonical) {
-    write_tsv(os, "seq", "start", "end", "strand", "reference", "d") << '\n';
+    write_tsv(os, "seq", "start", "end", "reference", "d") << '\n';
   } else {
     write_tsv(os, "seq", "start", "end", "reference", "d_fw", "d_rc") << '\n';
   }

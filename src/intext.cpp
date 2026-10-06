@@ -8,7 +8,7 @@
 #include <numeric>
 
 namespace {
-  // Split [lix, rix] into maximal skip-free subranges (1-based bins, skip_v is 0-based).
+  // Split [lix, rix] into maximal skip-free subranges.
   template<typename Fn>
   void for_each_contiguous(const vec<uint8_t>& skip_v, uint64_t lix, uint64_t rix, Fn&& fn)
   {
@@ -16,7 +16,7 @@ namespace {
     for (uint64_t x = lix; x <= rix; ++x) {
       if (skip_v[x - 1]) {
         if (x > a) fn(a, x - 1);
-        a = x + 1;
+        a = x;
       }
     }
     if (rix >= a) fn(a, rix);
@@ -107,9 +107,9 @@ IntExt<T>::IntExt(const map_params<T>& params, const LLH<T>& llhf, uint64_t nbin
   fdc_v.resize(nbins + 1);
   sdc_v.resize(nbins + 1);
   thneg_v.fill(false);
-  thrank_v.resize(WIDTH);
+  thrank_v.clear();
   for (size_t i = 0; i < WIDTH; ++i)
-    thrank_v[i] = i;
+    if (params.active[i]) thrank_v.push_back(i);
 }
 
 template<typename T>
@@ -120,13 +120,20 @@ void IntExt<T>::set_query_distance(double d_q)
   if constexpr (std::is_same_v<T, double>) {
     const double t = params.dist_th;
     thneg_v.front() = is_valid && t > d_q;
-    thrank_v = {0};
+    thrank_v.clear();
+    if (params.active.front()) {
+      thrank_v.push_back(0);
+    }
   } else {
-    arr<std::pair<double, size_t>, WIDTH> tp;
+    vec<std::pair<double, size_t>> tp;
     for (size_t i = 0; i < WIDTH; ++i) {
+      if (!params.active[i]) {
+        thneg_v[i] = false;
+        continue;
+      }
       const double t = lane_at(params.dist_th, i);
       thneg_v[i] = is_valid && t > d_q;
-      tp[i] = {t, i};
+      tp.push_back({t, i});
     }
 
     if (!is_valid) {
@@ -139,9 +146,9 @@ void IntExt<T>::set_query_distance(double d_q)
       });
     }
 
-    thrank_v.resize(WIDTH);
-    for (size_t i = 0; i < WIDTH; ++i)
-      thrank_v[i] = tp[i].second;
+    thrank_v.clear();
+    for (const auto& p : tp)
+      thrank_v.push_back(p.second);
   }
 
   apply_threshold_signs();
@@ -270,22 +277,22 @@ void IntExt<T>::extrema_scan()
 
 // Maximal [a,b] in [lix,rix] where the prefix sum drops below a prior maximum.
 template<typename T>
-void IntExt<T>::extract_intervals_mx(uint64_t tau, uint64_t lix, uint64_t rix, size_t ix)
+void IntExt<T>::extract_intervals_mx(uint64_t tau_eff, uint64_t lix, uint64_t rix, size_t ix)
 {
   if (!wskip) {
-    extract_mx(tau, lix, rix, ix);
+    extract_mx(tau_eff, lix, rix, ix);
     return;
   }
-  for_each_contiguous(skip_v, lix, rix, [&](uint64_t a, uint64_t b) { extract_mx(tau, a, b, ix); });
+  for_each_contiguous(skip_v, lix, rix, [&](uint64_t a, uint64_t b) { extract_mx(tau_eff, a, b, ix); });
 }
 
 template<typename T>
-void IntExt<T>::extract_mx(uint64_t tau, uint64_t lix, uint64_t rix, size_t ix)
+void IntExt<T>::extract_mx(uint64_t tau_eff, uint64_t lix, uint64_t rix, size_t ix)
 {
   uint64_t b_curr = lix;
   uint64_t b_prev = std::numeric_limits<uint64_t>::max();
 
-  if (rix >= lix + tau && lane_at(fdps_v[rix], ix) < lane_at(fdps_v[lix], ix)) {
+  if (rix >= lix + tau_eff && lane_at(fdps_v[rix], ix) < lane_at(fdps_v[lix], ix)) {
     intervals_v[ix].emplace_back(lix, rix);
     return;
   }
@@ -300,7 +307,7 @@ void IntExt<T>::extract_mx(uint64_t tau, uint64_t lix, uint64_t rix, size_t ix)
       ++b_curr; // Condition 2
 
     const uint64_t b_star = b_curr;
-    if (b_star < (a + tau)) continue;                    // Condition 3
+    if (b_star < (a + tau_eff)) continue;                // Condition 3
     if (lane_at(fdps_v[b_star], ix) >= fdps_a) continue; // Condition 4
     if (b_star == b_prev) continue;                      // Condition 6
 
@@ -344,14 +351,14 @@ void IntExt<T>::expand_intervals(double chisq_th, size_t ix)
     if (!skip_gap && (chisq_val < chisq_th) && (a < bp)) {
       a = ap;
     } else {
-      iv_ix[w++] = {ap, bp}; // 1-based inclusive coordinates
+      iv_ix[w++] = {ap, bp}; // half-open range
     }
 
     ap = a;
     bp = b;
   }
 
-  iv_ix[w++] = {ap, bp}; // 1-based inclusive coordinates
+  iv_ix[w++] = {ap, bp}; // half-open range
   iv_ix.resize(w);
 }
 

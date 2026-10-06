@@ -56,9 +56,9 @@ static constexpr int k_sa_rc = 5;
 static constexpr int k_sa_dist = 7;
 static constexpr int k_sa_mask = 8;
 static constexpr int k_sa_diff = 11;
-static constexpr int k_sa_percentile = 13;
+static constexpr int k_sa_pvalue = 13;
 static constexpr int k_sa_qvalue = 15;
-static constexpr int k_sa_info = 16;
+static constexpr int k_sa_fisher_info = 16;
 static constexpr int k_sa_lru = 17;
 
 // Strand-agnostic output: 15 columns (14 tabs); trailing two are info/lr_ub
@@ -66,7 +66,7 @@ static constexpr int k_ag_cols = 15;
 static constexpr int k_ag_tabs = 14;
 static constexpr int k_ag_dist = 5;
 static constexpr int k_ag_mask = 6;
-static constexpr int k_ag_percentile = 10;
+static constexpr int k_ag_pvalue = 10;
 static constexpr int k_ag_qvalue = 12;
 
 static bool test_data_available()
@@ -149,7 +149,7 @@ struct intmap_fixture_t
   }
 };
 
-static map_opts make_opts(double d, uint64_t sample_size, bool enum_only, double chisq = 33.0)
+static map_opts make_opts(double d, uint64_t sample_size, bool iterative_removal, double chisq = 33.0)
 {
   map_opts opts;
   opts.thresholds_v = {d};
@@ -158,7 +158,7 @@ static map_opts make_opts(double d, uint64_t sample_size, bool enum_only, double
   opts.chisq = chisq;
   opts.bin_shift = 0;
   opts.sample_size = sample_size;
-  opts.enum_only = enum_only;
+  opts.iterative_removal = iterative_removal;
   return opts;
 }
 
@@ -249,14 +249,14 @@ TEST_CASE("end-to-end with real sketch and query" * doctest::skip(!test_data_ava
   SUBCASE("strand-aware") {
     const auto fx = intmap_fixture_t::load("G000018865", "G000016665", true);
     REQUIRE(!fx.qs->is_empty());
-    const map_opts params = make_opts(0.1, 200, false, 33.0);
+    const map_opts params = make_opts(0.1, 200, true, 33.0);
     const std::string output = run_intmap(fx, params);
     if (!output.empty()) check_output_shape(output, true);
   }
   SUBCASE("strand-agnostic") {
     const auto fx = intmap_fixture_t::load("G000018865", "G000016665", false);
     REQUIRE(!fx.qs->is_empty());
-    const map_opts params = make_opts(0.1, 200, false, 33.0);
+    const map_opts params = make_opts(0.1, 200, true, 33.0);
     const std::string output = run_intmap(fx, params);
     if (!output.empty()) check_output_shape(output, false);
   }
@@ -266,9 +266,9 @@ TEST_CASE("known pair: three operating modes, strand-aware" * doctest::skip(!tes
   const auto fx = intmap_fixture_t::load("G000341695", "G000025025", true);
   REQUIRE(!fx.qs->is_empty());
 
-  const map_opts p_lite = make_opts(0.1, 0, true, 10000.0);
-  const map_opts p_enum_test = make_opts(0.1, 200, true, 10000.0);
-  const map_opts p_cont = make_opts(0.1, 200, false, 33.0);
+  const map_opts p_lite = make_opts(0.1, 0, false, 10000.0);
+  const map_opts p_enum_test = make_opts(0.1, 200, false, 10000.0);
+  const map_opts p_cont = make_opts(0.1, 200, true, 33.0);
 
   const std::string out_lite = run_intmap(fx, p_lite);
   const std::string out_enum = run_intmap(fx, p_enum_test);
@@ -321,7 +321,7 @@ TEST_CASE("known pair: three operating modes, strand-aware" * doctest::skip(!tes
   };
 
   CHECK(any_finite_dist(out_lite));
-  CHECK_FALSE(any_finite_col(out_lite, k_sa_percentile, k_sa_cols));
+  CHECK_FALSE(any_finite_col(out_lite, k_sa_pvalue, k_sa_cols));
 
   CHECK(any_finite_dist(out_enum));
   CHECK(any_finite_dist(out_cont));
@@ -368,13 +368,13 @@ TEST_CASE("known pair: three operating modes, strand-aware" * doctest::skip(!tes
   is_rc_valid(out_cont);
   is_rc_valid(out_lite);
 
-  CHECK(any_finite_col(out_enum, k_sa_percentile));
-  CHECK(any_finite_col(out_cont, k_sa_percentile));
+  CHECK(any_finite_col(out_enum, k_sa_pvalue));
+  CHECK(any_finite_col(out_cont, k_sa_pvalue));
   CHECK(any_finite_col(out_enum, k_sa_qvalue));
   CHECK(any_finite_col(out_cont, k_sa_qvalue));
   CHECK(any_finite_col(out_enum, k_sa_diff));
   CHECK(any_finite_col(out_cont, k_sa_diff));
-  CHECK(any_finite_col(out_cont, k_sa_info));
+  CHECK(any_finite_col(out_cont, k_sa_fisher_info));
   CHECK(any_finite_col(out_cont, k_sa_lru));
 
   // Continuous mode only emits interval records (no background gaps).
@@ -392,9 +392,9 @@ TEST_CASE("known pair: three operating modes, strand-agnostic" * doctest::skip(!
   REQUIRE(!fx.qs->is_empty());
   REQUIRE(fx.sketch.is_canonical());
 
-  const map_opts p_lite = make_opts(0.1, 0, true, 10000.0);
-  const map_opts p_enum_test = make_opts(0.1, 200, true, 10000.0);
-  const map_opts p_cont = make_opts(0.1, 200, false, 33.0);
+  const map_opts p_lite = make_opts(0.1, 0, false, 10000.0);
+  const map_opts p_enum_test = make_opts(0.1, 200, false, 10000.0);
+  const map_opts p_cont = make_opts(0.1, 200, true, 33.0);
 
   const std::string out_lite = run_intmap(fx, p_lite);
   const std::string out_enum = run_intmap(fx, p_enum_test);
@@ -413,8 +413,8 @@ TEST_CASE("known pair: three operating modes, strand-agnostic" * doctest::skip(!
   CHECK(any_finite_col(out_lite, k_ag_dist, k_ag_cols));
   CHECK(any_finite_col(out_enum, k_ag_dist, k_ag_cols));
   CHECK(any_finite_col(out_cont, k_ag_dist, k_ag_cols));
-  CHECK(any_finite_col(out_enum, k_ag_percentile, k_ag_cols));
-  CHECK(any_finite_col(out_cont, k_ag_percentile, k_ag_cols));
+  CHECK(any_finite_col(out_enum, k_ag_pvalue, k_ag_cols));
+  CHECK(any_finite_col(out_cont, k_ag_pvalue, k_ag_cols));
   CHECK(any_finite_col(out_enum, k_ag_qvalue, k_ag_cols));
   CHECK(any_finite_col(out_cont, k_ag_qvalue, k_ag_cols));
 
@@ -431,8 +431,8 @@ TEST_CASE("strand-agnostic mode shape and significance" * doctest::skip(!test_da
   REQUIRE(!fx.qs->is_empty());
   REQUIRE(fx.sketch.is_canonical());
 
-  const map_opts p_cont = make_opts(0.1, 200, false, 33.0);
-  const map_opts p_enum = make_opts(0.1, 200, true, 10000.0);
+  const map_opts p_cont = make_opts(0.1, 200, true, 33.0);
+  const map_opts p_enum = make_opts(0.1, 200, false, 10000.0);
   const std::string out_cont = run_intmap(fx, p_cont);
   const std::string out_enum = run_intmap(fx, p_enum);
 
@@ -453,9 +453,9 @@ TEST_CASE("strand-agnostic mode shape and significance" * doctest::skip(!test_da
     return false;
   };
 
-  CHECK(any_finite_col(out_cont, k_ag_percentile));
+  CHECK(any_finite_col(out_cont, k_ag_pvalue));
   CHECK(any_finite_col(out_cont, k_ag_qvalue));
-  CHECK(any_finite_col(out_enum, k_ag_percentile));
+  CHECK(any_finite_col(out_enum, k_ag_pvalue));
 }
 
 TEST_CASE("SA vs AG same pair both produce output" * doctest::skip(!test_data_available())) {
@@ -464,7 +464,7 @@ TEST_CASE("SA vs AG same pair both produce output" * doctest::skip(!test_data_av
   REQUIRE(!fx_sa.qs->is_empty());
   REQUIRE(!fx_ag.qs->is_empty());
 
-  const map_opts p = make_opts(0.1, 0, true, 10000.0);
+  const map_opts p = make_opts(0.1, 0, false, 10000.0);
   const std::string out_sa = run_intmap(fx_sa, p);
   const std::string out_ag = run_intmap(fx_ag, p);
 
@@ -478,7 +478,7 @@ TEST_CASE("IntMap with multiple thresholds (cmlane_t), strand-aware" * doctest::
   const auto fx = intmap_fixture_t::load("G000341695", "G000025025", true);
   REQUIRE(!fx.qs->is_empty());
 
-  map_opts opts = make_opts(0.05, 200, true, 10000.0);
+  map_opts opts = make_opts(0.05, 200, false, 10000.0);
   opts.thresholds_v = {0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40};
   IntMap<cmlane_t> intmap(opts, fx.sketch, fx.qs->get_batch_v());
 
@@ -496,7 +496,7 @@ TEST_CASE("IntMap with multiple thresholds (cmlane_t), strand-agnostic" * doctes
   REQUIRE(!fx.qs->is_empty());
   REQUIRE(fx.sketch.is_canonical());
 
-  map_opts opts = make_opts(0.05, 200, true, 10000.0);
+  map_opts opts = make_opts(0.05, 200, false, 10000.0);
   opts.thresholds_v = {0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40};
   IntMap<cmlane_t> intmap(opts, fx.sketch, fx.qs->get_batch_v());
 
@@ -541,7 +541,7 @@ TEST_CASE("levels derive thresholds from the background" * doctest::skip(!test_d
   const auto fx = intmap_fixture_t::load("G000341695", "G000025025", false);
   REQUIRE(!fx.qs->is_empty());
 
-  map_opts opts = make_opts(0.10, 500, false, 33.0);
+  map_opts opts = make_opts(0.10, 500, true, 33.0);
   opts.thresholds_v.clear();
   opts.levels_v = {0.1, 0.05, 0.01, 0.005};
 
@@ -723,6 +723,42 @@ TEST_CASE("map -o writes exactly the stdout report" * doctest::skip(!gdiff_cli_a
   REQUIRE(run_cli("map -o " + out.string() + " " + opts + " " + target, test_util::path("cli_map_devnull.txt")));
   CHECK(test_util::strip_comments(test_util::read_file(out)) == via_stdout);
   check_output_shape(via_stdout, false);
+}
+
+TEST_CASE("map -d before the positionals does not swallow them" * doctest::skip(!gdiff_cli_available()))
+{
+  // Regression: a variable-width -d used to consume the two positionals, so a following `-o`
+  // was unreachable and the run died with "query-path is required".
+  const cli_fixture_t fx = make_cli_fixture();
+  REQUIRE_FALSE(fx.ref.empty());
+
+  const std::string target = fx.query.string() + " " + fx.ref.string();
+  const std::string opts = "-l 9900 --hdist-th 4 --sample-size 200";
+  const std::string via_stdout = map_stdout("-d 0.1 " + target + " " + opts);
+  REQUIRE_FALSE(via_stdout.empty());
+
+  const auto out = test_util::path("cli_map_d_first_o.tsv");
+  REQUIRE(run_cli("map -d 0.1 " + target + " -o " + out.string() + " " + opts, test_util::path("cli_map_devnull2.txt")));
+  CHECK(test_util::strip_comments(test_util::read_file(out)) == via_stdout);
+}
+
+TEST_CASE("map --levels before the positionals does not swallow them" * doctest::skip(!gdiff_cli_available()))
+{
+  // Same CLI11 greedy-vector trap as -d: without a validator on --levels the four level values
+  // are followed by the query and the reference, which are eaten as further levels.
+  const cli_fixture_t fx = make_cli_fixture();
+  REQUIRE_FALSE(fx.ref.empty());
+
+  const std::string target = fx.query.string() + " " + fx.ref.string();
+  const std::string opts = "-l 9900 --hdist-th 4 --sample-size 200";
+  const std::string levels = "--levels 0.1 0.05 0.01 0.005 ";
+  const std::string via_stdout = map_stdout(levels + target + " " + opts);
+  REQUIRE_FALSE(via_stdout.empty());
+
+  const auto out = test_util::path("cli_map_levels_first_o.tsv");
+  REQUIRE(run_cli("map " + levels + target + " -o " + out.string() + " " + opts,
+                  test_util::path("cli_map_devnull3.txt")));
+  CHECK(test_util::strip_comments(test_util::read_file(out)) == via_stdout);
 }
 
 TEST_CASE("map accepts exactly 1 or 8 distance lanes" * doctest::skip(!gdiff_cli_available()))

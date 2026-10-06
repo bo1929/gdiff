@@ -82,7 +82,7 @@ private:
   void resolve_container(const std::filesystem::path& path, vec<uint32_t>& out);
   void resolve_list(const std::filesystem::path& path, vec<uint32_t>& out);
   void write_pair_line(std::ostream& os, const pair_t& pr, const str& name_a, const str& name_b);
-  void emit_header(std::ostream& os) const;
+  void emit_header(std::ostream& os, bool canonical) const;
 
   vec<std::unique_ptr<Container>> containers_v; // stable addresses
   vec<entry_t> entries_v;

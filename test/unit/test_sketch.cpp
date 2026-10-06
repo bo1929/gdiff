@@ -236,7 +236,7 @@ TEST_SUITE("container")
       CHECK(field(line, 0) == "gdiff"); // the config column precedes the pair's key
       CHECK(field(line, 1) == fa_a.filename().string());
       CHECK(field(line, 2) == fa_b.filename().string());
-      const std::string dir = field(line, 7);
+      const std::string dir = field(line, 6); // canonical samples have no strand column
       CHECK((dir == "ab" || dir == "ba"));
       n_ab += dir == "ab";
       n_ba += dir == "ba";

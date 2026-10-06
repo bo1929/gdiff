@@ -240,3 +240,50 @@ TEST_CASE("sign bitvector for mixed positive/negative thresholds") {
 }
 
 } // TEST_SUITE
+
+// Reference values from an independent Python port of nll/mle for k=23, h=9, hdist=3, rho=0.5,
+// n=500: max_estimable_distance=0.358841, LR roots at lr_th=6.635 give t_min=2.8844e-4,
+// t_max=0.276462.
+TEST_SUITE("admissible distance range") {
+
+TEST_CASE("compute_lr_lb is zero at the floor and grows with distance") {
+  LLH<double> llh(23, 9, 0.5, 3, 0.0, false);
+  CHECK(compute_lr_lb(llh, d_eps, 500) < 1.0); // still essentially at the floor
+  CHECK(compute_lr_lb(llh, 1e-4, 500) == doctest::Approx(2.30).epsilon(0.02));
+  CHECK(compute_lr_lb(llh, 1e-3, 500) == doctest::Approx(23.0).epsilon(0.02));
+  CHECK(compute_lr_lb(llh, 0.05, 500) > compute_lr_lb(llh, 0.01, 500));
+  CHECK(std::isnan(compute_lr_lb(llh, 0.1, 0)));
+}
+
+TEST_CASE("compute_lr_ub falls to zero at the estimable ceiling") {
+  LLH<double> llh(23, 9, 0.5, 3, 0.0, false);
+  const double d_max_est = max_estimable_distance(llh, 500);
+  CHECK(d_max_est == doctest::Approx(0.358841).epsilon(1e-3));
+  CHECK(compute_lr_ub(llh, 0.25, 500) == doctest::Approx(13.79).epsilon(0.02));
+  CHECK(compute_lr_ub(llh, 0.3, 500) < 6.635);
+  CHECK(std::abs(compute_lr_ub(llh, d_max_est, 500)) < 1e-6);
+}
+
+TEST_CASE("admissible_distance_range brackets the resolvable distances") {
+  LLH<double> llh(23, 9, 0.5, 3, 0.0, false);
+  const a_range_t r = admissible_distance_range(llh, 500, 6.635);
+  REQUIRE(r.is_ok);
+  CHECK(r.t_min == doctest::Approx(2.8844e-4).epsilon(0.02));
+  CHECK(r.t_max == doctest::Approx(0.276462).epsilon(1e-3));
+  CHECK(r.t_min < r.t_max);
+  CHECK(r.t_max < max_estimable_distance(llh, 500));
+
+  // Inside the range both LRs clear the cut; outside it, the violated end does not.
+  CHECK(compute_lr_lb(llh, r.t_min, 500) == doctest::Approx(6.635).epsilon(0.01));
+  CHECK(compute_lr_ub(llh, r.t_max, 500) == doctest::Approx(6.635).epsilon(0.01));
+  CHECK(compute_lr_lb(llh, 1e-5, 500) < 6.635);
+  CHECK(compute_lr_ub(llh, 0.35, 500) < 6.635);
+}
+
+TEST_CASE("admissible_distance_range rejects a window nothing can be resolved in") {
+  LLH<double> llh(23, 9, 0.5, 3, 0.0, false);
+  CHECK_FALSE(admissible_distance_range(llh, 0, 6.635).is_ok);
+  CHECK_FALSE(admissible_distance_range(llh, 500, 1e9).is_ok); // no distance can clear the cut
+}
+
+} // TEST_SUITE

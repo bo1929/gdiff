@@ -43,7 +43,7 @@ inline scan_ctx_t make_scan_ctx(const Sketch& sketch, uint64_t bin_shift, uint32
   return {lshf, &sketch.get_buckets(), k, masks.bp, masks.lr, bin_shift, hdist_th, k};
 }
 
-// Canonical: one key per k-mer (true) vs strand-aware fw+rc (false). Agg: hit/miss aggregator.
+// Canonical: one key per k-mer (true) vs non-canonical fw+rc (false). Agg: hit/miss aggregator.
 template<bool Canonical, typename Agg>
 inline void scan_mers_range(const scan_ctx_t& ctx, const char* cseq, uint64_t j0, uint64_t j1, Agg&& agg)
 {
@@ -152,7 +152,7 @@ inline uint64_t hist_total(const uint64_t* hist, uint32_t hdist_th) noexcept
   return t;
 }
 
-// Per-window HD counts (canonical - strand agnostic).
+// Per-window HD counts
 struct window_counts_t
 {
   vec<uint64_t> hist_v;

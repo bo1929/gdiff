@@ -36,14 +36,23 @@ struct map_opts
   uint64_t bin_shift = 0;
   double chisq = 33.00051;
   uint64_t sample_size = 500;
-  vec<double> thresholds_v; // -d: exactly 1 or rwidth absolute distance thresholds
-  vec<double> levels_v;     // --levels: exactly 4 two-sided tail probabilities
-  double lr_th = 6.635;     // --levels fit: keep background windows whose lr_ub exceeds this
-  double min_portion = 0.66; // ... but only when more than this portion of them survives
-  bool enum_only = false;
+  vec<double> thresholds_v;   // -d: exactly 1 or rwidth absolute distance thresholds
+  vec<double> levels_v;       // --levels: exactly 4 two-sided tail probabilities
+  double lr_th = 6.635;       // --levels fit: keep background windows whose lr_ub exceeds this
+  double min_portion = 0.66;  // ... but only when more than this portion of them survives
+  str bg_model = "empirical"; // --levels thresholds: "empirical" (full pool) or "gamma" (lr-filtered fit)
+  bool no_lane_gate = false;  // --levels: keep thresholds outside the likelihood-ratio bounds
+  // Every threshold enumerates its own intervals by default. `--iterative-removal` switches to
+  // ordered extraction, where each lane removes the bins it claimed so later lanes only fill gaps.
+  bool iterative_removal = false;
   bool per_sequence = false;
   uint32_t verbosity = 1;
 };
+
+// A background pool smaller than this cannot support a significance verdict; `--sample-size` is
+// either 0 (skip the test) or at least this large, and a record is tested against at least a tenth
+// of the requested pool.
+inline constexpr uint64_t min_sample_size = 100;
 
 // One scored background window: its source sequence, start, MLE distance, and LR statistic.
 struct sample_point_t
@@ -117,7 +126,14 @@ vec<double> lr_filtered_sample(const vec<sample_point_t>& points_v, double lr_th
 bool fit_gamma_mom(const vec<double>& sample_v, gamma_fit_t& fit);
 
 // Empirical two-sided quantiles of `sample_v` (sorted); the fallback when a gamma cannot be placed.
-bool empirical_thresholds_from_levels(const vec<double>& sample_v, const vec<double>& levels_v, vec<double>& out_v);
+// `min_samples` is the smallest pool that may place a quantile. `warn_lift` reports a quantile that
+// had to be lifted to the nearest distinct distance; the caller turns it off when the
+// likelihood-ratio gate is about to drop those lanes anyway.
+bool empirical_thresholds_from_levels(const vec<double>& sample_v,
+                                      const vec<double>& levels_v,
+                                      vec<double>& out_v,
+                                      size_t min_samples,
+                                      bool warn_lift = true);
 
 // Two-sided thresholds for `levels_v` as quantiles of the gamma fitted to `sample_v`, which must be
 // sorted. A tail quantile that reaches the estimable floor is lifted to the nearest observed
@@ -128,6 +144,7 @@ bool empirical_thresholds_from_levels(const vec<double>& sample_v, const vec<dou
 bool thresholds_from_levels(const vec<double>& sample_v,
                             const vec<double>& levels_v,
                             vec<double>& out_v,
+                            size_t min_samples,
                             gamma_fit_t* fit_out = nullptr);
 
 // Per-reference detection pass: null, thresholds, scan, intervals, significance.
@@ -144,8 +161,9 @@ public:
 private:
   void build_null(ThreadPool& pool);
   void scan_sequence(const map_params<T>& params, const LLH<T>& llhf, size_t bix);
-  void extract_simple_intervals(IntExt<T>& ext, const LLH<T>& llhf, bool is_rc, uint64_t tau_eff, size_t bix);
-  void extract_ordered_intervals(IntExt<T>& ext, const LLH<T>& llhf, bool is_rc, uint64_t tau_eff, size_t bix);
+  void extract_lane_intervals(IntExt<T>& ext, const LLH<T>& llhf, bool is_rc, uint64_t tau_eff, size_t bix);
+  void extract_iterative_intervals(IntExt<T>& ext, const LLH<T>& llhf, bool is_rc, uint64_t tau_eff, size_t bix);
+  // `a_bin`/`b_bin` are the half-open 0-based bin range the extractor scored: bins [a_bin, b_bin).
   void emit_record(IntExt<T>& ext, const LLH<T>& llhf, size_t bix, uint64_t a_bin, uint64_t b_bin, size_t th_ix, bool is_rc);
   xy_t get_distance_bin(const record_t& r, const LLH<T>& llhf) const;
   void report_null(const str& rname) const;
@@ -157,12 +175,14 @@ private:
   const uint32_t k;
   const uint32_t hpos;
   const bool sketch_canonical;
-  vec<double> th_v;          // resolved thresholds, sorted ascending
-  vec<double> null_v;        // pooled background distances, sorted
-  vec<double> fit_v;         // lr-filtered background distances used for the gamma fit
-  gamma_fit_t gamma_fit;     // parameters behind th_v (NaN when -d supplied them)
-  uint64_t null_floored = 0; // background samples below d_eps
-  vvec<double> null_seq_v;   // per-sequence nulls (--per-sequence)
+  vec<double> th_v;                                // resolved thresholds, sorted ascending
+  vec<double> null_v;                              // pooled background distances, sorted
+  vec<double> fit_v;                               // lr-filtered background distances used for the gamma fit
+  gamma_fit_t gamma_fit;                           // parameters behind th_v (NaN when -d supplied them)
+  a_range_t ar;                                    // likelihood-ratio bounds behind active_v (--levels only)
+  arr<bool, rwidth> active_v = all_lanes_active(); // lanes that survived the bounds
+  uint64_t null_floored = 0;                       // background samples below d_eps
+  vvec<double> null_seq_v;                         // per-sequence nulls (--per-sequence)
   vec<uint64_t> scratch_v;
   vec<uint64_t> acc_v;
   uint64_t u_acc = 0;
