@@ -151,22 +151,6 @@ namespace {
   }
 } // namespace
 
-vec<double> lr_filtered_sample(const vec<sample_point_t>& points_v, double lr_th, double min_portion)
-{
-  // The same rule `dist` applies to its reconciled windows: a window's likelihood-ratio bound is
-  // its evidence, and the filtered set is only used when enough windows carry it.
-  vec<double> all_v;
-  vec<double> kept_v;
-  for (const sample_point_t& p : points_v) {
-    if (!is_valid_distance(p.d)) continue;
-    all_v.push_back(p.d);
-    if (!std::isnan(p.s) && p.s > lr_th) kept_v.push_back(p.d);
-  }
-  const double portion = all_v.empty() ? 0.0 : static_cast<double>(kept_v.size()) / static_cast<double>(all_v.size());
-  if (portion > min_portion) return kept_v;
-  return all_v;
-}
-
 bool fit_gamma_mom(const vec<double>& sample_v, gamma_fit_t& fit, size_t min_samples)
 {
   fit = {};
@@ -193,12 +177,70 @@ bool fit_gamma_mom(const vec<double>& sample_v, gamma_fit_t& fit, size_t min_sam
 }
 
 namespace {
-  // The fitted gamma's two-sided thresholds for every level, tightest level first. Placing them is
-  // the caller's job: a gamma fitted to a background with a point mass at the floor has its lower
-  // quantiles far below anything observable, and those are clamped, not invented.
+  struct gamma_suff_t
+  {
+    double n = 0.0;
+    double sum = 0.0;
+    double sum_log = 0.0;
+  };
+
+  gamma_suff_t gamma_suff(const vec<double>& v)
+  {
+    gamma_suff_t s;
+    s.n = static_cast<double>(v.size());
+    for (const double x : v) {
+      s.sum += x;
+      s.sum_log += std::log(x);
+    }
+    return s;
+  }
+
+  double gamma_loglik(const gamma_suff_t& s, double shape, double scale)
+  {
+    if (!(shape > 0.0) || !(scale > 0.0)) return ninf();
+    return ((shape - 1.0) * s.sum_log) - (s.sum / scale) - (s.n * (std::lgamma(shape) + (shape * std::log(scale))));
+  }
+
+  // Shape that maximises the gamma likelihood at the profile scale mean/shape. The MLE equation
+  // log(shape) - digamma(shape) = log(mean) - mean(log x) has a monotone left side, so bisection
+  // settles it; a non-positive right side has no interior solution and is reported as NaN.
+  double gamma_ml_shape(const gamma_suff_t& s)
+  {
+    const double k = std::log(s.sum / s.n) - (s.sum_log / s.n);
+    if (!(k > 0.0) || !std::isfinite(k)) return nanx();
+    double lo = 1e-3;
+    double hi = 1e6;
+    for (int it = 0; it < 60; ++it) {
+      const double mid = std::sqrt(lo * hi);
+      if ((std::log(mid) - boost::math::digamma(mid)) > k)
+        lo = mid;
+      else
+        hi = mid;
+    }
+    return std::sqrt(lo * hi);
+  }
+
+  // Hurdle quantile: the spike below `p0`, the fitted gamma above it. A fit without a spike - every
+  // hand-built or degenerate case - is the plain gamma.
+  double hurdle_quantile(const gamma_fit_t& fit, double p)
+  {
+    if (fit.p0 > 0.0 && !(p > fit.p0)) return fit.d_lo;
+    const boost::math::gamma_distribution<double> gamma(fit.shape, fit.scale);
+    return boost::math::quantile(gamma, (p - fit.p0) / (1.0 - fit.p0));
+  }
+
+  // Hurdle CDF. Unlike a fit truncated to the admissible range it is a distribution over the whole
+  // distance domain, so it is the p-value scale as well as the threshold scale.
+  double hurdle_cdf(const gamma_fit_t& fit, double d)
+  {
+    if (fit.p0 > 0.0 && !(d > fit.d_lo)) return fit.p0;
+    const boost::math::gamma_distribution<double> gamma(fit.shape, fit.scale);
+    return fit.p0 + ((1.0 - fit.p0) * boost::math::cdf(gamma, d));
+  }
+
+  // The fitted gamma's two-sided thresholds for every level, tightest level first.
   bool gamma_thresholds(const gamma_fit_t& fit, const vec<double>& levels_v, vec<double>& out_v)
   {
-    const boost::math::gamma_distribution<double> gamma(fit.shape, fit.scale);
     vec<double> levels = levels_v;
     std::sort(levels.begin(), levels.end()); // tightest alpha first
 
@@ -206,8 +248,8 @@ namespace {
       double t_low = 0.0;
       double t_high = 0.0;
       try {
-        t_low = boost::math::quantile(gamma, alpha / 2.0);
-        t_high = boost::math::quantile(gamma, 1.0 - alpha / 2.0);
+        t_low = hurdle_quantile(fit, alpha / 2.0);
+        t_high = hurdle_quantile(fit, 1.0 - (alpha / 2.0));
       } catch (const std::exception&) {
         return false;
       }
@@ -235,35 +277,23 @@ bool empirical_thresholds_from_levels(const vec<double>& sample_v,
   std::sort(levels.begin(), levels.end()); // tightest alpha first
   for (const double alpha : levels) {
     out_v.push_back(linear_quantile(sample_v, alpha / 2.0));
-    out_v.push_back(linear_quantile(sample_v, 1.0 - alpha / 2.0));
+    out_v.push_back(linear_quantile(sample_v, 1.0 - (alpha / 2.0)));
   }
   std::sort(out_v.begin(), out_v.end());
   return std::all_of(out_v.begin(), out_v.end(), [](double t) { return std::isfinite(t); });
 }
 
-// Place the derived thresholds: clamp every one into the range a `-l` window can resolve, then
-// keep the distinct values. A model that cannot separate a tail - a gamma whose lower quantiles sit
-// below the floor a point mass creates, say - therefore leaves fewer active lanes instead of
-// inventing a threshold, and lanes the caller has no threshold for are switched off. `th_v` must be
-// sorted ascending. Returns the number of active lanes.
-size_t place_thresholds(vec<double>& th_v, arr<bool, rwidth>& active_v, const a_range_t& ar, bool drop_off_boundary)
+// The --levels lane set: the two likelihood-ratio bounds, plus the model's own thresholds, sorted and
+// reduced to the distinct values a lane can carry. Nothing is clamped: a threshold the background
+// cannot resolve at `-l` length is still a lane, and the per-record p_lb/p_ub say whether that
+// record's own length resolved it. Two lanes with the same threshold are one band, so the later
+// duplicate is dropped - that is the only threshold a lane can do without.
+size_t compose_lanes(vec<double>& th_v, const a_range_t& ar)
 {
-  size_t n_active = 0;
-  double prev = nanx(); // last value kept active, so a duplicate drops even after a clamped one
-  for (size_t i = 0; i < active_v.size(); ++i) {
-    if (i >= th_v.size()) {
-      active_v[i] = false;
-      continue;
-    }
-    const bool in_range = (th_v[i] >= ar.t_min) && (th_v[i] <= ar.t_max);
-    th_v[i] = std::clamp(th_v[i], ar.t_min, ar.t_max);
-    active_v[i] = (!drop_off_boundary || in_range) && (n_active == 0 || th_v[i] > prev);
-    if (active_v[i]) {
-      prev = th_v[i];
-      ++n_active;
-    }
-  }
-  return n_active;
+  th_v.push_back(ar.t_min);
+  th_v.push_back(ar.t_max);
+  th_v = sorted_unique(std::move(th_v));
+  return th_v.size();
 }
 
 void apply_gamma_significance(record_t& r, const gamma_fit_t& fit)
@@ -271,12 +301,11 @@ void apply_gamma_significance(record_t& r, const gamma_fit_t& fit)
   if (!is_valid_distance(r.d) || !(fit.shape > 0.0) || !(fit.scale > 0.0)) return;
   if (!std::isfinite(fit.shape) || !std::isfinite(fit.scale)) return;
 
-  const boost::math::gamma_distribution<double> gamma(fit.shape, fit.scale);
   double cdf = nanx();
   double median = nanx();
   try {
-    cdf = boost::math::cdf(gamma, r.d);
-    median = boost::math::median(gamma);
+    cdf = hurdle_cdf(fit, r.d);
+    median = hurdle_quantile(fit, 0.5);
   } catch (const std::exception&) {
     return; // outside the fitted distribution domain: leave the row untested
   }
@@ -284,6 +313,41 @@ void apply_gamma_significance(record_t& r, const gamma_fit_t& fit)
 
   r.pvalue = std::clamp(2.0 * std::min(cdf, 1.0 - cdf), 0.0, 1.0);
   if (std::isfinite(median) && median > eps) r.fold = r.d / median;
+}
+
+bool fit_background_gamma(const vec<double>& sample_v, gamma_fit_t& fit, size_t min_samples)
+{
+  fit = {};
+  if (sample_v.empty()) return false;
+
+  // sample_v is sorted, and windows whose histogram repeats get an identical MLE, so the floor is
+  // an exact point mass and `p0` counts it rather than modelling it with a continuous density - the
+  // reason a bare gamma fit degenerates on a floored pool. Only the windows above the spike carry
+  // the gamma, so `min_samples` counts those.
+  fit.d_lo = sample_v.front();
+  const size_t n_at = static_cast<size_t>(std::upper_bound(sample_v.begin(), sample_v.end(), fit.d_lo) - sample_v.begin());
+  fit.p0 = static_cast<double>(n_at) / static_cast<double>(sample_v.size());
+  const size_t n_above = sample_v.size() - n_at;
+  if (n_above < min_samples) return false;
+
+  const vec<double> cont(sample_v.begin() + static_cast<std::ptrdiff_t>(n_at), sample_v.end());
+  gamma_fit_t mom;
+  if (!fit_gamma_mom(cont, mom, min_samples)) return false;
+  fit.shape = mom.shape;
+  fit.scale = mom.scale;
+
+  // ML, keeping the moment fit unless the likelihood improves on it.
+  const gamma_suff_t suff = gamma_suff(cont);
+  const double shape_ml = gamma_ml_shape(suff);
+  if (std::isfinite(shape_ml)) {
+    const double scale_ml = (suff.sum / suff.n) / shape_ml;
+    if (gamma_loglik(suff, shape_ml, scale_ml) > gamma_loglik(suff, mom.shape, mom.scale)) {
+      fit.shape = shape_ml;
+      fit.scale = scale_ml;
+      fit.via_ml = true;
+    }
+  }
+  return std::isfinite(fit.shape) && std::isfinite(fit.scale) && fit.shape > 0.0 && fit.scale > 0.0;
 }
 
 bool thresholds_from_levels(const vec<double>& sample_v,
@@ -295,20 +359,17 @@ bool thresholds_from_levels(const vec<double>& sample_v,
   out_v.clear();
   if (levels_v.empty()) return false;
 
-  // NOTE (estimator): the fit is method of moments -- closed form, no iteration; its job is only to
-  // smooth the background, the robustness comes from the lr/min-portion filter upstream. An MLE or
-  // trimmed alternative would live inside fit_gamma_mom.
-  // NOTE (floor): floored windows (d below d_eps) are a point mass a continuous gamma cannot
-  // represent; they still take part in this fit, which pulls the shape down and the lower quantiles
-  // below anything observable. Those thresholds are clamped by `place_thresholds`, not invented here.
+  // The gamma is fitted to the pool as a hurdle (see fit_background_gamma): ML with a moment
+  // fallback, and the floor spike carried separately. Thresholds the fit places stay lanes of their
+  // own; `compose_lanes` neither clamps them nor invents a replacement.
   gamma_fit_t fit;
-  if (fit_gamma_mom(sample_v, fit, min_samples) && gamma_thresholds(fit, levels_v, out_v)) {
+  if (fit_background_gamma(sample_v, fit, min_samples) && gamma_thresholds(fit, levels_v, out_v)) {
     if (fit_out != nullptr) *fit_out = fit;
     return true;
   }
 
-  // Rejected (too few samples or no variance): fall back to the empirical quantiles of the same
-  // sample rather than skipping the sketch.
+  // Rejected (too few samples, no variance, or quantiles that cannot be placed): fall back to the
+  // empirical quantiles of the same sample rather than skipping the sketch.
   out_v.clear();
   if (!empirical_thresholds_from_levels(sample_v, levels_v, out_v, min_samples)) return false;
   if (fit_out != nullptr) *fit_out = gamma_fit_t{}; // NaN marks the empirical path for the caller
@@ -343,11 +404,6 @@ void IntMap<T>::build_null(ThreadPool& pool)
     null_v.push_back(p.d);
   }
   std::sort(null_v.begin(), null_v.end());
-
-  // The --levels gamma is fitted to the lr-filtered sample; the empirical percentile above keeps
-  // using the full pool.
-  fit_v = lr_filtered_sample(points, opts.lr_th, opts.min_portion);
-  std::sort(fit_v.begin(), fit_v.end());
 }
 
 template<typename T>
@@ -361,74 +417,52 @@ void IntMap<T>::map_sequences(std::ostream& sout, const str& rname, ThreadPool& 
     // Also guards direct (non-CLI) construction; the CLI checks this in validate_configuration.
     if (th_v.size() != 1 && th_v.size() != WIDTH)
       error_exit(concat_msg("-d needs exactly 1 or ", WIDTH, " thresholds; got ", th_v.size()));
+    n_active = th_v.size();
   } else {
-    // Two ways to place the thresholds. The empirical quantiles of the full background are the
-    // faithful local estimate and the default; the gamma smooths and extrapolates, but a point mass
-    // at the floor pulls its lower quantiles below anything observable (see --bg-model).
-    //
-    // Whichever model is used, the thresholds are then clamped into the range a `-l` window can
-    // actually resolve and collapsed to distinct values. A tail the model cannot separate therefore
-    // leaves fewer active lanes - `--levels` resolves into up to 2 * levels of them - instead of
-    // being lifted onto an invented threshold.
+    // Two model thresholds per level, plus the two likelihood-ratio bounds. The empirical quantiles
+    // of the full background are the faithful local estimate and the default; the gamma smooths and
+    // extrapolates, but a point mass at the floor pulls its lower quantiles below anything
+    // observable (see --bg-model). Either way the bounds are always lanes: they are the claims a
+    // `-l` window can always support, one near perfect identity and one near the no-homology
+    // ceiling, so the run still reports both ends when the model has nothing to add.
     const LLH<double> probe = make_llhf(sketch, opts.hdist_th);
     const uint64_t n_win = get_nwinmers(opts.tau, opts.bin_shift);
     ar = admissible_distance_range<double>(probe, n_win, opts.lr_th);
     if (!ar.is_ok) {
-      warn_pmsg(rname, "skipped: no distance is resolvable for a -l window at --lr-th ", opts.lr_th);
+      warn_pmsg(
+        rname, "skipped: no distance is resolvable for a -l window at --lr-th ", opts.lr_th, " (raise -l or lower --lr-th)");
       return;
     }
 
+    bool have_interior = false;
     if (opts.bg_model == "gamma") {
       gamma_fit_t fit;
-      if (!thresholds_from_levels(fit_v, opts.levels_v, th_v, min_samples, &fit)) {
-        // Neither the gamma nor the empirical fallback could place a single threshold: skip this
-        // sketch rather than aborting the run, other sketches are unaffected.
-        warn_pmsg(rname,
-                  "skipped: --levels do not resolve from the background (usable windows: ",
-                  fit_v.size(),
-                  ", need ",
-                  min_samples,
-                  ")");
-        return;
-      }
-      gamma_fit = fit;
-      if (!std::isfinite(gamma_fit.shape))
+      have_interior = thresholds_from_levels(null_v, opts.levels_v, th_v, min_samples, &fit);
+      gamma_fit = have_interior ? fit : gamma_fit_t{};
+      if (!have_interior)
+        warn_pmsg(rname, "--levels: no interior threshold resolves from the background; running the two bounds only");
+      else if (!std::isfinite(gamma_fit.shape))
         warn_pmsg(rname, "--levels: gamma fit rejected; fell back to empirical quantiles");
     } else {
-      if (!empirical_thresholds_from_levels(null_v, opts.levels_v, th_v, min_samples)) {
-        warn_pmsg(rname,
-                  "skipped: --levels do not resolve from the background (usable windows: ",
-                  null_v.size(),
-                  ", need ",
-                  min_samples,
-                  ")");
-        return;
-      }
+      have_interior = empirical_thresholds_from_levels(null_v, opts.levels_v, th_v, min_samples);
       gamma_fit = gamma_fit_t{}; // NaN marks the empirical path
+      if (!have_interior)
+        warn_pmsg(rname, "--levels: no interior threshold resolves from the background; running the two bounds only");
     }
+    if (!have_interior) th_v.clear();
 
-    if (th_v.size() > rwidth)
-      error_exit(concat_msg("--levels yields ", th_v.size(), " thresholds; at most ", rwidth, " fit the lanes"));
-    const size_t n_active = place_thresholds(th_v, active_v, ar, opts.off_boundary);
-    if (n_active == 0) {
-      warn_pmsg(rname, "skipped: no --levels threshold survives the admissible range");
-      return;
-    }
-    if (opts.verbosity >= 1 && n_active < th_v.size())
-      cerr_msg("[",
-               rname,
-               "] --levels: ",
-               n_active,
-               " of ",
-               th_v.size(),
-               " thresholds are active; the rest ",
-               opts.off_boundary ? concat_msg("fall outside [", ar.t_min, ", ", ar.t_max, "] and stay inactive")
-                                 : concat_msg("collapse onto [", ar.t_min, ", ", ar.t_max, "]"));
+    n_active = compose_lanes(th_v, ar);
+    // 2 * levels + 2 bounds fits the lanes; the CLI caps the levels, so this only guards callers
+    // that build map_opts directly.
+    if (n_active > rwidth)
+      error_exit(concat_msg("--levels yields ", n_active, " thresholds; at most ", rwidth, " fit the lanes"));
   }
 
   const T dist_th = make_dist_th<T>(th_v);
   map_params<T> dparams(dist_th, opts.hdist_th, opts.tau, opts.bin_shift, opts.chisq);
-  dparams.active = active_v;
+  dparams.n_active = static_cast<uint8_t>(n_active);
+  dparams.lo_bound = ar.t_min;
+  dparams.hi_bound = ar.t_max;
   const LLH<T> llhf(k, hpos, sketch.get_rho(), opts.hdist_th, dist_th);
 
   for (size_t bix = 0; bix < batch_v.size(); ++bix)
@@ -713,8 +747,12 @@ void IntMap<T>::report_null(const str& rname) const
              gamma_fit.shape,
              " scale=",
              gamma_fit.scale,
-             " (n=",
-             fit_v.size(),
+             " p0=",
+             gamma_fit.p0,
+             " (",
+             gamma_fit.via_ml ? "ml" : "mom",
+             ", n=",
+             null_v.size(),
              ", floored=",
              null_floored,
              ")");
@@ -723,20 +761,31 @@ void IntMap<T>::report_null(const str& rname) const
     cerr_msg("[",
              rname,
              is_gamma_fallback ? "] --levels: gamma fit rejected, empirical quantiles over n="
-                               : "] --levels: empirical quantiles (thresholds and p-values) of the full pool, n=",
-             is_gamma_fallback ? fit_v.size() : null_v.size(),
+                               : "] --levels: empirical quantiles (thresholds and p-values) of the pool, n=",
+             null_v.size(),
              " (floored=",
              null_floored,
              ")");
   }
   if (!opts.levels_v.empty()) {
-    if (ar.is_ok)
-      cerr_msg("[", rname, "] threshold bounds (lr_th=", opts.lr_th, "): [", ar.t_min, ", ", ar.t_max, "]");
-    else
-      cerr_msg("[", rname, "] threshold bounds (lr_th=", opts.lr_th, "): none resolvable");
+    cerr_msg("[",
+             rname,
+             "] threshold bounds (lr_th=",
+             opts.lr_th,
+             "): [",
+             ar.t_min,
+             ", ",
+             ar.t_max,
+             "] + ",
+             n_active > 2 ? n_active - 2 : 0,
+             " interior lane(s)");
+    if (opts.iterative_removal)
+      cerr_msg("[", rname, "] iterative removal: the two bounds claim first, then the interior lanes inward");
   }
-  for (size_t i = 0; i < th_v.size(); ++i)
-    cerr_msg("[", rname, "] threshold=", th_v[i], active_v[i] ? "" : " (inactive)");
+  for (size_t i = 0; i < n_active; ++i) {
+    const bool is_bound = (th_v[i] == ar.t_min) || (th_v[i] == ar.t_max);
+    cerr_msg("[", rname, "] threshold=", th_v[i], is_bound ? " (bound)" : "");
+  }
 }
 
 template<typename T>
@@ -843,7 +892,6 @@ void BackgroundSampler::evaluate(ThreadPool& pool)
         agg.clear();
         scan_mers_range<true>(ctx, cseq, jx, jy, agg);
         p.d = llhf.mle(agg.hist(), agg.u);
-        p.s = compute_lr_ub(llhf, p.d, agg.u + hist_total(agg.hist(), hdist_th));
       }
     } else {
       swindow_counts_t agg(hdist_th);
@@ -857,9 +905,6 @@ void BackgroundSampler::evaluate(ThreadPool& pool)
         const double d_rc = llhf.mle(agg.hist_rc(), agg.u_rc);
         const auto picked = select_strand_distance(d_fw, d_rc);
         p.d = picked.first;
-        const bool is_rc = picked.second == '-';
-        p.s = compute_lr_ub(
-          llhf, p.d, (is_rc ? agg.u_rc : agg.u_fw) + hist_total(is_rc ? agg.hist_rc() : agg.hist_fw(), hdist_th));
       }
     }
   });
@@ -893,12 +938,21 @@ bool MapSC::validate_configuration()
       cerr_msg("--dist-th values must be unique");
     }
   }
-  if (params.off_boundary && !have_levels)
-    warn_msg("--off-boundary only affects --levels thresholds; -d uses the given distances as they are");
   if (have_levels) {
-    if (params.levels_v.size() > rwidth / 2) {
+    if (params.levels_v.size() > max_levels) {
       is_invalid = true;
-      cerr_msg("--levels accepts at most ", rwidth / 2, " levels (two thresholds each); got ", params.levels_v.size());
+      cerr_msg("--levels accepts at most ",
+               max_levels,
+               " levels (two thresholds each, plus the two bounds); got ",
+               params.levels_v.size());
+    }
+    // --levels thresholds are quantiles of the background sample, so a run without a pool has
+    // nothing to place: refuse it here instead of skipping every reference at run time.
+    if (params.sample_size == 0) {
+      is_invalid = true;
+      cerr_msg("--levels needs a background sample; --sample-size must be at least ",
+               min_sample_size,
+               " with --levels (use -d for a pool-free run)");
     }
     for (size_t i = 0; i < params.levels_v.size(); ++i) {
       if (!std::isfinite(params.levels_v[i]) || params.levels_v[i] <= 1e-8 || params.levels_v[i] >= 0.5) {
@@ -912,7 +966,7 @@ bool MapSC::validate_configuration()
     }
     for (const double alpha : params.levels_v) {
       const double expected = static_cast<double>(params.sample_size) * alpha / 2.0;
-      if (expected < 1.0) {
+      if (params.sample_size != 0 && expected < 1.0) {
         warn_msg(concat_msg("--levels ",
                             alpha,
                             ": only ~",
@@ -950,6 +1004,22 @@ bool MapSC::validate_configuration()
 
 void MapSC::map()
 {
+  // The reference is opened first: a --levels run places its thresholds inside a range a `-l` window
+  // can resolve, and a configuration that cannot resolve any distance (too few k-mers per window for
+  // the --lr-th cut) is a mistake to report once, before anything is read or written.
+  const Container file(sketch_path);
+  const uint32_t nsketches = file.size();
+  if (!params.levels_v.empty() && nsketches > 0) {
+    const Sketch probe = file.open(0, SketchLoad::Buckets);
+    const a_range_t probe_ar = admissible_distance_range<double>(
+      make_llhf(probe, params.hdist_th), get_nwinmers(params.tau, params.bin_shift), params.lr_th);
+    if (!probe_ar.is_ok) {
+      error_exit(concat_msg(
+        "--levels: no distance is resolvable for a -l window at --lr-th ", params.lr_th, " (raise -l or lower --lr-th)"));
+    }
+    cerr_msg("--levels: bounds [", probe_ar.t_min, ", ", probe_ar.t_max, "] for a -l window at --lr-th ", params.lr_th);
+  }
+
   set_precision(*output_stream, 5);
   write_provenance(*output_stream);
 
@@ -961,8 +1031,6 @@ void MapSC::map()
   total_qseq = qs.get_batch_v().size();
   const vec<qseq_t>& batch_v = qs.get_batch_v();
 
-  const Container file(sketch_path);
-  const uint32_t nsketches = file.size();
   write_map_header(*output_stream, file.get_config().canonical);
 
   ThreadPool pool(num_threads);
@@ -1002,11 +1070,13 @@ MapSC::MapSC(CLI::App& sc)
   // at the first token that is not a number; the per-option checks make that validation reject
   // paths.
   sc.validate_optional_arguments();
-  // The loosest level sets how much of the genome is called: 0.1 put the loosest low lane at the
-  // 0.05 quantile and covered ~18 % of mouse chr7 per reference. 0.02 covers ~5-7 % and scores a
-  // higher F1 against the known chr7 introgression, because the loosest lanes were mostly noise.
-  // The tightest level needs ~1/(alpha/2) background windows to be estimable, hence --sample-size.
-  params.levels_v = {0.02, 0.01, 0.005, 0.004};
+  // The levels partition what a `-l` window can resolve. The two bounds of that range are always
+  // lanes, so a run always reports a near-identical and a near-ceiling claim; the levels fill in
+  // between. 0.05 / 0.01 / 0.005 put the loosest low lane at the 0.025 quantile, which covered
+  // ~5-7 % of mouse chr7 per reference and scored a higher F1 against the known introgression than
+  // the 0.1 ladder, whose loosest lanes were mostly noise. The tightest level needs ~1/(alpha/2)
+  // background windows to be estimable, hence --sample-size.
+  params.levels_v = {0.05, 0.01, 0.005};
   sc.add_option("query-path", query_path, "Query FASTA/FASTQ file <path> (or URL) (gzip compatible)")
     ->required()
     ->check(url_validator | CLI::ExistingFile);
@@ -1026,25 +1096,19 @@ MapSC::MapSC(CLI::App& sc)
     ->check(CLI::PositiveNumber);
   sc.add_option("--levels",
                 params.levels_v,
-                "Two-sided tail probabilities: 1 to 4 (each adds a low and a high threshold); "
-                "thresholds outside the resolvable range are clamped and equal ones collapse "
-                "[0.02 0.01 0.005 0.004]")
-    ->expected(1, rwidth / 2)
+                "Two-sided tail probabilities: 1 to 3 (each adds a low and a high threshold); the two "
+                "bounds a -l window can resolve are always lanes as well [0.05 0.01 0.005]")
+    ->expected(1, max_levels)
     ->check(CLI::Range(1e-8, 0.5));
   sc.add_option("--lr-th",
                 params.lr_th,
-                "A background window is kept for the --levels gamma fit when its lr_ub exceeds this, and a "
-                "--levels threshold must be resolvable at this likelihood ratio [6.635]")
+                "Where the two --levels bounds sit: a -l window must clear this likelihood ratio to be "
+                "resolvable from perfect identity and from the sketch ceiling [6.635]")
     ->check(CLI::NonNegativeNumber);
-  sc.add_option("--min-portion",
-                params.min_portion,
-                "Fit --levels on the lr-filtered background iff at least this portion survives [0.66]")
-    ->check(CLI::Range(0.0, 1.0));
   sc.add_option("--bg-model",
                 params.bg_model,
-                "Where --levels thresholds come from: 'empirical' quantiles of the full background pool, "
-                "or a 'gamma' fitted to the lr-filtered pool, which also supplies pvalue and fold "
-                "[empirical]")
+                "Where --levels thresholds come from: 'empirical' quantiles of the background pool, or a "
+                "'gamma' fitted to that same pool, which also supplies pvalue and fold [empirical]")
     ->check(CLI::IsMember({"empirical", "gamma"}));
   sc.add_option("--sample-size",
                 params.sample_size,
@@ -1052,12 +1116,8 @@ MapSC::MapSC(CLI::App& sc)
     ->check(CLI::NonNegativeNumber);
   sc.add_flag("--iterative-removal",
               params.iterative_removal,
-              "Let each threshold claim its intervals and search only the remaining gaps; off, every "
-              "threshold enumerates its own intervals [off]");
-  sc.add_flag("--off-boundary",
-              params.off_boundary,
-              "Leave a --levels threshold the background cannot resolve inactive instead of clamping "
-              "it onto the boundary of the admissible range [off]");
+              "Let each threshold claim its intervals and search only the remaining gaps, the two --levels "
+              "bounds first; off, every threshold enumerates its own intervals [off]");
   sc.add_option("--verbosity", params.verbosity, "Background and threshold report detail (0-1) [1]")->check(CLI::Range(0, 1));
   sc.callback([&]() {
     const bool has_d = sc.count("-d") != 0;

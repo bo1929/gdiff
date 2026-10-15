@@ -106,7 +106,8 @@ enum class input_type
   container,
 };
 
-bool check_input_type(const std::filesystem::path& path, input_type type, const str& what, const str& hint = "");
+// Reject a path whose contents contradict `type`; a path that is not a regular file is accepted.
+bool check_input_type(const std::filesystem::path& path, input_type type, const str& what);
 
 // Parse a container's header; leaves `p` at the index block.
 void read_container_header(const char*& p,

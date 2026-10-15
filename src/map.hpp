@@ -37,16 +37,12 @@ struct map_opts
   double chisq = 33.00051;
   uint64_t sample_size = 500;
   vec<double> thresholds_v;   // -d: exactly 1 or rwidth absolute distance thresholds
-  vec<double> levels_v;       // --levels: 1..4 two-sided tail probabilities (two thresholds each)
+  vec<double> levels_v;       // --levels: 1..3 two-sided tail probabilities (two thresholds each)
   double lr_th = 6.635;       // --levels fit: keep background windows whose lr_ub exceeds this
-  double min_portion = 0.66;  // ... but only when more than this portion of them survives
   str bg_model = "empirical"; // --levels thresholds: "empirical" (full pool) or "gamma" (lr-filtered fit)
   // Every threshold enumerates its own intervals by default. `--iterative-removal` switches to
   // ordered extraction, where each lane removes the bins it claimed so later lanes only fill gaps.
   bool iterative_removal = false;
-  // --off-boundary: a derived threshold outside the admissible range is dropped instead of being
-  // clamped onto the boundary, which keeps that boundary lane inactive.
-  bool off_boundary = false;
   uint32_t verbosity = 1;
 };
 
@@ -55,13 +51,16 @@ struct map_opts
 // of the requested pool.
 inline constexpr uint64_t min_sample_size = 100;
 
-// One scored background window: its source sequence, start, MLE distance, and LR statistic.
+// `--levels` budgets the lanes: two model thresholds per level plus the two bounds, so at most
+// rwidth / 2 - 1 levels fit the register.
+inline constexpr size_t max_levels = (rwidth / 2) - 1;
+
+// One scored background window: its source sequence, start and MLE distance.
 struct sample_point_t
 {
   uint64_t bix = 0;
   uint64_t start = 0;
   double d = nanx();
-  double s = nanx(); // lr_ub of this window against the reference
 };
 
 // Samples tau-long windows from the query sequences and scores them against one reference,
@@ -108,39 +107,40 @@ struct bp_t
   size_t ix = 0;
 };
 
-// Gamma parameters of the background sample, fitted by method of moments.
+// The background's distance distribution: a hurdle of a point mass `p0` at the estimable floor
+// `d_lo` (windows with the same histogram get the same MLE, so that spike is exact) plus a gamma
+// above it. `via_ml` says whether the gamma came from the likelihood or the moment fallback.
 struct gamma_fit_t
 {
   double shape = nanx();
   double scale = nanx();
+  double p0 = 0.0;
+  double d_lo = nanx();
+  bool via_ml = false;
 };
 
-// A two-parameter gamma needs more evidence than an empirical quantile does: below this the
-// derivation falls back to the empirical quantiles of the same sample.
-
-// Distances of the background windows whose lr_ub beats `lr_th`, falling back to every valid window
-// when at most `min_portion` of them survive (the rule `dist` applies to its reconciled windows).
-vec<double> lr_filtered_sample(const vec<sample_point_t>& points_v, double lr_th, double min_portion);
-
 // Method-of-moments gamma fit; false when the sample is smaller than `min_samples` or degenerate
-// (zero variance).
+// (zero variance). It is the start and the fallback of `fit_background_gamma`.
 bool fit_gamma_mom(const vec<double>& sample_v, gamma_fit_t& fit, size_t min_samples);
+
+// Fit the background pool as a hurdle: the spike at its floor plus a gamma on the windows above it,
+// by ML from the moment start. False when fewer than `min_samples` windows sit above the spike or
+// the continuous part is degenerate.
+bool fit_background_gamma(const vec<double>& sample_v, gamma_fit_t& fit, size_t min_samples);
 
 // Two-sided thresholds for `levels_v` from the background pool itself: one low and one high
 // threshold per level, sorted ascending. `min_samples` is the smallest pool that may place a
-// quantile, and equal thresholds are left to `place_thresholds` to collapse.
+// quantile; equal thresholds are left to `compose_lanes` to collapse into one lane.
 bool empirical_thresholds_from_levels(const vec<double>& sample_v,
                                       const vec<double>& levels_v,
                                       vec<double>& out_v,
                                       size_t min_samples);
 
-// Place derived thresholds: clamp each into the admissible range, then keep the distinct ones,
-// switching off the lanes left without a threshold. `--levels` therefore resolves into up to
-// `2 * levels` active lanes rather than exactly eight. With `drop_off_boundary` a threshold that
-// was clamped - one the background cannot resolve - is switched off as well instead of keeping the
-// boundary lane active; its clamped value still bounds the neighbouring band. `th_v` must be sorted
-// ascending; returns the number of active lanes.
-size_t place_thresholds(vec<double>& th_v, arr<bool, rwidth>& active_v, const a_range_t& ar, bool drop_off_boundary = false);
+// The `--levels` lane set: the two bounds plus the model's own thresholds, sorted and reduced to the
+// distinct values a lane can carry. Nothing is clamped - a threshold outside the bounds stays a lane
+// of its own - so the only threshold a lane can do without is an exact duplicate of another, which
+// is one band. Returns the number of lanes; `th_v` is sorted ascending and free of duplicates.
+size_t compose_lanes(vec<double>& th_v, const a_range_t& ar);
 
 // Two-sided p-value and fold from the fitted background gamma: the model-based counterpart of
 // `apply_empirical_significance`, used when `--bg-model gamma` placed the thresholds. Reads the
@@ -188,13 +188,12 @@ private:
   const uint32_t k;
   const uint32_t hpos;
   const bool sketch_canonical;
-  vec<double> th_v;                                // resolved thresholds, sorted ascending
-  vec<double> null_v;                              // pooled background distances, sorted
-  vec<double> fit_v;                               // lr-filtered background distances used for the gamma fit
-  gamma_fit_t gamma_fit;                           // parameters behind th_v (NaN when -d supplied them)
-  a_range_t ar;                                    // likelihood-ratio bounds behind active_v (--levels only)
-  arr<bool, rwidth> active_v = all_lanes_active(); // lanes that survived the bounds
-  uint64_t null_floored = 0;                       // background samples below d_eps
+  vec<double> th_v;          // thresholds, sorted ascending and distinct; lanes are [0, n_active)
+  size_t n_active = 0;       // lanes carrying a threshold
+  vec<double> null_v;        // pooled background distances, sorted
+  gamma_fit_t gamma_fit;     // parameters behind th_v (NaN when -d supplied them)
+  a_range_t ar;              // likelihood-ratio bounds; the two --levels end lanes
+  uint64_t null_floored = 0; // background samples below d_eps
   vec<uint64_t> scratch_v;
   vec<uint64_t> acc_v;
   uint64_t u_acc = 0;

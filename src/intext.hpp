@@ -40,15 +40,6 @@ inline double lane_at(T v, size_t ix)
   }
 }
 
-// Lanes that survived the likelihood-ratio bounds; a false lane is never extracted.
-// A threshold that cannot separate anything produces no records at all.
-inline arr<bool, rwidth> all_lanes_active()
-{
-  arr<bool, rwidth> active{};
-  active.fill(true);
-  return active;
-}
-
 template<typename T>
 struct map_params
 {
@@ -58,7 +49,9 @@ struct map_params
   uint64_t bin_shift; // Bin index = site >> bin_shift
   uint64_t bin_size;  // 2^bin_shift
   double chisq;       // Chi-square threshold for interval merging
-  arr<bool, rwidth> active = all_lanes_active();
+  uint8_t n_active = rwidth;
+  double lo_bound = nanx();
+  double hi_bound = nanx();
 
   map_params(T dist_th, uint32_t hdist_th, uint64_t tau, uint64_t bin_shift, double chisq)
     : dist_th(dist_th)

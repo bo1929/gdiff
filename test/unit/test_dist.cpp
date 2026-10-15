@@ -363,7 +363,7 @@ TEST_CASE("method of moments recovers a known gamma") {
   CHECK(fit.scale == doctest::Approx(scale).epsilon(0.02));
 }
 
-TEST_CASE("a pool without variance falls back to duplicate thresholds for placing to collapse") {
+TEST_CASE("a pool without variance yields one band per distinct distance") {
   const vec<double> sample(min_null_samples, 0.1);
   gamma_fit_t fit;
   vec<double> th;
@@ -372,12 +372,12 @@ TEST_CASE("a pool without variance falls back to duplicate thresholds for placin
   REQUIRE(th.size() == 8);
   CHECK(th.front() == doctest::Approx(th.back())); // one distance, eight thresholds
 
-  arr<bool, rwidth> active{};
-  active.fill(true);
-  CHECK(place_thresholds(th, active, a_range_t{0.05, 0.2, true}) == 1);
-  CHECK(active[0]);
-  for (size_t i = 1; i < th.size(); ++i)
-    CHECK_FALSE(active[i]);
+  // The eight collapse into that one band, and the two bounds join it.
+  CHECK(compose_lanes(th, a_range_t{0.05, 0.2, true}) == 3);
+  REQUIRE(th.size() == 3);
+  CHECK(th[0] == doctest::Approx(0.05)); // the low bound
+  CHECK(th[1] == doctest::Approx(0.1));  // the pool's single distance
+  CHECK(th[2] == doctest::Approx(0.2));  // the high bound
 }
 
 TEST_CASE("a short sample fails") {
@@ -412,52 +412,89 @@ TEST_CASE("any number of levels resolves into two thresholds each") {
   CHECK_FALSE(thresholds_from_levels(sample, {}, th, min_null_samples));
 }
 
-TEST_CASE("the lr filter keeps evidence-bearing windows only when enough survive") {
-  const auto point = [](double d, double s) {
-    sample_point_t p;
-    p.d = d;
-    p.s = s;
-    return p;
-  };
+TEST_CASE("the fit carries the floor spike separately and keeps the gamma on the rest") {
+  // A pool with a fifth of its windows pinned at the estimable floor: windows with the same
+  // histogram get the same MLE, so that is an exact point mass, and a gamma fitted straight to the
+  // pool collapses onto it (shape 1.18 here instead of 2). The hurdle counts the spike and fits the
+  // windows above it, which recovers both the share and the shape.
+  const double shape = 2.0;
+  const double scale = 0.165;
+  const double floor_d = 1e-9;
+  const boost::math::gamma_distribution<double> gamma(shape, scale);
+  const size_t n = 500;
+  const size_t n_floor = n / 5;
 
-  // Three of four windows carry evidence: portion 0.75 > 0.66, so only those are kept.
-  vec<sample_point_t> points{point(0.10, 50.0), point(0.20, 40.0), point(0.30, 30.0), point(0.90, 1.0)};
-  vec<double> kept = lr_filtered_sample(points, 6.635, 0.66);
-  REQUIRE(kept.size() == 3);
-  CHECK(kept.back() == doctest::Approx(0.30));
+  vec<double> pool(n_floor, floor_d);
+  for (size_t i = 0; i < n - n_floor; ++i)
+    pool.push_back(boost::math::quantile(gamma, (static_cast<double>(i) + 0.5) / static_cast<double>(n - n_floor)));
+  std::sort(pool.begin(), pool.end());
 
-  // Only one of four survives: the fallback keeps every valid window.
-  points = {point(0.10, 50.0), point(0.20, 1.0), point(0.30, 1.0), point(0.40, nanx())};
-  kept = lr_filtered_sample(points, 6.635, 0.66);
-  CHECK(kept.size() == 4);
+  gamma_fit_t bare;
+  REQUIRE(fit_gamma_mom(pool, bare, min_null_samples));
+  CHECK(bare.shape < 1.5); // the spike drags the moment fit down
+
+  gamma_fit_t fit;
+  REQUIRE(fit_background_gamma(pool, fit, min_null_samples));
+  CHECK(fit.p0 == doctest::Approx(0.2).epsilon(0.02));
+  CHECK(fit.d_lo == doctest::Approx(floor_d));
+  CHECK(fit.shape == doctest::Approx(shape).epsilon(0.05));
+  CHECK(fit.via_ml);
+
+  // Every level whose tail sits inside the spike reports the floor itself, as the empirical
+  // quantiles would, and the rest come from the fitted gamma.
+  vec<double> th;
+  REQUIRE(thresholds_from_levels(pool, {0.05, 0.01, 0.005}, th, min_null_samples, &fit));
+  CHECK(std::count(th.begin(), th.end(), doctest::Approx(floor_d).epsilon(1e-6)) == 3);
+  CHECK(th.front() == doctest::Approx(floor_d));
+  CHECK(th.back() > 1.0);
+
+  // The hurdle is a distribution over the whole domain, so it also scores records: one at the floor
+  // sits in the spike's mass.
+  record_t r(0, 100, interval_t{1, 50}, false, floor_d, 1.0, 0);
+  apply_gamma_significance(r, fit);
+  CHECK(r.pvalue == doctest::Approx(2.0 * fit.p0).epsilon(0.02));
+  CHECK(std::isfinite(r.fold));
 }
 
-TEST_CASE("place_thresholds can leave off-boundary thresholds inactive") {
+TEST_CASE("the gamma path fits the same pool the empirical path quantiles") {
+  // Whatever the --bg-model, both paths read the background null: the fit is not conditioned on
+  // lr_ub, because that test is a hard cut at the high bound and would bias every quantile it
+  // places (measured: -10 % on the upper threshold and a 31x inflated p-value at shape 91).
+  const vec<double> sample(min_null_samples, 0.1);
+  vec<double> th;
+  gamma_fit_t fit;
+  REQUIRE(thresholds_from_levels(sample, {0.1, 0.05, 0.01, 0.005}, th, min_null_samples, &fit));
+  CHECK_FALSE(std::isfinite(fit.shape)); // zero variance: the empirical fallback
+  CHECK_FALSE(thresholds_from_levels({}, {0.1}, th, min_null_samples)); // no pool, no thresholds
+}
+
+TEST_CASE("compose_lanes keeps thresholds outside the bounds and always adds the bounds") {
   const a_range_t ar{1e-4, 0.5, true};
 
-  // 1e-12 is below the range and 0.9 above it; 1e-4 and 5e-3 are inside.
+  // 1e-12 sits below the range and 0.9 above it: both stay lanes, nothing is clamped.
   vec<double> th{1e-12, 1e-4, 5e-3, 0.9};
-  arr<bool, rwidth> active{};
-  active.fill(true);
-  CHECK(place_thresholds(th, active, ar, true) == 2);
-  CHECK_FALSE(active[0]); // clamped to t_min for the neighbouring band, but not active
-  CHECK(active[1]);       // the in-range 1e-4 stays active although it equals the clamped value
-  CHECK(active[2]);
-  CHECK_FALSE(active[3]); // clamped to t_max, not active
-  CHECK(th[0] == doctest::Approx(1e-4));
+  CHECK(compose_lanes(th, ar) == 5);
+  REQUIRE(th.size() == 5);
+  CHECK(th[0] == doctest::Approx(1e-12));
+  CHECK(th[1] == doctest::Approx(1e-4)); // a model threshold that equals the bound is one band
+  CHECK(th[2] == doctest::Approx(5e-3));
   CHECK(th[3] == doctest::Approx(0.5));
+  CHECK(th[4] == doctest::Approx(0.9));
 
-  // Without the option the two collapse onto the boundary and the first of each stays active.
-  vec<double> same{1e-13, 1e-12};
-  arr<bool, rwidth> collapsed{};
-  collapsed.fill(true);
-  CHECK(place_thresholds(same, collapsed, ar, false) == 1);
-  CHECK(collapsed[0]);
+  // A run whose model placed nothing still has the two bounds to report.
+  vec<double> none;
+  CHECK(compose_lanes(none, ar) == 2);
+  REQUIRE(none.size() == 2);
+  CHECK(none[0] == doctest::Approx(1e-4));
+  CHECK(none[1] == doctest::Approx(0.5));
 
-  vec<double> all_off{1e-13, 1e-12};
-  arr<bool, rwidth> dropped{};
-  dropped.fill(true);
-  CHECK(place_thresholds(all_off, dropped, ar, true) == 0); // nothing to run
+  // The widest ladder the CLI allows - three levels, two thresholds each - fits the lanes with room
+  // to spare for the two bounds.
+  vec<double> full;
+  for (int i = 0; i < 2 * max_levels; ++i)
+    full.push_back(0.01 + 0.01 * static_cast<double>(i));
+  CHECK(compose_lanes(full, ar) == 2 * max_levels + 2);
+  CHECK(full.size() <= rwidth);
 }
 
 TEST_CASE("empirical thresholds are the pool's own quantiles, floor mass included") {
@@ -469,24 +506,7 @@ TEST_CASE("empirical thresholds are the pool's own quantiles, floor mass include
   REQUIRE(empirical_thresholds_from_levels(sample, {0.1, 0.05, 0.01, 0.005}, th, min_null_samples));
   REQUIRE(th.size() == 8);
   CHECK(std::is_sorted(th.begin(), th.end()));
-  CHECK(th.front() == doctest::Approx(0.0)); // reported as it is; placing clamps it
-}
-
-TEST_CASE("place_thresholds clamps into the admissible range and collapses duplicates") {
-  vec<double> th{1e-12, 1e-12, 5e-3, 0.9};
-  arr<bool, rwidth> active{};
-  active.fill(true);
-  CHECK(place_thresholds(th, active, a_range_t{1e-4, 0.5, true}) == 3);
-  CHECK(th[0] == doctest::Approx(1e-4)); // clamped up to t_min
-  CHECK(th[1] == doctest::Approx(1e-4)); // the duplicate that collapses
-  CHECK(th[2] == doctest::Approx(5e-3));
-  CHECK(th[3] == doctest::Approx(0.5)); // clamped down to t_max
-  CHECK(active[0]);
-  CHECK_FALSE(active[1]);
-  CHECK(active[2]);
-  CHECK(active[3]);
-  for (size_t i = th.size(); i < rwidth; ++i)
-    CHECK_FALSE(active[i]); // no threshold, no lane
+  CHECK(th.front() == doctest::Approx(0.0)); // the floor, reported as the pool has it
 }
 
 } // TEST_SUITE

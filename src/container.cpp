@@ -50,7 +50,7 @@ bool is_container_file(const std::filesystem::path& path)
   return in.good() && vgskey == container_vgskey;
 }
 
-bool check_input_type(const std::filesystem::path& path, input_type type, const str& what, const str& hint)
+bool check_input_type(const std::filesystem::path& path, input_type type, const str& what)
 {
   if (!std::filesystem::is_regular_file(path)) return true;
   const bool is_container = type == input_type::container;
@@ -58,8 +58,7 @@ bool check_input_type(const std::filesystem::path& path, input_type type, const 
   cerr_msg(what,
            is_container ? " must be a sketch container, not a sequence file: "
                         : " must be a FASTA/FASTQ sequence file, not a sketch container: ",
-           path.string(),
-           hint);
+           path.string());
   return false;
 }
 

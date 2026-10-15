@@ -49,15 +49,6 @@ TEST_CASE("map_params with cmlane_t") {
 
 TEST_SUITE("record_t") {
 
-TEST_CASE("reference strand gets two-sided significance percentile") {
-  const auto pct_ref = [](double prob, bool on_ref) {
-    return on_ref ? (2.0 * std::min(prob, 1.0 - prob)) : prob;
-  };
-  CHECK(pct_ref(0.01, true) == doctest::Approx(0.02));
-  CHECK(pct_ref(0.99, true) == doctest::Approx(0.02));
-  CHECK(pct_ref(0.25, false) == doctest::Approx(0.25));
-}
-
 TEST_CASE("query-wide MLE selects the reference strand for background sampling") {
   const auto nan = std::numeric_limits<double>::quiet_NaN();
   // Query-level winner used for background samples / add_to_acc: smaller finite strand MLE; fw on tie/NaN.
@@ -94,51 +85,27 @@ TEST_CASE("strand_diff encodes four strand MLE cases") {
   CHECK(strand_diff(0.2, 0.3) == doctest::Approx(-0.1));
 }
 
-TEST_CASE("two-sided test and STRAND from d_diff encoding") {
+TEST_CASE("report_strand reads the d_diff encoding") {
   const auto nan = std::numeric_limits<double>::quiet_NaN();
   const auto pinf = std::numeric_limits<double>::infinity();
   const auto ninf = -std::numeric_limits<double>::infinity();
-  const auto two_sided = [](bool rec_is_rc, double d_diff) {
-    return !std::isnan(d_diff) && (rec_is_rc == (d_diff > 0.0));
-  };
 
-  CHECK(two_sided(false, -0.1));
   CHECK(report_strand(false, -0.1) == '+');
-  CHECK_FALSE(two_sided(true, -0.1));
   CHECK(report_strand(true, -0.1) == '-');
-  CHECK(two_sided(true, 0.1));
   CHECK(report_strand(true, 0.1) == '+');
-  CHECK_FALSE(two_sided(false, 0.1));
   CHECK(report_strand(false, 0.1) == '-');
 
-  CHECK(two_sided(false, 0.0));
   CHECK(report_strand(false, 0.0) == '+');
-  CHECK_FALSE(two_sided(true, 0.0));
   CHECK(report_strand(true, 0.0) == '-');
 
-  CHECK_FALSE(two_sided(false, nan));
-  CHECK_FALSE(two_sided(true, nan));
   CHECK(report_strand(false, nan) == '.');
   CHECK(report_strand(true, nan) == '.');
 
-  CHECK(two_sided(false, ninf));
-  CHECK_FALSE(two_sided(true, ninf));
   CHECK(report_strand(false, ninf) == '+');
   CHECK(report_strand(true, ninf) == '.');
 
-  CHECK_FALSE(two_sided(false, pinf));
-  CHECK(two_sided(true, pinf));
   CHECK(report_strand(false, pinf) == '.');
   CHECK(report_strand(true, pinf) == '+');
-}
-
-TEST_CASE("canonical NaN d_diff uses one-sided test") {
-  const auto nan = std::numeric_limits<double>::quiet_NaN();
-  const auto two_sided = [](bool rec_is_rc, double d_diff) {
-    return !std::isnan(d_diff) && (rec_is_rc == (d_diff > 0.0));
-  };
-  CHECK_FALSE(two_sided(false, nan));
-  CHECK_FALSE(two_sided(true, nan));
 }
 
 TEST_CASE("validate_distance rejects out-of-range and non-finite values") {

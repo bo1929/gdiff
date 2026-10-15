@@ -108,8 +108,8 @@ IntExt<T>::IntExt(const map_params<T>& params, const LLH<T>& llhf, uint64_t nbin
   sdc_v.resize(nbins + 1);
   thneg_v.fill(false);
   thrank_v.clear();
-  for (size_t i = 0; i < WIDTH; ++i)
-    if (params.active[i]) thrank_v.push_back(i);
+  for (size_t i = 0; i < params.n_active; ++i)
+    thrank_v.push_back(i);
 }
 
 template<typename T>
@@ -121,34 +121,37 @@ void IntExt<T>::set_seq_distance(double d_seq)
     const double t = params.dist_th;
     thneg_v.front() = is_valid && t > d_seq;
     thrank_v.clear();
-    if (params.active.front()) {
+    if (params.n_active > 0) {
       thrank_v.push_back(0);
     }
   } else {
-    vec<std::pair<double, size_t>> tp;
-    for (size_t i = 0; i < WIDTH; ++i) {
-      if (!params.active[i]) {
-        thneg_v[i] = false;
-        continue;
-      }
+    struct rank_t
+    {
+      double t;
+      size_t ix;
+      bool is_bound;
+    };
+    vec<rank_t> tp;
+    for (size_t i = 0; i < params.n_active; ++i) {
       const double t = lane_at(params.dist_th, i);
       thneg_v[i] = is_valid && t > d_seq;
-      tp.push_back({t, i});
+      const bool is_bound = (t == params.lo_bound) || (t == params.hi_bound);
+      tp.push_back({t, i, is_bound});
     }
+    for (size_t i = params.n_active; i < WIDTH; ++i)
+      thneg_v[i] = false;
 
-    if (!is_valid) {
-      std::sort(tp.begin(), tp.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
-    } else {
-      std::sort(tp.begin(), tp.end(), [&](const auto& a, const auto& b) {
-        const double sa = a.first <= d_seq ? a.first : (2.0 * d_ub - a.first);
-        const double sb = b.first <= d_seq ? b.first : (2.0 * d_ub - b.first);
-        return sa < sb;
-      });
-    }
+    // Most extreme threshold first, so each lane claims the regions it is most confident about.
+    auto extremity = [&](double t) { return t <= d_seq ? t : ((2.0 * d_ub) - t); };
+    std::sort(tp.begin(), tp.end(), [&](const rank_t& a, const rank_t& b) {
+      if (a.is_bound != b.is_bound) return a.is_bound;
+      if (!is_valid) return a.t < b.t;
+      return extremity(a.t) < extremity(b.t);
+    });
 
     thrank_v.clear();
     for (const auto& p : tp)
-      thrank_v.push_back(p.second);
+      thrank_v.push_back(p.ix);
   }
 
   apply_threshold_signs();
@@ -340,18 +343,7 @@ void IntExt<T>::expand_intervals(double chisq_th, size_t ix)
     sdiff = lane_at(sdps_v[ap], ix) - lane_at(sdps_v[b], ix);
     chisq_val = ((fdiff * fdiff) + eps) / (sdiff + eps);
 
-    // Never merge across an N-run break: a skip bin in the gap (bp, a) keeps them apart.
-    bool skip_gap = false;
-    if (wskip) {
-      for (uint64_t x = bp + 1; x < a; ++x) {
-        if (skip_v[x - 1]) {
-          skip_gap = true;
-          break;
-        }
-      }
-    }
-
-    if (!skip_gap && (chisq_val < chisq_th) && (a < bp)) {
+    if ((chisq_val < chisq_th) && (a < bp)) {
       a = ap;
     } else {
       iv_ix[w++] = {ap, bp}; // half-open range

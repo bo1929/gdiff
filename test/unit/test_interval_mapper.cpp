@@ -566,7 +566,7 @@ TEST_CASE("levels derive thresholds from the background" * doctest::skip(!test_d
 
   map_opts opts = make_opts(0.10, 500, true, 33.0);
   opts.thresholds_v.clear();
-  opts.levels_v = {0.1, 0.05, 0.01, 0.005};
+  opts.levels_v = {0.05, 0.01, 0.005};
 
   const std::string out = run_intmap(fx, opts);
   CHECK(!out.empty());
@@ -746,14 +746,14 @@ TEST_CASE("map -d before the positionals does not swallow them" * doctest::skip(
 
 TEST_CASE("map --levels before the positionals does not swallow them" * doctest::skip(!gdiff_cli_available()))
 {
-  // Same CLI11 greedy-vector trap as -d: without a validator on --levels the four level values
-  // are followed by the query and the reference, which are eaten as further levels.
+  // Same CLI11 greedy-vector trap as -d: without a validator on --levels the level values are
+  // followed by the query and the reference, which are eaten as further levels.
   const cli_fixture_t fx = make_cli_fixture();
   REQUIRE_FALSE(fx.ref.empty());
 
   const std::string target = fx.query.string() + " " + fx.ref.string();
   const std::string opts = "-l 9900 --hdist-th 4 --sample-size 200";
-  const std::string levels = "--levels 0.1 0.05 0.01 0.005 ";
+  const std::string levels = "--levels 0.05 0.01 0.005 ";
   const std::string via_stdout = map_stdout(levels + target + " " + opts);
   REQUIRE_FALSE(via_stdout.empty());
 

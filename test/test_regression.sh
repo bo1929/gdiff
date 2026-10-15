@@ -180,6 +180,12 @@ if "$GDIFF" map -d 0.10 -l 9900 --sample-size 50 \
   "genomes/${first_query}.fna.gz" "$WORK/sketches/${first_ref}.gs" >/dev/null 2>&1; then
   fail "map accepted --sample-size 50, below the minimum pool"
 fi
+
+# --levels takes its thresholds from that pool, so 0 leaves nothing to place.
+if "$GDIFF" map --levels 0.1 0.05 -l 9900 --sample-size 0 \
+  "genomes/${first_query}.fna.gz" "$WORK/sketches/${first_ref}.gs" >/dev/null 2>&1; then
+  fail "map accepted --levels with --sample-size 0"
+fi
 echo "PASS: refused inputs"
 
 # -- Phase 4: map option equivalence ------------------------------------------
@@ -218,35 +224,36 @@ strip_comments "$WORK/map_t4.tsv" > "$WORK/map_t4.data"
 cmp -s "$WORK/map_ref.data" "$WORK/map_t4.data" || fail "map output depends on --num-threads"
 
 # --levels resolves its own thresholds from the background and must stay well formed.
-map_once "$WORK/map_levels.tsv" --levels 0.1 0.05 0.01 0.005
+map_once "$WORK/map_levels.tsv" --levels 0.05 0.01 0.005
 has_data "$WORK/map_levels.tsv" || fail "map --levels produced no output"
 
-# --off-boundary leaves a threshold the background cannot resolve inactive instead of activating a
-# lane on the boundary, so the ladder must lose exactly those lanes and still produce records.
-map_once "$WORK/map_offb.tsv" --levels 0.1 0.05 0.01 0.005 --off-boundary
-has_data "$WORK/map_offb.tsv" || fail "map --levels --off-boundary produced no output"
-active_lanes() { # $1 = extra option, may be empty; echoes the number of active threshold lines
-  "$GDIFF" map -l 9900 --hdist-th 4 --sample-size 100 --levels 0.1 0.05 0.01 0.005 $1 \
-    "genomes/${first_query}.fna.gz" "$WORK/sketches/${first_ref}.gs" 2>&1 >/dev/null |
-    grep -c 'threshold=.*[0-9]$' || true
+# The two bounds are always lanes, whatever the model places, and two model thresholds per level
+# plus the bounds fit the eight lanes.
+lanes() { # echoes "<n_lanes> <n_bounds>" from the run's threshold report
+  "$GDIFF" map --levels 0.05 0.01 0.005 "genomes/${first_query}.fna.gz" \
+    "$WORK/sketches/${first_ref}.gs" $MAP_BASE 2>&1 >/dev/null |
+    awk '/threshold=/ { n++; if ($0 ~ /\(bound\)/) b++ } END { print n + 0, b + 0 }'
 }
-n_plain="$(active_lanes "")"
-n_offb="$(active_lanes "--off-boundary")"
-[ -n "$n_plain" ] && [ -n "$n_offb" ] || fail "--levels did not report its thresholds"
-[ "$n_offb" -lt "$n_plain" ] \
-  || fail "--off-boundary did not drop the boundary lanes ($n_offb active, same as the default $n_plain)"
+read -r n_lanes n_bounds <<<"$(lanes)"
+[ "$n_lanes" -ge 3 ] && [ "$n_lanes" -le 8 ] || fail "--levels ran $n_lanes lanes, expected 3 to 8"
+[ "$n_bounds" -eq 2 ] || fail "--levels reported $n_bounds bounds, expected 2"
+
+# Iterative removal is where a collapsed or clamped lane used to yield an empty d_bin bracket, so
+# every record must name a band that really brackets its lane's threshold.
+map_once "$WORK/map_levels_iter.tsv" --levels 0.05 0.01 0.005 --iterative-removal
+has_data "$WORK/map_levels_iter.tsv" || fail "map --levels --iterative-removal produced no output"
+if ! strip_comments "$WORK/map_levels_iter.tsv" |
+  awk -F'\t' 'NR>1 { gsub(/[()]/, "", $8); split($8, p, ","); if (p[1] + 0 >= p[2] + 0) bad = 1 } END { exit bad ? 1 : 0 }'; then
+  fail "a map record reported an empty d_bin bracket"
+fi
 
 # --levels immediately before the positionals must not swallow them either (same CLI11 trap).
-"$GDIFF" map --levels 0.1 0.05 0.01 0.005 "genomes/${first_query}.fna.gz" \
+"$GDIFF" map --levels 0.05 0.01 0.005 "genomes/${first_query}.fna.gz" \
   "$WORK/sketches/${first_ref}.gs" -o "$WORK/map_levels_first_o.tsv" $MAP_BASE >/dev/null 2>&1 \
   || fail "map --levels before the positionals with -o failed"
 strip_comments "$WORK/map_levels_first_o.tsv" > "$WORK/map_levels_first_o.data"
 cmp -s <(strip_comments "$WORK/map_levels.tsv") "$WORK/map_levels_first_o.data" \
   || fail "map --levels before the positionals differs from the reference report"
-
-# -b is an alternate mode, not a failure.
-map_once "$WORK/map_b2_check.tsv" -d 0.10 -b 2
-has_data "$WORK/map_b2_check.tsv" || fail "map -b 2 produced no output"
 
 # --sample-size 0 switches the test off and no record may carry a p-value. The iterative mode
 # reports the whole query when nothing crosses, so records are guaranteed.
@@ -258,6 +265,8 @@ n_nosample="$(strip_comments "$WORK/map_nosample.tsv" | awk 'NR>1' | wc -l | tr 
 if strip_comments "$WORK/map_nosample.tsv" | awk -F'\t' 'NR>1 && $11 != "nan" { found=1 } END { exit !found }'; then
   fail "--sample-size 0 still reported p-values"
 fi
+
+# -b is an alternate mode, not a failure.
 map_once "$WORK/map_b2.tsv" -d 0.10 -b 2
 has_data "$WORK/map_b2.tsv" || fail "map -b 2 produced no output"
 echo "PASS: map option equivalence"

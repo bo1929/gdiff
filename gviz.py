@@ -89,7 +89,7 @@ def read_table(path, kind=None):
     first = re.split(sep, body[0].strip())
     if any(isnum(f) for f in first[1:4]):        # old `detect` output: 14 unnamed columns
         names = ["seq", "seq_len", "start", "end", "reference", "d", "legacy_dir", "_xl",
-                 "dist_th", "d_bin", "d_seq", "fisher_info", "p_lb", "p_ub", "_n_kmers", "_n_hits"]
+                 "dist_th", "d_bin", "d_seq", "fisher_info", "_n_kmers", "_n_hits"]
         df = pd.read_csv(path, sep=sep, comment="#", header=None, names=names,
                          engine="python" if sep != "\t" else "c")
         kind = "map"

@@ -9,6 +9,11 @@ build
 tmp
 stash
 
+# Local working notes and reference material, not part of the project (see TODO.md)
+docs/
+misc-material/
+ssh-exp.sh
+
 # Prerequisites
 *.d
 

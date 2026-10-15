@@ -48,7 +48,7 @@ Without `-d`, thresholds come from the background null as tail probabilities (th
 
 ```bash
 gdiff map queries.fasta reference.skc -l 500
-gdiff map queries.fasta reference.skc --levels 0.2 0.1 0.05 0.02 -l 500
+gdiff map queries.fasta reference.skc --levels 0.05 0.01 0.005 -l 500
 ```
 
 To skip significance testing and just enumerate intervals:
@@ -112,25 +112,25 @@ Positional: `<query.fasta> <reference.skc>`.
 | Option | Default | Description |
 |--------|--------|-------------|
 | `-d, --dist-th` | - | Absolute distance threshold(s): exactly 1 or 8; overrides `--levels` |
-| `--levels` | `0.02 0.01 0.005 0.004` | Two-sided tail probabilities: 1–4 (each adds a low and a high threshold) |
+| `--levels` | `0.05 0.01 0.005` | Two-sided tail probabilities: 1–3 (each adds a low and a high threshold) |
 | `-l` | (required) | Minimum interval length in k-mers (rounded up to whole `-b` bins); also the background window length |
 | `-o, --output-path` | stdout | Write output to a file |
 | `--hdist-th` | `3` | Max Hamming distance for a k-mer hit (0–7) |
 | `--chisq` | `33.00051` | Chi-squared threshold for merging overlapping intervals |
 | `-b, --bin-shift` | `0` | Bin size = 2^b; groups consecutive k-mers |
 | `--sample-size` | `500` | Background windows sampled per reference; `0` skips the test, otherwise at least `100` |
-| `--iterative-removal` | off | Let each threshold claim its intervals and search only the remaining gaps; off, every threshold enumerates its own intervals |
-| `--off-boundary` | off | `--levels`: leave a threshold the background cannot resolve inactive instead of clamping it onto the boundary |
-| `--lr-th` | `6.635` | `--levels`: a background window or threshold must clear this likelihood ratio |
-| `--min-portion` | `0.66` | `--levels`: apply the likelihood-ratio filter only when this fraction survives |
-| `--bg-model` | `empirical` | `--levels` thresholds from `empirical` quantiles of the pool or a `gamma` fit to the filtered pool |
+| `--iterative-removal` | off | Let each threshold claim its intervals and search only the remaining gaps, the two bounds first; off, every threshold enumerates its own intervals |
+| `--lr-th` | `6.635` | Where the two `--levels` bounds sit: a `-l` window must clear this likelihood ratio to be resolvable from perfect identity and from the sketch ceiling |
+| `--bg-model` | `empirical` | `--levels` thresholds from `empirical` quantiles of the pool, or from a `gamma` hurdle fitted to that same pool, which then also supplies `PVALUE` and `FOLD` |
 | `--verbosity` | `1` | Background and threshold report detail (0–1) |
 
-Distance thresholds may be given directly (`-d`, exactly 1 or 8 values) or as tail probabilities of the background (`--levels`, 1 to 4 levels; the default is 4). The two are mutually exclusive, and either way the run fills its SIMD lanes: `-d` with 1 value uses the scalar path, everything else uses 8 lanes with the unused ones inactive. Each level contributes a low and a high threshold. Every threshold is then clamped into the range a `-l` window can resolve (the likelihood-ratio bounds at `--lr-th`), and thresholds that end up equal collapse into one active lane. A background with a point mass at the floor therefore yields a single low lane at `t_min` rather than four invented ones, `--levels` resolves into up to `2 × levels` active lanes, and a warning says how many thresholds collapsed. With `--off-boundary` a threshold outside that range is left inactive altogether, so the lane sitting on `t_min` or `t_max` disappears instead of being kept. Only if no threshold (or no resolvable range) survives is that reference skipped; `--sample-size` sets how finely the quantiles resolve.
+Distance thresholds may be given directly (`-d`, exactly 1 or 8 values) or as tail probabilities of the background (`--levels`, 1 to 3 levels; the default is 3). The two are mutually exclusive, and either way the run fills its SIMD lanes: `-d` with 1 value uses the scalar path, everything else uses up to 8 lanes. Each level contributes a low and a high threshold, and the two bounds of the range a `-l` window can resolve at `--lr-th` are always lanes as well. A run therefore always reports the low bound — the near-identical claim, "no evidence of a difference from the reference at this length" — and the high bound, "as divergent as this sketch can resolve", even when the model has nothing to add in between.
 
-By default every threshold enumerates its own maximal intervals, so records from different thresholds can overlap. With `--iterative-removal` the thresholds are walked from the most extreme inward and each one searches only the gaps the earlier ones left, so a region is reported once, under the tightest threshold that claimed it.
+Thresholds are used exactly as derived: nothing is clamped, so a model threshold outside the bounds stays a lane of its own, and `P_LB`/`P_UB` — computed from each record's own k-mer count, not from `-l` — say whether that record resolved. Lanes hold distinct thresholds, so a level whose quantile repeats another's collapses into that one band, which is what a background with a point mass at the floor produces. `--levels` thus runs between 3 and 8 lanes (`2 × levels` plus the two bounds); a reference is skipped only when no distance is resolvable for a `-l` window at all, which the run reports once before the first reference is processed. `--sample-size` sets how finely the quantiles resolve.
 
-The background null is the empirical distribution of `-l`-long query windows scored against the reference. `PVALUE` is the two-sided empirical tail probability of a record's distance in that null and `FOLD` is `d` over the pool median; no parametric fit is used. `QVALUE` is the Benjamini–Hochberg adjustment of `PVALUE`, computed per strand, so the two columns are always on the same scale. `P_LB` and `P_UB` are the chi-square (one degree of freedom) p-values of the interval's identifiability from below (against perfect identity) and from above (against the sketch's weakest detectable match), on the interval's own k-mer counts. Small values mean the distance is resolved from that end; since the pair is symmetric, `P_LB` and `P_UB` together say whether an interval is resolved at all, they read `0.01` exactly at the resolvable bounds `t_min`/`t_max`, and they scale with the number of k-mers, so they compare intervals of similar size. With `--bg-model gamma` one model supplies both: the thresholds are quantiles of the fitted gamma and `PVALUE`/`FOLD` are its CDF at `d` and `d` over its median; the pool ranks are used only when the fit is rejected. `map` only reads the reference's bucket index, so a buckets-only sketch (`-l 0`) is sufficient.
+By default every threshold enumerates its own maximal intervals, so records from different thresholds can overlap. With `--iterative-removal` the two bounds claim first and the interior lanes then work from the most extreme inward, each searching only the gaps the earlier ones left, so a region is reported once, under the tightest threshold that claimed it.
+
+The background null is the empirical distribution of `-l`-long query windows scored against the reference. `PVALUE` is the two-sided empirical tail probability of a record's distance in that null and `FOLD` is `d` over the pool median; this path is non-parametric. `QVALUE` is the Benjamini–Hochberg adjustment of `PVALUE`, computed per strand, so the two columns are always on the same scale. `P_LB` and `P_UB` are the chi-square (one degree of freedom) p-values of the interval's identifiability from below (against perfect identity) and from above (against the sketch's weakest detectable match), on the interval's own k-mer counts. Small values mean the distance is resolved from that end; since the pair is symmetric, `P_LB` and `P_UB` together say whether an interval is resolved at all, they read `0.01` exactly at the resolvable bounds `t_min`/`t_max`, and they scale with the number of k-mers, so they compare intervals of similar size. With `--bg-model gamma` one model supplies both: the thresholds are quantiles of a hurdle fitted to the same pool -- a point mass at the estimable floor, which repeated histograms make exact, plus a gamma above it, fitted by maximum likelihood from a moment start -- and `PVALUE`/`FOLD` are its CDF at `d` and `d` over its median; the pool ranks are used only when that fit is rejected. `map` only reads the reference's bucket index, so a buckets-only sketch (`-l 0`) is sufficient.
 
 ### `gdiff dist`
 

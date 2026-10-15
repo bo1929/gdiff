@@ -481,6 +481,8 @@ void DistSC::estimate_distances()
   });
   std::ostream& os = *output_stream;
   write_provenance(os);
+  // Every compared pair must agree on `canonical` (compatible_configs enforces it).
+  // The header applies to the all pairs when the samples header is chosen.
   emit_header(os, entries_v.front().file->get_config().canonical);
   if (pairs_v.empty()) {
     cerr_msg("No pairs to compare");
