@@ -13,7 +13,7 @@ namespace {
   void for_each_contiguous(const vec<uint8_t>& skip_v, uint64_t lix, uint64_t rix, Fn&& fn)
   {
     uint64_t a = lix;
-    for (uint64_t x = lix; x <= rix; ++x) {
+    for (uint64_t x = std::max<uint64_t>(lix, 1); x <= rix; ++x) {
       if (skip_v[x - 1]) {
         if (x > a) fn(a, x - 1);
         a = x;
@@ -113,13 +113,13 @@ IntExt<T>::IntExt(const map_params<T>& params, const LLH<T>& llhf, uint64_t nbin
 }
 
 template<typename T>
-void IntExt<T>::set_query_distance(double d_q)
+void IntExt<T>::set_seq_distance(double d_seq)
 {
-  const bool is_valid = is_valid_distance(d_q);
+  const bool is_valid = is_valid_distance(d_seq);
 
   if constexpr (std::is_same_v<T, double>) {
     const double t = params.dist_th;
-    thneg_v.front() = is_valid && t > d_q;
+    thneg_v.front() = is_valid && t > d_seq;
     thrank_v.clear();
     if (params.active.front()) {
       thrank_v.push_back(0);
@@ -132,7 +132,7 @@ void IntExt<T>::set_query_distance(double d_q)
         continue;
       }
       const double t = lane_at(params.dist_th, i);
-      thneg_v[i] = is_valid && t > d_q;
+      thneg_v[i] = is_valid && t > d_seq;
       tp.push_back({t, i});
     }
 
@@ -140,8 +140,8 @@ void IntExt<T>::set_query_distance(double d_q)
       std::sort(tp.begin(), tp.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
     } else {
       std::sort(tp.begin(), tp.end(), [&](const auto& a, const auto& b) {
-        const double sa = a.first <= d_q ? a.first : (2.0 * d_ub - a.first);
-        const double sb = b.first <= d_q ? b.first : (2.0 * d_ub - b.first);
+        const double sa = a.first <= d_seq ? a.first : (2.0 * d_ub - a.first);
+        const double sb = b.first <= d_seq ? b.first : (2.0 * d_ub - b.first);
         return sa < sb;
       });
     }
@@ -157,7 +157,7 @@ void IntExt<T>::set_query_distance(double d_q)
 template<typename T>
 void IntExt<T>::apply_threshold_signs()
 {
-  // Flip the sign of fdps_v lanes whose threshold is on the opposite side of d_q.
+  // Flip the sign of fdps_v lanes whose threshold is on the opposite side of d_seq.
   if constexpr (std::is_same_v<T, double>) {
     if (!thneg_v.front()) return;
     for (uint64_t i = 1; i < fdps_v.size(); ++i) {
@@ -279,6 +279,9 @@ void IntExt<T>::extrema_scan()
 template<typename T>
 void IntExt<T>::extract_intervals_mx(uint64_t tau_eff, uint64_t lix, uint64_t rix, size_t ix)
 {
+  if (lix >= rix) {
+    return;
+  }
   if (!wskip) {
     extract_mx(tau_eff, lix, rix, ix);
     return;
@@ -298,7 +301,7 @@ void IntExt<T>::extract_mx(uint64_t tau_eff, uint64_t lix, uint64_t rix, size_t 
   }
 
   for (uint64_t a = lix; a <= rix; ++a) {
-    const double fdpmax_a = lane_at(fdpmax_v[a - 1], ix);
+    const double fdpmax_a = (a == 0) ? ninf() : lane_at(fdpmax_v[a - 1], ix);
     const double fdps_a = lane_at(fdps_v[a], ix);
 
     if (fdpmax_a >= fdps_a) continue; // Condition 1

@@ -265,7 +265,14 @@ private:
   vec<T> sdc_v;
 };
 
-// -2 log[L(D_ref) / L(d_mle)] from negative log-likelihoods.
+// -2 log[L(d) / L(d*)] from negative log-likelihoods.
+// Chi-square (one degree of freedom) p-value of a likelihood-ratio statistic.
+inline double lr_pvalue(double lr) noexcept
+{
+  if (std::isnan(lr)) return nanx();
+  return std::erfc(std::sqrt(std::max(0.0, lr) / 2.0));
+}
+
 inline double likelihood_ratio_statistic(double nll_ref, double nll_mle) noexcept
 {
   if (!std::isfinite(nll_ref) || !std::isfinite(nll_mle)) return nanx();

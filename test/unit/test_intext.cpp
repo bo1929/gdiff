@@ -42,7 +42,7 @@ xy_t slice_mle_fisher(IntExt<T>& ext, const LLH<T>& llhf, uint64_t a1, uint64_t 
 
 // Mirrors IntervalMapper::get_distance_bin (distance-aware threshold brackets).
 template<typename T>
-static xy_t distance_bin_bounds(const LLH<T>& llhf, size_t th_ix, double d, double d_q)
+static xy_t distance_bin_bounds(const LLH<T>& llhf, size_t th_ix, double d, double d_seq)
 {
   static constexpr size_t W = std::is_same_v<T, double> ? 1 : rwidth;
   std::array<double, W> th_v{};
@@ -53,7 +53,7 @@ static xy_t distance_bin_bounds(const LLH<T>& llhf, size_t th_ix, double d, doub
   xy_t d_range{d_eps, d_ub};
   if (th_ix != no_threshold) {
     const double t_i = at_th(llhf.get_extrema(), th_ix);
-    const bool is_low = std::isnan(d_q) || t_i <= d_q;
+    const bool is_low = std::isnan(d_seq) || t_i <= d_seq;
     const size_t pos = static_cast<size_t>(std::lower_bound(th_v.begin(), th_v.end(), t_i) - th_v.begin());
     if (is_low) {
       d_range.first = (pos > 0) ? th_v[pos - 1] : d_eps;
@@ -62,8 +62,8 @@ static xy_t distance_bin_bounds(const LLH<T>& llhf, size_t th_ix, double d, doub
       d_range.first = t_i;
       d_range.second = (pos + 1 < W) ? th_v[pos + 1] : d_ub;
     }
-  } else if (std::isfinite(d) || std::isfinite(d_q)) {
-    const double d_anchor = std::isfinite(d) ? d : d_q;
+  } else if (std::isfinite(d) || std::isfinite(d_seq)) {
+    const double d_anchor = std::isfinite(d) ? d : d_seq;
     const auto it = std::lower_bound(th_v.begin(), th_v.end(), d_anchor);
     if (it != th_v.begin()) d_range.first = *(it - 1);
     if (it != th_v.end()) d_range.second = *it;
@@ -73,7 +73,7 @@ static xy_t distance_bin_bounds(const LLH<T>& llhf, size_t th_ix, double d, doub
 
 // Mirrors IntervalMapper::extract_ordered_intervals and emit_record (1-based bin coords).
 template<typename T>
-vec<contig_slice_t> contig_slices(IntExt<T>& ext, const LLH<T>& llhf, uint8_t th_bv, double d_q)
+vec<contig_slice_t> contig_slices(IntExt<T>& ext, const LLH<T>& llhf, uint8_t th_bv, double d_seq)
 {
   static constexpr size_t W = std::is_same_v<T, double> ? 1 : rwidth;
   vec<contig_slice_t> out;
@@ -110,7 +110,7 @@ vec<contig_slice_t> contig_slices(IntExt<T>& ext, const LLH<T>& llhf, uint8_t th
         ++ti_ix[ti];
       if (ti_ix[ti] >= ev.size() || ev[ti_ix[ti]].a > a) continue;
       mask |= static_cast<uint8_t>(1u << ti);
-      const auto bounds = distance_bin_bounds(llhf, ti, d, d_q);
+      const auto bounds = distance_bin_bounds(llhf, ti, d, d_seq);
       bin_lo = std::max(bin_lo, bounds.first);
       bin_hi = std::min(bin_hi, bounds.second);
     }
@@ -151,10 +151,10 @@ static interval_t interval_at(const IntExt<T>& ext, uint64_t i, size_t ix = 0)
 }
 
 template<typename T>
-static void finish_ext_scan(IntExt<T>& ext, const LLH<T>& llhf, double d_q)
+static void finish_ext_scan(IntExt<T>& ext, const LLH<T>& llhf, double d_seq)
 {
   ext.inclusive_scan();
-  ext.set_query_distance(d_q);
+  ext.set_seq_distance(d_seq);
   ext.extrema_scan();
 }
 
@@ -162,10 +162,10 @@ template<typename T>
 static double finish_scan(IntExt<T>& ext, const LLH<T>& llhf)
 {
   ext.inclusive_scan();
-  const double d_q = query_mle(ext, llhf);
-  ext.set_query_distance(d_q);
+  const double d_seq = query_mle(ext, llhf);
+  ext.set_seq_distance(d_seq);
   ext.extrema_scan();
-  return d_q;
+  return d_seq;
 }
 
 template<typename T>
@@ -189,13 +189,13 @@ static vec<interval_t> collect_intervals_double(
   const map_params<double>& params,
   const LLH<double>& llhf,
   uint64_t nbins,
-  double d_q,
+  double d_seq,
   const std::function<void(IntExt<double>&)>& inject,
   uint64_t tau = 1)
 {
   IntExt<double> ext(params, llhf, nbins, nbins);
   inject(ext);
-  finish_ext_scan(ext, llhf, d_q);
+  finish_ext_scan(ext, llhf, d_seq);
   ext.extract_intervals_mx(tau, 1, nbins);
   ext.expand_intervals(33.0);
   return ext.get_intervals_v(0);
@@ -494,8 +494,8 @@ static vec<contig_slice_t> run_pipeline(IntExt<T>& ext, const LLH<T>& llhf, uint
   vec<uint64_t> v;
   uint64_t u, t;
   ext.total_histogram(v, u, t);
-  const double d_q = llhf.mle(v.data(), u);
-  ext.set_query_distance(d_q);
+  const double d_seq = llhf.mle(v.data(), u);
+  ext.set_seq_distance(d_seq);
   ext.extrema_scan();
   const uint64_t nbins = ext.get_nbins();
   if constexpr (std::is_same_v<T, double>) {
@@ -508,7 +508,7 @@ static vec<contig_slice_t> run_pipeline(IntExt<T>& ext, const LLH<T>& llhf, uint
       ext.expand_intervals(33.0, ix);
     }
   }
-  return contig_slices(ext, llhf, th_bv, d_q);
+  return contig_slices(ext, llhf, th_bv, d_seq);
 }
 
 TEST_CASE("th_bv=0 returns no segments") {
@@ -519,7 +519,7 @@ TEST_CASE("th_bv=0 returns no segments") {
   CHECK(segs.empty());
 }
 
-TEST_CASE("low threshold below d_q: matched interval brackets (prev, t]") {
+TEST_CASE("low threshold below d_seq: matched interval brackets (prev, t]") {
   auto params = map_params<double>(0.01, 4, 2, 0, 33.0);
   LLH<double> llhf(27, 11, 0.5, 4, 0.01);
   const uint64_t nbins = 10;
@@ -542,12 +542,12 @@ TEST_CASE("low threshold below d_q: matched interval brackets (prev, t]") {
   vec<uint64_t> v;
   uint64_t u, t;
   ext.total_histogram(v, u, t);
-  const double d_q = llhf.mle(v.data(), u);
-  REQUIRE(d_q > 0.01);
+  const double d_seq = llhf.mle(v.data(), u);
+  REQUIRE(d_seq > 0.01);
 
   for (const auto& s : segs) {
     if (s.mask) {
-      const auto b = distance_bin_bounds(llhf, 0, s.d, d_q);
+      const auto b = distance_bin_bounds(llhf, 0, s.d, d_seq);
       CHECK(s.bin_lo == doctest::Approx(b.first));
       CHECK(s.bin_hi == doctest::Approx(b.second));
       CHECK(b.first == doctest::Approx(d_eps));
@@ -556,7 +556,7 @@ TEST_CASE("low threshold below d_q: matched interval brackets (prev, t]") {
   }
 }
 
-TEST_CASE("high threshold above d_q: matched interval brackets (t, next]") {
+TEST_CASE("high threshold above d_seq: matched interval brackets (t, next]") {
   auto params = map_params<double>(0.5, 4, 2, 0, 33.0);
   LLH<double> llhf(27, 11, 0.5, 4, 0.5);
   const uint64_t nbins = 10;
@@ -572,12 +572,12 @@ TEST_CASE("high threshold above d_q: matched interval brackets (t, next]") {
   vec<uint64_t> v;
   uint64_t u, t;
   ext.total_histogram(v, u, t);
-  const double d_q = llhf.mle(v.data(), u);
-  REQUIRE(d_q < 0.5);
+  const double d_seq = llhf.mle(v.data(), u);
+  REQUIRE(d_seq < 0.5);
 
   for (const auto& s : segs) {
     if (s.mask) {
-      const auto b = distance_bin_bounds(llhf, 0, s.d, d_q);
+      const auto b = distance_bin_bounds(llhf, 0, s.d, d_seq);
       CHECK(s.bin_lo == doctest::Approx(b.first));
       CHECK(s.bin_hi == doctest::Approx(b.second));
       CHECK(b.first == doctest::Approx(0.5));
@@ -612,7 +612,7 @@ TEST_CASE("segments cover [1, nbins+1) when interval spans full range") {
   }
 }
 
-TEST_CASE("cmlane_t thresholds ranked relative to d_q") {
+TEST_CASE("cmlane_t thresholds ranked relative to d_seq") {
   cmlane_t dths{};
   dths[0] = 0.05;
   dths[1] = 0.10;
@@ -641,7 +641,7 @@ TEST_CASE("cmlane_t thresholds ranked relative to d_q") {
   vec<uint64_t> v;
   uint64_t u, t;
   ext.total_histogram(v, u, t);
-  const double d_q = llhf.mle(v.data(), u);
+  const double d_seq = llhf.mle(v.data(), u);
 
   for (const auto& s : segs) {
     if (!s.mask) continue;
@@ -649,7 +649,7 @@ TEST_CASE("cmlane_t thresholds ranked relative to d_q") {
     double expect_hi = d_ub;
     for (size_t ti = 0; ti < 4; ++ti) {
       if (!(s.mask & (1u << ti))) continue;
-      const auto b = distance_bin_bounds(llhf, ti, s.d, d_q);
+      const auto b = distance_bin_bounds(llhf, ti, s.d, d_seq);
       expect_lo = std::max(expect_lo, b.first);
       expect_hi = std::min(expect_hi, b.second);
     }
@@ -765,20 +765,20 @@ TEST_CASE("segment MLE matches Brent+Fisher reference on same bin range") {
 
 } // TEST_SUITE
 
-TEST_SUITE("IntExt::set_query_distance") {
+TEST_SUITE("IntExt::set_seq_distance") {
 
 TEST_CASE("double: thrank_v is always the single threshold index") {
   auto [llhf, params] = make_test_params(0.1, 4, 2, 0);
   IntExt<double> ext(params, llhf, 8, 80);
-  for (const double d_q : {0.05, 0.25, 0.99, nanx()}) {
-    ext.set_query_distance(d_q);
+  for (const double d_seq : {0.05, 0.25, 0.99, nanx()}) {
+    ext.set_seq_distance(d_seq);
     const auto& thrank = ext.get_thrank_v();
     REQUIRE(thrank.size() == 1);
     CHECK(thrank[0] == 0);
   }
 }
 
-TEST_CASE("cmlane_t: thrank_v orders thresholds relative to d_q") {
+TEST_CASE("cmlane_t: thrank_v orders thresholds relative to d_seq") {
   cmlane_t dths{};
   dths[0] = 0.10;
   dths[1] = 0.05;
@@ -796,7 +796,7 @@ TEST_CASE("cmlane_t: thrank_v orders thresholds relative to d_q") {
   for (uint64_t i = 0; i < 8; ++i)
     ext.aggregate_mer(0, i);
 
-  ext.set_query_distance(0.25);
+  ext.set_seq_distance(0.25);
   const auto& thrank = ext.get_thrank_v();
   REQUIRE(thrank.size() == rwidth);
   CHECK(thrank[0] == 3); // 0.03
@@ -809,7 +809,7 @@ TEST_CASE("cmlane_t: thrank_v orders thresholds relative to d_q") {
   CHECK(thrank[7] == 5); // 0.35
 }
 
-TEST_CASE("cmlane_t: non-flipped lanes before flipped at d_q=0.088094") {
+TEST_CASE("cmlane_t: non-flipped lanes before flipped at d_seq=0.088094") {
   cmlane_t dths{};
   dths[0] = 0.05;
   dths[1] = 0.075;
@@ -824,7 +824,7 @@ TEST_CASE("cmlane_t: non-flipped lanes before flipped at d_q=0.088094") {
   LLH<cmlane_t> llhf(27, 11, 0.5, 4, dths);
   IntExt<cmlane_t> ext(params, llhf, 4, 40);
 
-  ext.set_query_distance(0.088094);
+  ext.set_seq_distance(0.088094);
   const auto& thrank = ext.get_thrank_v();
   REQUIRE(thrank.size() == rwidth);
   CHECK(thrank[0] == 0); // 0.05
@@ -837,7 +837,7 @@ TEST_CASE("cmlane_t: non-flipped lanes before flipped at d_q=0.088094") {
   CHECK(thrank[7] == 2); // 0.1
 }
 
-TEST_CASE("cmlane_t: NaN d_q sorts thrank_v by ascending threshold") {
+TEST_CASE("cmlane_t: NaN d_seq sorts thrank_v by ascending threshold") {
   cmlane_t dths{};
   dths[0] = 0.30;
   dths[1] = 0.05;
@@ -852,7 +852,7 @@ TEST_CASE("cmlane_t: NaN d_q sorts thrank_v by ascending threshold") {
   LLH<cmlane_t> llhf(27, 11, 0.5, 4, dths);
   IntExt<cmlane_t> ext(params, llhf, 4, 40);
 
-  ext.set_query_distance(nanx());
+  ext.set_seq_distance(nanx());
   const auto& thrank = ext.get_thrank_v();
   REQUIRE(thrank.size() == rwidth);
   CHECK(thrank[0] == 1); // 0.05
@@ -865,7 +865,7 @@ TEST_CASE("cmlane_t: NaN d_q sorts thrank_v by ascending threshold") {
   CHECK(thrank[7] == 7); // 0.45
 }
 
-TEST_CASE("apply_threshold_signs: flip when t exceeds d_q changes intervals") {
+TEST_CASE("apply_threshold_signs: flip when t exceeds d_seq changes intervals") {
   auto params = map_params<double>(0.1, 4, 2, 0, 33.0);
   LLH<double> llhf(27, 11, 0.5, 4, 0.1);
   const uint64_t nbins = 10;
@@ -879,7 +879,7 @@ TEST_CASE("apply_threshold_signs: flip when t exceeds d_q changes intervals") {
   CHECK(intervals_equal(iv_no_flip, iv_nan));
 }
 
-TEST_CASE("set_query_distance must be called once per inclusive_scan") {
+TEST_CASE("set_seq_distance must be called once per inclusive_scan") {
   auto params = map_params<double>(0.1, 4, 2, 0, 33.0);
   LLH<double> llhf(27, 11, 0.5, 4, 0.1);
   const uint64_t nbins = 10;
@@ -894,8 +894,8 @@ TEST_CASE("set_query_distance must be called once per inclusive_scan") {
   IntExt<double> ext_twice(params, llhf, nbins, nbins);
   inject_udu(ext_twice);
   ext_twice.inclusive_scan();
-  ext_twice.set_query_distance(0.05);
-  ext_twice.set_query_distance(0.05);
+  ext_twice.set_seq_distance(0.05);
+  ext_twice.set_seq_distance(0.05);
   ext_twice.extrema_scan();
   ext_twice.extract_intervals_mx(1, 1, nbins);
   ext_twice.expand_intervals(33.0);
@@ -904,7 +904,7 @@ TEST_CASE("set_query_distance must be called once per inclusive_scan") {
   CHECK_FALSE(intervals_equal(iv_once, iv_twice));
 }
 
-TEST_CASE("cmlane_t: per-lane flip depends on threshold vs d_q") {
+TEST_CASE("cmlane_t: per-lane flip depends on threshold vs d_seq") {
   cmlane_t dths{};
   dths[0] = 0.05;
   dths[1] = 0.40;
@@ -913,10 +913,10 @@ TEST_CASE("cmlane_t: per-lane flip depends on threshold vs d_q") {
   LLH<cmlane_t> llhf(27, 11, 0.5, 4, dths);
   const uint64_t nbins = 10;
 
-  auto collect_lane = [&](size_t ix, double d_q) {
+  auto collect_lane = [&](size_t ix, double d_seq) {
     IntExt<cmlane_t> ext(params, llhf, nbins, nbins);
     inject_udu(ext);
-    finish_ext_scan(ext, llhf, d_q);
+    finish_ext_scan(ext, llhf, d_seq);
     ext.extract_intervals_mx(1, 1, nbins, ix);
     ext.expand_intervals(33.0, ix);
     return ext.get_intervals_v(ix);
@@ -931,7 +931,7 @@ TEST_CASE("cmlane_t: per-lane flip depends on threshold vs d_q") {
   CHECK_FALSE(intervals_equal(lane1_mid, lane1_hi));
 }
 
-TEST_CASE("skipping set_query_distance differs from production scan") {
+TEST_CASE("skipping set_seq_distance differs from production scan") {
   auto params = map_params<double>(0.1, 4, 2, 0, 33.0);
   LLH<double> llhf(27, 11, 0.5, 4, 0.1);
   const uint64_t nbins = 10;
@@ -980,6 +980,29 @@ TEST_CASE("multi-gap extraction finds intervals in separated regions") {
   CHECK(e_v.size() >= 1);
   for (const auto& iv : e_v) {
     CHECK(iv.a >= 1);
+    CHECK(iv.a <= iv.b);
+    CHECK(iv.b <= nbins);
+  }
+}
+
+TEST_CASE("a run may start at the sequence's first bin") {
+  auto [llhf, params] = make_test_params(0.1, 4, 2, 0);
+  const uint64_t nbins = 25;
+  IntExt<double> ext(params, llhf, nbins, nbins);
+
+  // The divergence starts at the very first k-mer and stops halfway.
+  for (uint64_t i = 0; i <= 9; ++i) {
+    ext.aggregate_mer(0, i); ext.aggregate_mer(0, i);
+  }
+
+  finish_ext_scan(ext, llhf, nanx());
+  ext.extract_intervals_mx(1, 0, nbins); // boundary 0 included
+  ext.expand_intervals(33.0);
+
+  const auto& e_v = ext.get_intervals_v(0);
+  REQUIRE(e_v.size() >= 1);
+  CHECK(e_v.front().a == 0); // the first bin is part of the run
+  for (const auto& iv : e_v) {
     CHECK(iv.a <= iv.b);
     CHECK(iv.b <= nbins);
   }

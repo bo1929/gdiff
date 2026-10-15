@@ -37,15 +37,16 @@ struct map_opts
   double chisq = 33.00051;
   uint64_t sample_size = 500;
   vec<double> thresholds_v;   // -d: exactly 1 or rwidth absolute distance thresholds
-  vec<double> levels_v;       // --levels: exactly 4 two-sided tail probabilities
+  vec<double> levels_v;       // --levels: 1..4 two-sided tail probabilities (two thresholds each)
   double lr_th = 6.635;       // --levels fit: keep background windows whose lr_ub exceeds this
   double min_portion = 0.66;  // ... but only when more than this portion of them survives
   str bg_model = "empirical"; // --levels thresholds: "empirical" (full pool) or "gamma" (lr-filtered fit)
-  bool no_lane_gate = false;  // --levels: keep thresholds outside the likelihood-ratio bounds
   // Every threshold enumerates its own intervals by default. `--iterative-removal` switches to
   // ordered extraction, where each lane removes the bins it claimed so later lanes only fill gaps.
   bool iterative_removal = false;
-  bool per_sequence = false;
+  // --off-boundary: a derived threshold outside the admissible range is dropped instead of being
+  // clamped onto the boundary, which keeps that boundary lane inactive.
+  bool off_boundary = false;
   uint32_t verbosity = 1;
 };
 
@@ -70,9 +71,9 @@ class BackgroundSampler
 public:
   BackgroundSampler(const Sketch& sketch, const vec<qseq_t>& batch_v, uint64_t tau, uint64_t bin_shift, uint32_t hdist_th);
 
-  // Draw at most `sample_size` windows (per query sequence when `per_sequence`) and score
-  // them against the reference. Returned in source order. Call once: the points are moved out.
-  vec<sample_point_t> sample(uint64_t sample_size, bool per_sequence, ThreadPool& pool);
+  // Draw at most `sample_size` windows across the whole batch and score them against the
+  // reference. Returned in source order. Call once: the points are moved out.
+  vec<sample_point_t> sample(uint64_t sample_size, ThreadPool& pool);
 
 private:
   // A contiguous run of points drawn from one source sequence.
@@ -84,7 +85,7 @@ private:
     uint64_t nsamples = 0;
   };
 
-  void plan(uint64_t sample_size, bool per_sequence);
+  void plan(uint64_t sample_size);
   void evaluate(ThreadPool& pool);
 
   const Sketch& sketch;
@@ -116,24 +117,36 @@ struct gamma_fit_t
 
 // A two-parameter gamma needs more evidence than an empirical quantile does: below this the
 // derivation falls back to the empirical quantiles of the same sample.
-inline constexpr size_t min_gamma_samples = 30;
 
 // Distances of the background windows whose lr_ub beats `lr_th`, falling back to every valid window
 // when at most `min_portion` of them survive (the rule `dist` applies to its reconciled windows).
 vec<double> lr_filtered_sample(const vec<sample_point_t>& points_v, double lr_th, double min_portion);
 
-// Method-of-moments gamma fit; false when the sample is too small or degenerate (zero variance).
-bool fit_gamma_mom(const vec<double>& sample_v, gamma_fit_t& fit);
+// Method-of-moments gamma fit; false when the sample is smaller than `min_samples` or degenerate
+// (zero variance).
+bool fit_gamma_mom(const vec<double>& sample_v, gamma_fit_t& fit, size_t min_samples);
 
-// Empirical two-sided quantiles of `sample_v` (sorted); the fallback when a gamma cannot be placed.
-// `min_samples` is the smallest pool that may place a quantile. `warn_lift` reports a quantile that
-// had to be lifted to the nearest distinct distance; the caller turns it off when the
-// likelihood-ratio gate is about to drop those lanes anyway.
+// Two-sided thresholds for `levels_v` from the background pool itself: one low and one high
+// threshold per level, sorted ascending. `min_samples` is the smallest pool that may place a
+// quantile, and equal thresholds are left to `place_thresholds` to collapse.
 bool empirical_thresholds_from_levels(const vec<double>& sample_v,
                                       const vec<double>& levels_v,
                                       vec<double>& out_v,
-                                      size_t min_samples,
-                                      bool warn_lift = true);
+                                      size_t min_samples);
+
+// Place derived thresholds: clamp each into the admissible range, then keep the distinct ones,
+// switching off the lanes left without a threshold. `--levels` therefore resolves into up to
+// `2 * levels` active lanes rather than exactly eight. With `drop_off_boundary` a threshold that
+// was clamped - one the background cannot resolve - is switched off as well instead of keeping the
+// boundary lane active; its clamped value still bounds the neighbouring band. `th_v` must be sorted
+// ascending; returns the number of active lanes.
+size_t place_thresholds(vec<double>& th_v, arr<bool, rwidth>& active_v, const a_range_t& ar, bool drop_off_boundary = false);
+
+// Two-sided p-value and fold from the fitted background gamma: the model-based counterpart of
+// `apply_empirical_significance`, used when `--bg-model gamma` placed the thresholds. Reads the
+// distance off the fitted CDF and the fold off the fitted median, so thresholds and significance
+// come from one model. Leaves the row untested when the distance is invalid or the fit is unusable.
+void apply_gamma_significance(record_t& r, const gamma_fit_t& fit);
 
 // Two-sided thresholds for `levels_v` as quantiles of the gamma fitted to `sample_v`, which must be
 // sorted. A tail quantile that reaches the estimable floor is lifted to the nearest observed
@@ -182,7 +195,6 @@ private:
   a_range_t ar;                                    // likelihood-ratio bounds behind active_v (--levels only)
   arr<bool, rwidth> active_v = all_lanes_active(); // lanes that survived the bounds
   uint64_t null_floored = 0;                       // background samples below d_eps
-  vvec<double> null_seq_v;                         // per-sequence nulls (--per-sequence)
   vec<uint64_t> scratch_v;
   vec<uint64_t> acc_v;
   uint64_t u_acc = 0;

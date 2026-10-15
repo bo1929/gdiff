@@ -142,6 +142,16 @@ TEST_CASE("max estimable distance is MLE of one hit at hdist_th") {
   CHECK(std::isnan(max_estimable_distance(llh, 0)));
 }
 
+TEST_CASE("lr_pvalue calibrates a likelihood-ratio statistic on chi-square, one degree of freedom") {
+  CHECK(lr_pvalue(0.0) == doctest::Approx(1.0));
+  CHECK(lr_pvalue(2.0) == doctest::Approx(0.1572992).epsilon(1e-6)); // erfc(1)
+  CHECK(lr_pvalue(6.634897) == doctest::Approx(0.01).epsilon(1e-5)); // the --lr-th default
+  CHECK(lr_pvalue(50.0) < 1e-11);
+  CHECK(lr_pvalue(std::numeric_limits<double>::infinity()) == 0.0);
+  CHECK(lr_pvalue(-1.0) == 1.0); // no evidence, or round-off below zero
+  CHECK(std::isnan(lr_pvalue(nanx())));
+}
+
 TEST_CASE("compute_lr_ub is near zero at the max estimable distance") {
   LLH<double> llh(27, 11, 0.5, 4, 0.1, false);
   const uint64_t n_total = 1000;
@@ -278,6 +288,24 @@ TEST_CASE("admissible_distance_range brackets the resolvable distances") {
   CHECK(compute_lr_ub(llh, r.t_max, 500) == doctest::Approx(6.635).epsilon(0.01));
   CHECK(compute_lr_lb(llh, 1e-5, 500) < 6.635);
   CHECK(compute_lr_ub(llh, 0.35, 500) < 6.635);
+}
+
+TEST_CASE("the p-value columns calibrate the statistics the admissible range solves") {
+  // `map` reports p_lb / p_ub as these two statistics calibrated on chi-square, and the resolvable
+  // bounds are exactly where they cross --lr-th, so the bounds must land on p = 0.01.
+  LLH<double> llh(23, 9, 0.5, 3, 0.0, false);
+  constexpr uint64_t n_win = 500;
+  const a_range_t r = admissible_distance_range(llh, n_win, 6.635);
+  REQUIRE(r.is_ok);
+  CHECK(lr_pvalue(compute_lr_lb(llh, r.t_min, n_win)) == doctest::Approx(0.01).epsilon(1e-3));
+  CHECK(lr_pvalue(compute_lr_ub(llh, r.t_max, n_win)) == doctest::Approx(0.01).epsilon(1e-3));
+  // Inside the band the distance is resolved from both ends: each contrast rejects its own extreme.
+  CHECK(lr_pvalue(compute_lr_lb(llh, 1.5 * r.t_min, n_win)) < 0.01);
+  CHECK(lr_pvalue(compute_lr_ub(llh, 0.5 * r.t_max, n_win)) < 0.01);
+  // Below the floor the lower contrast stops rejecting identity, above the ceiling the upper stops
+  // rejecting the weakest detectable match, so the two values read the band from either side.
+  CHECK(lr_pvalue(compute_lr_lb(llh, 0.5 * r.t_min, n_win)) > 0.01);
+  CHECK(lr_pvalue(compute_lr_ub(llh, 1.5 * r.t_max, n_win)) > 0.01);
 }
 
 TEST_CASE("admissible_distance_range rejects a window nothing can be resolved in") {

@@ -45,9 +45,9 @@ static const std::string GENOMES_DIR = TEST_DIR + "genomes/";
 static const std::string SKETCHES_DIR_A = test_util::path("sketches-saware").string() + "/";  // strand-aware
 static const std::string SKETCHES_DIR_B = test_util::path("sketches-sagnostic").string() + "/"; // strand-agnostic
 
-// Strand-aware output: 18 columns (17 tabs); trailing two are info/lr_ub
-static constexpr int k_sa_cols = 18;
-static constexpr int k_sa_tabs = 17;
+// Strand-aware output: 19 columns (18 tabs); trailing three are fisher_info/p_lb/p_ub
+static constexpr int k_sa_cols = 19;
+static constexpr int k_sa_tabs = 18;
 static constexpr int k_sa_len = 1;
 static constexpr int k_sa_start = 2;
 static constexpr int k_sa_end = 3;
@@ -59,11 +59,12 @@ static constexpr int k_sa_diff = 11;
 static constexpr int k_sa_pvalue = 13;
 static constexpr int k_sa_qvalue = 15;
 static constexpr int k_sa_fisher_info = 16;
-static constexpr int k_sa_lru = 17;
+static constexpr int k_sa_plb = 17;
+static constexpr int k_sa_pub = 18;
 
-// Strand-agnostic output: 15 columns (14 tabs); trailing two are info/lr_ub
-static constexpr int k_ag_cols = 15;
-static constexpr int k_ag_tabs = 14;
+// Strand-agnostic output: 16 columns (15 tabs); trailing three are fisher_info/p_lb/p_ub
+static constexpr int k_ag_cols = 16;
+static constexpr int k_ag_tabs = 15;
 static constexpr int k_ag_dist = 5;
 static constexpr int k_ag_mask = 6;
 static constexpr int k_ag_pvalue = 10;
@@ -304,6 +305,26 @@ TEST_CASE("known pair: three operating modes, strand-aware" * doctest::skip(!tes
     return false;
   };
 
+  auto check_lr_pvalues = [](const std::string& s) {
+    std::istringstream iss(s);
+    std::string line;
+    while (std::getline(iss, line)) {
+      if (line.empty()) continue;
+      const auto fields = split_tsv(line);
+      if (static_cast<int>(fields.size()) != k_sa_cols) continue;
+      for (const int col : {k_sa_plb, k_sa_pub}) {
+        if (token_is_nan(fields[col])) continue;
+        const double p = std::stod(fields[col]);
+        CHECK(p >= 0.0);
+        CHECK(p <= 1.0);
+      }
+      if (token_is_nan(fields[k_sa_dist])) { // no distance, no contrast
+        CHECK(token_is_nan(fields[k_sa_plb]));
+        CHECK(token_is_nan(fields[k_sa_pub]));
+      }
+    }
+  };
+
   auto has_background_gap = [](const std::string& s) {
     std::istringstream iss(s);
     std::string line;
@@ -321,6 +342,7 @@ TEST_CASE("known pair: three operating modes, strand-aware" * doctest::skip(!tes
   };
 
   CHECK(any_finite_dist(out_lite));
+  check_lr_pvalues(out_enum);
   CHECK_FALSE(any_finite_col(out_lite, k_sa_pvalue, k_sa_cols));
 
   CHECK(any_finite_dist(out_enum));
@@ -375,7 +397,8 @@ TEST_CASE("known pair: three operating modes, strand-aware" * doctest::skip(!tes
   CHECK(any_finite_col(out_enum, k_sa_diff));
   CHECK(any_finite_col(out_cont, k_sa_diff));
   CHECK(any_finite_col(out_cont, k_sa_fisher_info));
-  CHECK(any_finite_col(out_cont, k_sa_lru));
+  CHECK(any_finite_col(out_cont, k_sa_plb));
+  CHECK(any_finite_col(out_cont, k_sa_pub));
 
   // Continuous mode only emits interval records (no background gaps).
   CHECK_FALSE(has_background_gap(out_cont));
@@ -566,7 +589,7 @@ TEST_CASE("samples each valid start at most once and keeps finite distances") {
 
   ThreadPool pool(1);
   BackgroundSampler sampler(sketch, batch_v, tau, 0, 4);
-  const vec<sample_point_t> pts = sampler.sample(sample_size, false, pool);
+  const vec<sample_point_t> pts = sampler.sample(sample_size, pool);
 
   const uint64_t npos = batch_v[0].seq.size() - k + 1 - tau + 1;
   CHECK(pts.size() == npos);
@@ -598,7 +621,7 @@ TEST_CASE("skips all sequences shorter than the window") {
 
   ThreadPool pool(1);
   BackgroundSampler sampler(sketch, batch_v, 50, 0, 4);
-  CHECK(sampler.sample(30, false, pool).empty());
+  CHECK(sampler.sample(30, pool).empty());
 }
 
 TEST_CASE("bin_shift rounds window length up to whole bins") {
@@ -615,34 +638,13 @@ TEST_CASE("bin_shift rounds window length up to whole bins") {
 
   ThreadPool pool(1);
   BackgroundSampler sampler(sketch, batch_v, tau, bin_shift, 4);
-  const vec<sample_point_t> pts = sampler.sample(16, false, pool);
+  const vec<sample_point_t> pts = sampler.sample(16, pool);
 
   const uint64_t enmers = batch_v[0].seq.size() - k + 1;
   const uint64_t npos = (enmers - expect_nwinmers) / (uint64_t(1) << bin_shift) + 1;
   CHECK(pts.size() == npos);
   for (const sample_point_t& p : pts)
     CHECK((p.start << bin_shift) + expect_nwinmers <= enmers);
-}
-
-TEST_CASE("per-sequence sampling applies sample_size to each eligible query") {
-  seed = 8;
-  init_thread_rng(0);
-
-  const Sketch sketch = make_tiny_sketch(true);
-  const uint32_t k = sketch.get_lshf_sptr()->get_k();
-  constexpr uint64_t tau = 30;
-  constexpr uint64_t sample_size = 8;
-  vec<qseq_t> batch_v{{"q0", str(tau + k + 20, 'A')}, {"q1", str(tau + k + 30, 'C')}};
-
-  ThreadPool pool(1);
-  BackgroundSampler sampler(sketch, batch_v, tau, 0, 4);
-  const vec<sample_point_t> pts = sampler.sample(sample_size, true, pool);
-
-  vec<uint64_t> counts(batch_v.size(), 0);
-  for (const sample_point_t& p : pts) ++counts[p.bix];
-  CHECK(counts[0] == sample_size);
-  CHECK(counts[1] == sample_size);
-  CHECK(pts.size() == 2 * sample_size);
 }
 
 TEST_CASE("non-canonical sketches reconcile both strands into valid distances") {
@@ -656,7 +658,7 @@ TEST_CASE("non-canonical sketches reconcile both strands into valid distances") 
 
   ThreadPool pool(1);
   BackgroundSampler sampler(sketch, batch_v, tau, 0, 4);
-  const vec<sample_point_t> pts = sampler.sample(12, false, pool);
+  const vec<sample_point_t> pts = sampler.sample(12, pool);
   REQUIRE(pts.size() == 12);
   // Every window is scored on both strands and reduced to one distance by
   // select_strand_distance; the losing strand must never leak through.
@@ -774,8 +776,7 @@ TEST_CASE("map accepts exactly 1 or 8 distance lanes" * doctest::skip(!gdiff_cli
   CHECK(run_cli("map -d 0.05 -d 0.1 -d 0.15 -d 0.2 -d 0.25 -d 0.3 -d 0.35 -d 0.4 " + tail, sink));
 }
 
-TEST_CASE("map -b bins the query and --per-sequence takes a per-query null" *
-          doctest::skip(!gdiff_cli_available()))
+TEST_CASE("map -b bins the query into fewer, wider bins" * doctest::skip(!gdiff_cli_available()))
 {
   const cli_fixture_t fx = make_cli_fixture();
   REQUIRE_FALSE(fx.ref.empty());
@@ -785,10 +786,6 @@ TEST_CASE("map -b bins the query and --per-sequence takes a per-query null" *
   const std::string binned = map_stdout("-d 0.1 -b 2 " + tail);
   REQUIRE_FALSE(binned.empty());
   check_output_shape(binned, false);
-
-  const std::string per_sequence = map_stdout("-d 0.1 --per-sequence " + tail);
-  REQUIRE_FALSE(per_sequence.empty());
-  check_output_shape(per_sequence, false);
 }
 
 TEST_CASE("--num-threads does not change the map output" * doctest::skip(!gdiff_cli_available()))

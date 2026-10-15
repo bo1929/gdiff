@@ -100,6 +100,14 @@ private:
 // True when `path` starts with the container vgskey.
 bool is_container_file(const std::filesystem::path& path);
 
+enum class input_type
+{
+  sequence,
+  container,
+};
+
+bool check_input_type(const std::filesystem::path& path, input_type type, const str& what, const str& hint = "");
+
 // Parse a container's header; leaves `p` at the index block.
 void read_container_header(const char*& p,
                            const char* end,

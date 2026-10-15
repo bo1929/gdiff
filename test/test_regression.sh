@@ -174,6 +174,7 @@ if "$GDIFF" map -d 0.1 -l 9900 \
   "genomes/${first_query}.fna.gz" "$WORK/does_not_exist.gs" >/dev/null 2>&1; then
   fail "map accepted a missing reference container"
 fi
+
 # A p-value needs a usable pool: 0 (test off) or at least 100 background windows.
 if "$GDIFF" map -d 0.10 -l 9900 --sample-size 50 \
   "genomes/${first_query}.fna.gz" "$WORK/sketches/${first_ref}.gs" >/dev/null 2>&1; then
@@ -220,6 +221,21 @@ cmp -s "$WORK/map_ref.data" "$WORK/map_t4.data" || fail "map output depends on -
 map_once "$WORK/map_levels.tsv" --levels 0.1 0.05 0.01 0.005
 has_data "$WORK/map_levels.tsv" || fail "map --levels produced no output"
 
+# --off-boundary leaves a threshold the background cannot resolve inactive instead of activating a
+# lane on the boundary, so the ladder must lose exactly those lanes and still produce records.
+map_once "$WORK/map_offb.tsv" --levels 0.1 0.05 0.01 0.005 --off-boundary
+has_data "$WORK/map_offb.tsv" || fail "map --levels --off-boundary produced no output"
+active_lanes() { # $1 = extra option, may be empty; echoes the number of active threshold lines
+  "$GDIFF" map -l 9900 --hdist-th 4 --sample-size 100 --levels 0.1 0.05 0.01 0.005 $1 \
+    "genomes/${first_query}.fna.gz" "$WORK/sketches/${first_ref}.gs" 2>&1 >/dev/null |
+    grep -c 'threshold=.*[0-9]$' || true
+}
+n_plain="$(active_lanes "")"
+n_offb="$(active_lanes "--off-boundary")"
+[ -n "$n_plain" ] && [ -n "$n_offb" ] || fail "--levels did not report its thresholds"
+[ "$n_offb" -lt "$n_plain" ] \
+  || fail "--off-boundary did not drop the boundary lanes ($n_offb active, same as the default $n_plain)"
+
 # --levels immediately before the positionals must not swallow them either (same CLI11 trap).
 "$GDIFF" map --levels 0.1 0.05 0.01 0.005 "genomes/${first_query}.fna.gz" \
   "$WORK/sketches/${first_ref}.gs" -o "$WORK/map_levels_first_o.tsv" $MAP_BASE >/dev/null 2>&1 \
@@ -228,19 +244,18 @@ strip_comments "$WORK/map_levels_first_o.tsv" > "$WORK/map_levels_first_o.data"
 cmp -s <(strip_comments "$WORK/map_levels.tsv") "$WORK/map_levels_first_o.data" \
   || fail "map --levels before the positionals differs from the reference report"
 
-# --per-sequence and -b are alternate modes, not failures.
-map_once "$WORK/map_perseq.tsv" -d 0.10 --per-sequence
-has_data "$WORK/map_perseq.tsv" || fail "map --per-sequence produced no output"
+# -b is an alternate mode, not a failure.
+map_once "$WORK/map_b2_check.tsv" -d 0.10 -b 2
+has_data "$WORK/map_b2_check.tsv" || fail "map -b 2 produced no output"
 
-# --sample-size 0 switches the test off; with --per-sequence the per-query pools must still exist
-# (an out-of-range lookup here used to crash the run) and no record may carry a p-value. The
-# iterative mode reports the whole query when nothing crosses, so records are guaranteed.
-"$GDIFF" map -d 0.10 -l 9900 --hdist-th 4 --sample-size 0 --per-sequence --iterative-removal \
+# --sample-size 0 switches the test off and no record may carry a p-value. The iterative mode
+# reports the whole query when nothing crosses, so records are guaranteed.
+"$GDIFF" map -d 0.10 -l 9900 --hdist-th 4 --sample-size 0 --iterative-removal \
   "genomes/${first_query}.fna.gz" "$WORK/sketches/${first_ref}.gs" \
-  > "$WORK/map_perseq0.tsv" 2>/dev/null || fail "map --sample-size 0 --per-sequence failed"
-n_perseq0="$(strip_comments "$WORK/map_perseq0.tsv" | awk 'NR>1' | wc -l | tr -d ' ')"
-[ "$n_perseq0" -gt 0 ] || fail "map --sample-size 0 --per-sequence produced no records"
-if strip_comments "$WORK/map_perseq0.tsv" | awk -F'\t' 'NR>1 && $11 != "nan" { found=1 } END { exit !found }'; then
+  > "$WORK/map_nosample.tsv" 2>/dev/null || fail "map --sample-size 0 failed"
+n_nosample="$(strip_comments "$WORK/map_nosample.tsv" | awk 'NR>1' | wc -l | tr -d ' ')"
+[ "$n_nosample" -gt 0 ] || fail "map --sample-size 0 produced no records"
+if strip_comments "$WORK/map_nosample.tsv" | awk -F'\t' 'NR>1 && $11 != "nan" { found=1 } END { exit !found }'; then
   fail "--sample-size 0 still reported p-values"
 fi
 map_once "$WORK/map_b2.tsv" -d 0.10 -b 2
@@ -363,8 +378,8 @@ echo "PASS: provenance header"
 echo "=== Phase 9: map output schema ==="
 # `map` names its columns so `plot.py` can find them by name instead of by position; the
 # strand-aware variant is not covered by the gt/ files above.
-EXPECT_AGNOSTIC="seq seq_len start end reference d mask d_bin d_q d_acc pvalue fold qvalue fisher_info lr_ub"
-EXPECT_AWARE="seq seq_len start end strand is_rc reference d mask d_bin d_q d_diff d_acc pvalue fold qvalue fisher_info lr_ub"
+EXPECT_AGNOSTIC="seq seq_len start end reference d mask d_bin d_seq d_acc pvalue fold qvalue fisher_info p_lb p_ub"
+EXPECT_AWARE="seq seq_len start end strand is_rc reference d mask d_bin d_seq d_diff d_acc pvalue fold qvalue fisher_info p_lb p_ub"
 
 agnostic_header="$(strip_comments "$WORK/map_ref.tsv" | head -n 1 | tr '\t' ' ')"
 [ "$agnostic_header" = "$EXPECT_AGNOSTIC" ] || fail "strand-agnostic map header changed: $agnostic_header"
@@ -383,6 +398,49 @@ for probe in map_ref aware; do
   [ "$bad" = "0" ] || fail "$probe has $bad row(s) whose field count differs from the header"
 done
 echo "PASS: map output schema"
+
+# -- Phase 10: ambiguous runs split extraction ---------------------------------
+# The corpus genomes carry no long ambiguous run, so this builds one: two mutated blocks with a
+# 50-base N run between them, mapped back to the genome's own sketch. Skip handling has to split
+# the sequence at the run, so no record may carry data on both sides of it.
+echo "=== Phase 10: N-run splitting ==="
+gzip -dc "genomes/${first_query}.fna.gz" | awk '
+  BEGIN { srand(1) }
+  /^>/ { if (n++) exit; print; next }
+  {
+    out = ""
+    for (i = 1; i <= length($0); i++) {
+      pos++
+      c = substr($0, i, 1)
+      if (pos >= 20001 && pos <= 20050) c = "N"
+      else if ((pos >= 10001 && pos <= 20000) || (pos >= 20051 && pos <= 30050)) c = substr("ACGT", int(rand() * 4) + 1, 1)
+      out = out c
+    }
+    printf "%s\n", out
+  }' > "$WORK/nrun.fa"
+
+nrun_map() {
+  "$GDIFF" map -l 5000 -d 0.60 --hdist-th 4 "$WORK/nrun.fa" "$WORK/sketches/${first_query}.gs" \
+    > "$1" 2>/dev/null
+}
+nrun_map "$WORK/nrun.tsv" || fail "map failed on an N-run query"
+strip_comments "$WORK/nrun.tsv" > "$WORK/nrun.data"
+n_rows="$(awk 'NR>1' "$WORK/nrun.data" | wc -l | tr -d ' ')"
+[ "$n_rows" -gt 0 ] || fail "map produced no records for an N-run query"
+
+# A record may reach a few bases into the run - the k-mers overlapping its start are simply not
+# scored - but none may carry data on both sides of it, and none may leave the sequence.
+if ! awk -F'\t' 'NR>1 { if ($3 <= 19901 && $4 >= 20150) bad=1; if ($3 < 1 || $4 > $2) bad=2 } END { exit bad ? 1 : 0 }' \
+  "$WORK/nrun.data"; then
+  fail "a map record crossed the N run or left the sequence"
+fi
+# Both mutated blocks must be reported separately, one on each side of the run.
+awk -F'\t' 'NR>1 { if ($3 < 20001) left++; if ($3 > 20050) right++ } END { exit (left > 0 && right > 0) ? 0 : 1 }' \
+  "$WORK/nrun.data" || fail "the N run did not separate the two mutated blocks"
+# Same input, same output.
+nrun_map "$WORK/nrun2.tsv" || fail "the second N-run map failed"
+cmp -s "$WORK/nrun.data" <(strip_comments "$WORK/nrun2.tsv") || fail "map output is not stable on an N-run query"
+echo "PASS: N-run splitting"
 
 # -- Summary -------------------------------------------------------------------
 echo ""

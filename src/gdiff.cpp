@@ -18,6 +18,10 @@
 
 void MergeSC::merge()
 {
+  for (const str& path : paths_v) {
+    if (!check_input_type(path, input_type::container, "merge -i/--sketch-paths")) error_exit("Invalid input!");
+  }
+
   // The output stream truncates its path, so writing over an input would destroy a file that is
   // still being read. Refuse before opening anything.
   std::error_code out_ec;
@@ -100,6 +104,8 @@ MergeSC::MergeSC(CLI::App& sc)
 
 void InfoSC::info()
 {
+  if (!check_input_type(sketch_path, input_type::container, "info -i/--sketch-path")) error_exit("Invalid input!");
+
   write_provenance(std::cout);
 
   const Container file(sketch_path);

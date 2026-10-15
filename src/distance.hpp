@@ -11,7 +11,7 @@ static constexpr uint32_t hdist_bound = 7;
 
 static constexpr double d_ub = 1.0;
 static constexpr double d_lb = 0.0;
-static constexpr double d_eps = 0.00001;
+static constexpr double d_eps = 0.0000000001;
 
 // MLE search domain (Brent bounds); UB is the no-homology plateau end.
 static constexpr double UB = 0.99;
@@ -23,14 +23,14 @@ inline double nanx() noexcept { return std::numeric_limits<double>::quiet_NaN();
 inline double pinf() noexcept { return std::numeric_limits<double>::infinity(); }
 inline double ninf() noexcept { return -std::numeric_limits<double>::infinity(); }
 
-inline double strand_diff(double d_q_fw, double d_q_rc) noexcept
+inline double strand_diff(double d_seq_fw, double d_seq_rc) noexcept
 {
-  const bool fw_valid = std::isfinite(d_q_fw);
-  const bool rc_valid = std::isfinite(d_q_rc);
+  const bool fw_valid = std::isfinite(d_seq_fw);
+  const bool rc_valid = std::isfinite(d_seq_rc);
   if (!fw_valid && !rc_valid) return nanx(); // NaN = neither finite
   if (fw_valid && !rc_valid) return ninf();  // -inf = only fw is finite
   if (!fw_valid && rc_valid) return pinf();  // inf = only rc is finite
-  return d_q_fw - d_q_rc;                    // both are finite
+  return d_seq_fw - d_seq_rc;                // both are finite
 }
 
 inline char report_strand(bool is_rc, double d_diff) noexcept

@@ -9,6 +9,7 @@
 #include <unistd.h>
 
 #include "lshf.hpp"
+#include "msg.hpp"
 #include "serialize.hpp"
 
 FileMap::~FileMap()
@@ -47,6 +48,19 @@ bool is_container_file(const std::filesystem::path& path)
   uint32_t vgskey = 0;
   in.read(reinterpret_cast<char*>(&vgskey), sizeof(uint32_t));
   return in.good() && vgskey == container_vgskey;
+}
+
+bool check_input_type(const std::filesystem::path& path, input_type type, const str& what, const str& hint)
+{
+  if (!std::filesystem::is_regular_file(path)) return true;
+  const bool is_container = type == input_type::container;
+  if (is_container_file(path) == is_container) return true;
+  cerr_msg(what,
+           is_container ? " must be a sketch container, not a sequence file: "
+                        : " must be a FASTA/FASTQ sequence file, not a sketch container: ",
+           path.string(),
+           hint);
+  return false;
 }
 
 void read_container_header(const char*& p,

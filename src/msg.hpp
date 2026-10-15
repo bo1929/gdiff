@@ -17,17 +17,33 @@ extern bool verbose;
 
 inline bool stderr_is_tty() noexcept { return isatty(STDERR_FILENO) != 0; }
 
+// Set while a progress line is on screen, i.e. between progress() and progress_done().
+inline bool& progress_line_open() noexcept
+{
+  static bool open = false;
+  return open;
+}
+
+inline void close_progress_line()
+{
+  if (!progress_line_open()) return;
+  std::cerr << '\n';
+  progress_line_open() = false;
+}
+
 // Progress line "<label> <done>/<total>..."; silent unless stderr is a TTY or --verbose.
 inline void progress(const std::string& label, uint64_t done, uint64_t total)
 {
   if (!stderr_is_tty() && !verbose) return;
   std::cerr << '\r' << label << ' ' << done << '/' << total << "..." << std::flush;
+  progress_line_open() = true;
 }
 
 // Finish a progress line; pairs with progress().
 inline void progress_done()
 {
   if (stderr_is_tty() || verbose) std::cerr << '\n';
+  progress_line_open() = false;
 }
 
 inline std::string concat_msg() { return {}; }
@@ -43,11 +59,16 @@ inline std::string concat_msg(Args&&... args)
 
 [[noreturn]] inline void error_exit(const std::string& msg, int code = EXIT_FAILURE)
 {
+  close_progress_line();
   std::cerr << "[ERROR] " << msg << std::endl;
   std::exit(code);
 }
 
-inline void warn_msg(const std::string& msg) { std::cerr << "[WARNING] " << msg << std::endl; }
+inline void warn_msg(const std::string& msg)
+{
+  close_progress_line();
+  std::cerr << "[WARNING] " << msg << std::endl;
+}
 
 template<typename... Args>
 inline void warn_pmsg(const std::string& prefix, Args&&... args)
@@ -58,6 +79,7 @@ inline void warn_pmsg(const std::string& prefix, Args&&... args)
 template<typename... Args>
 inline void cerr_msg(Args&&... args)
 {
+  close_progress_line();
   std::cerr << concat_msg(std::forward<Args>(args)...) << '\n';
 }
 

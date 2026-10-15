@@ -33,23 +33,23 @@ ALIASES = {
     "qid": "seq", "query_id": "seq", "refseq_accn": "seq", "l": "seq_len",
     "length": "seq_len", "interval_start": "start", "interval_end": "end",
     "ref_id": "reference", "dist": "d", "dist_th": "d", "d_interval": "d_bin",
-    "dist_contig": "d_q", "dist_genome": "d_acc", "strand_diff": "d_diff",
-    "i": "fisher_info", "info": "fisher_info", "distance": "d", "median": "d_median",
+    "dist_contig": "d_seq", "dist_genome": "d_acc", "strand_diff": "d_diff",
+    "i": "fisher_info", "distance": "d", "median": "d_median",
     "alternative_mean": "d_mean",
     "max_unfiltered_distance": "d_upper", "max_distance": "d_highest",
     "num_na": "n_na", "num_filtered": "n_filtered", "n_lr_zero": "n_ub",
     # map renamed the two-sided empirical p-value column from percentile to pvalue
     "pvalue": "percentile",
 }
-NUM = {"seq_len", "start", "end", "d", "mask", "d_q", "d_acc", "d_diff", "percentile",
-       "fold", "qvalue", "fisher_info", "lr_ub", "d_fw", "d_rc", "is_rc", "d_median",
+NUM = {"seq_len", "start", "end", "d", "mask", "d_seq", "d_acc", "d_diff", "percentile",
+       "fold", "qvalue", "fisher_info", "p_lb", "p_ub", "d_fw", "d_rc", "is_rc", "d_median",
        "d_mean", "d_upper", "d_highest", "d_ab", "d_ba", "n_ab", "n_ba", "n_ub",
        "n_na", "n_filtered"}
 CAT = {"seq", "reference", "config", "direction", "strand", "genome_a", "genome_b"}
 
 
 def kind_of(cols):
-    if "config" in cols or ("direction" in cols and "lr_ub" in cols):
+    if "config" in cols or ("direction" in cols and "p_ub" in cols):
         return "samples"
     if "d_ab" in cols and ("n_na" in cols or "n_filtered" in cols):
         return "dist"
@@ -89,7 +89,7 @@ def read_table(path, kind=None):
     first = re.split(sep, body[0].strip())
     if any(isnum(f) for f in first[1:4]):        # old `detect` output: 14 unnamed columns
         names = ["seq", "seq_len", "start", "end", "reference", "d", "legacy_dir", "_xl",
-                 "dist_th", "d_bin", "d_q", "fisher_info", "_n_kmers", "_n_hits"]
+                 "dist_th", "d_bin", "d_seq", "fisher_info", "p_lb", "p_ub", "_n_kmers", "_n_hits"]
         df = pd.read_csv(path, sep=sep, comment="#", header=None, names=names,
                          engine="python" if sep != "\t" else "c")
         kind = "map"
@@ -204,13 +204,13 @@ def prepare_map(df, run, args):
     df["d_lo"] = pd.to_numeric(lo, errors="coerce") if lo is not None else np.nan
     df["d_hi"] = pd.to_numeric(hi, errors="coerce") if hi is not None else np.nan
     df["d_plot"] = df["d"].fillna(np.sqrt(df["d_lo"] * df["d_hi"]))
-    if "d_q" in df:
-        df["d_plot"] = df["d_plot"].fillna(df["d_q"])
+    if "d_seq" in df:
+        df["d_plot"] = df["d_plot"].fillna(df["d_seq"])
 
     if "strand" in df and (df["strand"] != ".").any():
         df["dir"] = df["strand"].map({"+": "closer", "-": "farther"}).fillna("unknown")
-    elif "d_q" in df:
-        df["dir"] = np.where(df["d_plot"] < df["d_q"], "closer", "farther")
+    elif "d_seq" in df:
+        df["dir"] = np.where(df["d_plot"] < df["d_seq"], "closer", "farther")
     else:
         df["dir"] = "unknown"
     if "dir" in df and "ref" in df:              # one row per reference and direction

@@ -283,7 +283,7 @@ samples_t process_samples(const Sketch& query, const Sketch& reference, uint32_t
                   wins_v[wix].end + query.get_k() - 1,
                   direction,
                   mle.d,
-                  mle.s)
+                  lr_pvalue(mle.s))
           << '\n';
       } else {
         write_tsv(ss,
@@ -296,7 +296,7 @@ samples_t process_samples(const Sketch& query, const Sketch& reference, uint32_t
                   strand,
                   direction,
                   mle.d,
-                  mle.s)
+                  lr_pvalue(mle.s))
           << '\n';
       }
     }
@@ -383,9 +383,9 @@ void DistSC::emit_header(std::ostream& os, bool canonical) const
 {
   if (params.output_samples) {
     if (canonical) {
-      write_tsv(os, "config", "genome_a", "genome_b", "seq", "start", "end", "direction", "d", "lr_ub") << '\n';
+      write_tsv(os, "config", "genome_a", "genome_b", "seq", "start", "end", "direction", "d", "p_ub") << '\n';
     } else {
-      write_tsv(os, "config", "genome_a", "genome_b", "seq", "start", "end", "strand", "direction", "d", "lr_ub") << '\n';
+      write_tsv(os, "config", "genome_a", "genome_b", "seq", "start", "end", "strand", "direction", "d", "p_ub") << '\n';
     }
   } else {
     write_tsv(os,

@@ -48,13 +48,15 @@ struct record_t
   double d;           // MLE distance for this interval in [d_eps, d_ub]
   double fisher_info; // Observed Fisher information at d
   size_t th_ix;       // Threshold index; no_threshold marks background gaps (not reported anymore)
-  // Per-query fields, filled once both strands' distances are known
-  double d_q = nanx();    // MLE distance for the source strand
+  // Per-sequence fields, filled once both strands' distances are known
+  double d_seq = nanx();  // MLE distance for the source strand (its own background)
   double d_diff = nanx(); // strand difference encoding; see strand_diff()
   double fold = nanx();   // fold change: d / median(background samples)
   double pvalue = nanx(); // empirical two-sided p-value against the background pool
   double qvalue = nanx(); // Benjamini-Hochberg adjusted p-value
-  double lr_ub;           // likelihood-ratio statistic vs max estimable distance (extreme match counts)
+  // Likelihood-ratio statistics; `map` reports their chi-square p-values as p_lb / p_ub.
+  double lr_ub; // this interval vs the max estimable distance (extreme match counts)
+  double lr_lb; // this interval vs perfect identity (all k-mers matching)
 
   record_t(uint64_t bix,
            uint64_t L,
@@ -63,7 +65,8 @@ struct record_t
            double d,
            double fisher_info,
            size_t th_ix,
-           double lr_ub = nanx())
+           double lr_ub = nanx(),
+           double lr_lb = nanx())
     : bix(bix)
     , L(L)
     , seq_iv(seq_iv)
@@ -72,6 +75,7 @@ struct record_t
     , fisher_info(fisher_info)
     , th_ix(th_ix)
     , lr_ub(lr_ub)
+    , lr_lb(lr_lb)
   {
   }
 };

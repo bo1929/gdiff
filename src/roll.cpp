@@ -217,8 +217,11 @@ namespace {
 
 void RollSC::roll()
 {
-  if (is_container_file(query_path)) {
-    error_exit("roll needs a query FASTA/FASTQ to roll over, not a sketch: " + query_path.string());
+  if (!check_input_type(query_path, input_type::sequence, "roll query-path (first positional)")) {
+    error_exit("Invalid configuration!");
+  }
+  if (!check_input_type(sketch_path, input_type::container, "roll sketch-path (second positional)")) {
+    error_exit("Invalid configuration!");
   }
   const Container file(sketch_path);
   if (file.size() == 0) error_exit("Container has no sketches: " + sketch_path.string());

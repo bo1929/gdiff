@@ -1,2 +1,2 @@
-seq	seq_len	start	end	reference	d	mask	d_bin	d_q	d_acc	pvalue	fold	qvalue	fisher_info	lr_ub
-seq1	5801598	1	5801598	G000021685.fna.gz	0.3651	0	(0.1, 1)	0.3651	0.3651	0.5	0.94245	0.5	2.5346e+06	6446.1
+seq	seq_len	start	end	reference	d	mask	d_bin	d_seq	d_acc	pvalue	fold	qvalue	fisher_info	p_lb	p_ub
+seq1	5801598	1	5801598	G000021685.fna.gz	0.3651	0	(0.1, 1)	0.3651	0.3651	0.5	0.94245	0.5	2.5346e+06	0	0

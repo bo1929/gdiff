@@ -608,6 +608,9 @@ void SketchSC::process()
     rnames_v.insert(rnames_v.begin(), list_names_v.begin(), list_names_v.end());
   }
   if (paths_v.empty()) error_exit("No input files provided! Use -i <path> and/or --input-list <file>.");
+  for (const str& path : paths_v) {
+    if (!check_input_type(path, input_type::sequence, "-i/--input-path")) error_exit("Invalid input!");
+  }
 
   const uint64_t nsketches = paths_v.size();
   const uint32_t nthreads = std::max(1u, num_threads);

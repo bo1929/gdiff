@@ -33,6 +33,37 @@ TEST_CASE("apply_empirical_significance reports the two-sided p and the fold of 
   CHECK(high.pvalue == doctest::Approx(0.0));
 }
 
+TEST_CASE("apply_gamma_significance reads the p-value and fold off the fitted gamma") {
+  gamma_fit_t fit;
+  fit.shape = 4.0;
+  fit.scale = 0.02;
+  const boost::math::gamma_distribution<double> gamma(fit.shape, fit.scale);
+
+  const double median = boost::math::median(gamma);
+  record_t med(0, 32, interval_t{1, 20}, false, median, 1.0, 0);
+  apply_gamma_significance(med, fit);
+  CHECK(med.pvalue == doctest::Approx(1.0)); // the median sits in both tails
+  CHECK(med.fold == doctest::Approx(1.0));
+
+  // Both tails land on the same scale, exactly as the empirical rule does.
+  record_t low(0, 32, interval_t{1, 20}, false, boost::math::quantile(gamma, 1e-4), 1.0, 0);
+  apply_gamma_significance(low, fit);
+  CHECK(low.pvalue == doctest::Approx(2e-4).epsilon(0.02));
+  record_t high(0, 32, interval_t{1, 20}, false, boost::math::quantile(gamma, 1.0 - 1e-4), 1.0, 0);
+  apply_gamma_significance(high, fit);
+  CHECK(high.pvalue == doctest::Approx(2e-4).epsilon(0.02));
+
+  // No usable fit, or no distance: the row stays untested.
+  const gamma_fit_t no_fit;
+  record_t untested(0, 32, interval_t{1, 20}, false, 0.1, 1.0, 0);
+  apply_gamma_significance(untested, no_fit);
+  CHECK(std::isnan(untested.pvalue));
+  CHECK(std::isnan(untested.fold));
+  record_t unmapped(0, 32, interval_t{1, 20}, false, nanx(), 1.0, 0);
+  apply_gamma_significance(unmapped, fit);
+  CHECK(std::isnan(unmapped.pvalue));
+}
+
 TEST_CASE("benjamini_hochberg_correction adjusts within each strand and never below the raw p") {
   vec<record_t> recs;
   for (int i = 1; i <= 4; ++i) {
@@ -300,7 +331,7 @@ TEST_CASE("a zero median leaves the fold undefined") {
 
 TEST_SUITE("gamma background thresholds") {
 
-TEST_CASE("four levels resolve into eight distinct in-range gamma quantiles") {
+TEST_CASE("four levels resolve into eight sorted gamma thresholds") {
   vec<double> sample;
   for (int i = 0; i < 1000; ++i)
     sample.push_back(0.05 + 0.0001 * static_cast<double>(i));
@@ -311,12 +342,9 @@ TEST_CASE("four levels resolve into eight distinct in-range gamma quantiles") {
   CHECK(fit.shape > 0.0);
   CHECK(fit.scale > 0.0);
   REQUIRE(th.size() == 8);
+  CHECK(std::is_sorted(th.begin(), th.end()));
   for (size_t i = 1; i < th.size(); ++i)
-    CHECK(th[i - 1] < th[i]);
-  for (const double t : th) {
-    CHECK(t > d_eps);
-    CHECK(t < d_ub - d_eps);
-  }
+    CHECK(th[i - 1] < th[i]); // a smooth fit on a clean sample separates every level
 }
 
 TEST_CASE("method of moments recovers a known gamma") {
@@ -330,30 +358,58 @@ TEST_CASE("method of moments recovers a known gamma") {
     sample.push_back(boost::math::quantile(gamma, (static_cast<double>(i) + 0.5) / static_cast<double>(n)));
 
   gamma_fit_t fit;
-  REQUIRE(fit_gamma_mom(sample, fit));
+  REQUIRE(fit_gamma_mom(sample, fit, min_null_samples));
   CHECK(fit.shape == doctest::Approx(shape).epsilon(0.02));
   CHECK(fit.scale == doctest::Approx(scale).epsilon(0.02));
 }
 
-TEST_CASE("a degenerate sample fails instead of duplicating lanes") {
+TEST_CASE("a pool without variance falls back to duplicate thresholds for placing to collapse") {
   const vec<double> sample(min_null_samples, 0.1);
+  gamma_fit_t fit;
   vec<double> th;
-  CHECK_FALSE(thresholds_from_levels(sample, {0.1, 0.05, 0.01, 0.005}, th, min_null_samples));
+  REQUIRE(thresholds_from_levels(sample, {0.1, 0.05, 0.01, 0.005}, th, min_null_samples, &fit));
+  CHECK_FALSE(std::isfinite(fit.shape)); // NaN marks the empirical fallback
+  REQUIRE(th.size() == 8);
+  CHECK(th.front() == doctest::Approx(th.back())); // one distance, eight thresholds
+
+  arr<bool, rwidth> active{};
+  active.fill(true);
+  CHECK(place_thresholds(th, active, a_range_t{0.05, 0.2, true}) == 1);
+  CHECK(active[0]);
+  for (size_t i = 1; i < th.size(); ++i)
+    CHECK_FALSE(active[i]);
 }
 
 TEST_CASE("a short sample fails") {
   const vec<double> sample{0.1, 0.2, 0.3};
   vec<double> th;
   CHECK_FALSE(thresholds_from_levels(sample, {0.1, 0.05, 0.01, 0.005}, th, min_null_samples));
+
+  // The caller's minimum - a tenth of --sample-size - gates the gamma fit as well: twelve values
+  // fit when ten are asked for, and do not when more are.
+  vec<double> twelve;
+  for (int i = 0; i < 12; ++i)
+    twelve.push_back(0.02 + 0.02 * static_cast<double>(i));
+  gamma_fit_t fit;
+  CHECK(thresholds_from_levels(twelve, {0.1, 0.05, 0.01, 0.005}, th, 10, &fit));
+  CHECK(std::isfinite(fit.shape));
+  CHECK_FALSE(thresholds_from_levels(twelve, {0.1, 0.05, 0.01, 0.005}, th, 20, &fit));
 }
 
-TEST_CASE("exactly four levels are required") {
+TEST_CASE("any number of levels resolves into two thresholds each") {
   vec<double> sample;
   for (int i = 0; i < 1000; ++i)
     sample.push_back(0.05 + 0.0001 * static_cast<double>(i));
   vec<double> th;
-  CHECK_FALSE(thresholds_from_levels(sample, {0.05, 0.01}, th, min_null_samples));
-  CHECK_FALSE(thresholds_from_levels(sample, {0.1, 0.05, 0.01, 0.005, 0.001}, th, min_null_samples));
+  REQUIRE(thresholds_from_levels(sample, {0.05}, th, min_null_samples));
+  CHECK(th.size() == 2);
+  REQUIRE(thresholds_from_levels(sample, {0.05, 0.01}, th, min_null_samples));
+  CHECK(th.size() == 4);
+  REQUIRE(thresholds_from_levels(sample, {0.02, 0.01, 0.005}, th, min_null_samples));
+  CHECK(th.size() == 6);
+  REQUIRE(thresholds_from_levels(sample, {0.1, 0.05, 0.01, 0.005}, th, min_null_samples));
+  CHECK(th.size() == 8);
+  CHECK_FALSE(thresholds_from_levels(sample, {}, th, min_null_samples));
 }
 
 TEST_CASE("the lr filter keeps evidence-bearing windows only when enough survive") {
@@ -376,36 +432,61 @@ TEST_CASE("the lr filter keeps evidence-bearing windows only when enough survive
   CHECK(kept.size() == 4);
 }
 
-TEST_CASE("a rejected gamma falls back to empirical quantiles") {
-  // Twelve distinct values: enough for the empirical quantiles, too few for a two-parameter fit.
-  vec<double> sample;
-  for (int i = 0; i < 12; ++i)
-    sample.push_back(0.02 + 0.02 * static_cast<double>(i));
+TEST_CASE("place_thresholds can leave off-boundary thresholds inactive") {
+  const a_range_t ar{1e-4, 0.5, true};
 
-  gamma_fit_t fit;
-  vec<double> th;
-  REQUIRE(thresholds_from_levels(sample, {0.1, 0.05, 0.01, 0.005}, th, min_null_samples, &fit));
-  CHECK_FALSE(std::isfinite(fit.shape)); // NaN marks the empirical fallback
-  REQUIRE(th.size() == 8);
-  for (size_t i = 1; i < th.size(); ++i)
-    CHECK(th[i - 1] < th[i]);
-  for (const double t : th) {
-    CHECK(t > d_eps);
-    CHECK(t < d_ub - d_eps);
-  }
+  // 1e-12 is below the range and 0.9 above it; 1e-4 and 5e-3 are inside.
+  vec<double> th{1e-12, 1e-4, 5e-3, 0.9};
+  arr<bool, rwidth> active{};
+  active.fill(true);
+  CHECK(place_thresholds(th, active, ar, true) == 2);
+  CHECK_FALSE(active[0]); // clamped to t_min for the neighbouring band, but not active
+  CHECK(active[1]);       // the in-range 1e-4 stays active although it equals the clamped value
+  CHECK(active[2]);
+  CHECK_FALSE(active[3]); // clamped to t_max, not active
+  CHECK(th[0] == doctest::Approx(1e-4));
+  CHECK(th[3] == doctest::Approx(0.5));
+
+  // Without the option the two collapse onto the boundary and the first of each stays active.
+  vec<double> same{1e-13, 1e-12};
+  arr<bool, rwidth> collapsed{};
+  collapsed.fill(true);
+  CHECK(place_thresholds(same, collapsed, ar, false) == 1);
+  CHECK(collapsed[0]);
+
+  vec<double> all_off{1e-13, 1e-12};
+  arr<bool, rwidth> dropped{};
+  dropped.fill(true);
+  CHECK(place_thresholds(all_off, dropped, ar, true) == 0); // nothing to run
 }
 
-TEST_CASE("the empirical fallback lifts floored quantiles to distinct distances") {
-  vec<double> sample(20, 0.0); // floored mass, still counted by the quantile
+TEST_CASE("empirical thresholds are the pool's own quantiles, floor mass included") {
+  vec<double> sample(20, 0.0); // a point mass at the floor
   for (int i = 0; i < 200; ++i)
     sample.push_back(0.02 + 0.0005 * static_cast<double>(i));
 
   vec<double> th;
   REQUIRE(empirical_thresholds_from_levels(sample, {0.1, 0.05, 0.01, 0.005}, th, min_null_samples));
   REQUIRE(th.size() == 8);
-  for (size_t i = 1; i < th.size(); ++i)
-    CHECK(th[i - 1] < th[i]);
-  CHECK(th.front() == doctest::Approx(0.02)); // first distance above the floor
+  CHECK(std::is_sorted(th.begin(), th.end()));
+  CHECK(th.front() == doctest::Approx(0.0)); // reported as it is; placing clamps it
+}
+
+TEST_CASE("place_thresholds clamps into the admissible range and collapses duplicates") {
+  vec<double> th{1e-12, 1e-12, 5e-3, 0.9};
+  arr<bool, rwidth> active{};
+  active.fill(true);
+  CHECK(place_thresholds(th, active, a_range_t{1e-4, 0.5, true}) == 3);
+  CHECK(th[0] == doctest::Approx(1e-4)); // clamped up to t_min
+  CHECK(th[1] == doctest::Approx(1e-4)); // the duplicate that collapses
+  CHECK(th[2] == doctest::Approx(5e-3));
+  CHECK(th[3] == doctest::Approx(0.5)); // clamped down to t_max
+  CHECK(active[0]);
+  CHECK_FALSE(active[1]);
+  CHECK(active[2]);
+  CHECK(active[3]);
+  for (size_t i = th.size(); i < rwidth; ++i)
+    CHECK_FALSE(active[i]); // no threshold, no lane
 }
 
 } // TEST_SUITE

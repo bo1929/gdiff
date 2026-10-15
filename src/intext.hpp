@@ -83,7 +83,7 @@ public:
   void compute_prefhistsum();
   void skip_mer(uint64_t i);
   void aggregate_mer(uint32_t hdist_min, uint64_t i);
-  void set_query_distance(double d_q);
+  void set_seq_distance(double d_seq);
   void extract_intervals_mx(uint64_t tau_eff, uint64_t lix, uint64_t rix, size_t ix = 0);
   void expand_intervals(double chisq_th, size_t ix = 0);
   void total_histogram(vec<uint64_t>& v, uint64_t& u, uint64_t& t) const;
