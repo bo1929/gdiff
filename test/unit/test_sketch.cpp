@@ -569,7 +569,7 @@ TEST_CASE("-l 0 stores a buckets-only sketch that map accepts" * doctest::skip(!
   // map reads only the bucket index, so the buckets-only container is enough.
   const auto qfa = test_util::write_fasta("bonly_query", 50000, 6);
   const std::string cmd =
-    GDIFF_BIN + " map -d 0.10 -l 300 --sample-size 0 " + qfa.string() + " " + skc.string() + " >/dev/null 2>&1";
+    GDIFF_BIN + " map -l 300 --sample-size 200 " + qfa.string() + " " + skc.string() + " >/dev/null 2>&1";
   CHECK(std::system(cmd.c_str()) == 0);
 
   // dist needs sampled windows and must reject it.
