@@ -54,9 +54,12 @@ struct record_t
   double fold = nanx();   // fold change: d / median(background samples)
   double pvalue = nanx(); // empirical two-sided p-value against the background pool
   double qvalue = nanx(); // Benjamini-Hochberg adjusted p-value
-  // Likelihood-ratio statistics; `map` reports their chi-square p-values as p_lb / p_ub.
+  // Likelihood-ratio statistics.
   double lr_ub; // this interval vs the max estimable distance (extreme match counts)
   double lr_lb; // this interval vs perfect identity (all k-mers matching)
+  double lr_bg = nanx();       // this interval vs the sampled background median
+  double p_interval = nanx();  // chi-square p-value of lr_bg
+  double q_interval = nanx();  // BH-adjusted p_interval, per strand
 
   record_t(uint64_t bix,
            uint64_t L,
@@ -120,6 +123,27 @@ inline void apply_empirical_significance(record_t& r, const vec<double>& pool_v,
   r.pvalue = std::clamp(2.0 * std::min(prob, 1.0 - prob), 0.0, 1.0);
   const double median = linear_quantile(pool_v, 0.5);
   if (median > eps) r.fold = r.d / median;
+}
+
+// Per-strand Benjamini-Hochberg adjustment of the interval-level p-values.
+inline void benjamini_hochberg_intervals(vec<record_t>& records_v)
+{
+  for (bool is_rc : {false, true}) {
+    vec<size_t> idx_v;
+    for (size_t i = 0; i < records_v.size(); ++i)
+      if (records_v[i].is_rc == is_rc && std::isfinite(records_v[i].p_interval)) idx_v.push_back(i);
+    if (idx_v.empty()) continue;
+
+    std::sort(idx_v.begin(), idx_v.end(), [&](size_t a, size_t b) { return records_v[a].p_interval < records_v[b].p_interval; });
+
+    const double m = static_cast<double>(idx_v.size());
+    double q_min = 1.0;
+    for (size_t i = idx_v.size(); i-- > 0;) {
+      record_t& r = records_v[idx_v[i]];
+      q_min = std::min(q_min, std::min(1.0, r.p_interval * m / static_cast<double>(i + 1)));
+      r.q_interval = q_min;
+    }
+  }
 }
 
 // Per-strand Benjamini-Hochberg adjustment of the p-values into qvalues.

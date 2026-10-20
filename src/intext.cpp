@@ -129,14 +129,12 @@ void IntExt<T>::set_seq_distance(double d_seq)
     {
       double t;
       size_t ix;
-      bool is_bound;
     };
     vec<rank_t> tp;
     for (size_t i = 0; i < params.n_active; ++i) {
       const double t = lane_at(params.dist_th, i);
       thneg_v[i] = is_valid && t > d_seq;
-      const bool is_bound = (t == params.lo_bound) || (t == params.hi_bound);
-      tp.push_back({t, i, is_bound});
+      tp.push_back({t, i});
     }
     for (size_t i = params.n_active; i < WIDTH; ++i)
       thneg_v[i] = false;
@@ -144,7 +142,6 @@ void IntExt<T>::set_seq_distance(double d_seq)
     // Most extreme threshold first, so each lane claims the regions it is most confident about.
     auto extremity = [&](double t) { return t <= d_seq ? t : ((2.0 * d_ub) - t); };
     std::sort(tp.begin(), tp.end(), [&](const rank_t& a, const rank_t& b) {
-      if (a.is_bound != b.is_bound) return a.is_bound;
       if (!is_valid) return a.t < b.t;
       return extremity(a.t) < extremity(b.t);
     });

@@ -36,13 +36,14 @@ struct map_opts
   uint64_t bin_shift = 0;
   double chisq = 33.00051;
   uint64_t sample_size = 500;
-  vec<double> thresholds_v;   // -d: exactly 1 or rwidth absolute distance thresholds
-  vec<double> levels_v;       // --levels: 1..3 two-sided tail probabilities (two thresholds each)
-  double lr_th = 6.635;       // --levels fit: keep background windows whose lr_ub exceeds this
-  str bg_model = "empirical"; // --levels thresholds: "empirical" (full pool) or "gamma" (lr-filtered fit)
-  // Every threshold enumerates its own intervals by default. `--iterative-removal` switches to
-  // ordered extraction, where each lane removes the bins it claimed so later lanes only fill gaps.
+  vec<double> levels_v; // one to three two-sided tail probabilities (two thresholds each)
+  // Deprecated compatibility fields for direct IntMap callers; the CLI no longer sets them.
+  vec<double> thresholds_v;
   bool iterative_removal = false;
+  // By default levels are claimed in order of extremity and later levels only fill the gaps left
+  // by earlier ones. `--independent-levels` lets every level enumerate its own intervals.
+  bool independent_levels = false;
+  double fdr = 0.05;
   uint32_t verbosity = 1;
 };
 
@@ -51,8 +52,8 @@ struct map_opts
 // of the requested pool.
 inline constexpr uint64_t min_sample_size = 100;
 
-// `--levels` budgets the lanes: two model thresholds per level plus the two bounds, so at most
-// rwidth / 2 - 1 levels fit the register.
+// `--levels` budgets the lanes: two thresholds per level, so at most rwidth / 2 levels fit the
+// register; the CLI caps the list at max_levels.
 inline constexpr size_t max_levels = (rwidth / 2) - 1;
 
 // One scored background window: its source sequence, start and MLE distance.
@@ -178,9 +179,8 @@ private:
   void extract_iterative_intervals(IntExt<T>& ext, const LLH<T>& llhf, bool is_rc, uint64_t tau_eff, size_t bix);
   // `a_bin`/`b_bin` are the half-open 0-based bin range the extractor scored: bins [a_bin, b_bin).
   void emit_record(IntExt<T>& ext, const LLH<T>& llhf, size_t bix, uint64_t a_bin, uint64_t b_bin, size_t th_ix, bool is_rc);
-  xy_t get_distance_bin(const record_t& r, const LLH<T>& llhf) const;
   void report_null(const str& rname) const;
-  void report_contiguous(std::ostream& sout, const str& rname, const LLH<T>& llhf) const;
+  void report_contiguous(std::ostream& sout, const str& rname) const;
 
   const map_opts& opts;
   const Sketch& sketch;
@@ -189,10 +189,13 @@ private:
   const uint32_t hpos;
   const bool sketch_canonical;
   vec<double> th_v;          // thresholds, sorted ascending and distinct; lanes are [0, n_active)
+  vec<double> th_alpha_v;    // the level alpha that placed th_v[i]
   size_t n_active = 0;       // lanes carrying a threshold
-  vec<double> null_v;        // pooled background distances, sorted
-  gamma_fit_t gamma_fit;     // parameters behind th_v (NaN when -d supplied them)
-  a_range_t ar;              // likelihood-ratio bounds; the two --levels end lanes
+  vec<double> null_v;        // sampled background distances, sorted
+  gamma_fit_t gamma_fit;     // hurdle fit behind th_v (NaN on the empirical fallback)
+  double null_median = nanx();
+  double d_low = nanx();     // lower estimable distance (null floor)
+  double d_high = nanx();    // upper estimable distance
   uint64_t null_floored = 0; // background samples below d_eps
   vec<uint64_t> scratch_v;
   vec<uint64_t> acc_v;
