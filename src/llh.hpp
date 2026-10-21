@@ -22,8 +22,10 @@ public:
   vec<uint64_t> binom_coef_hnk;
   vec<double> dcoef_k;
   vec<double> dcoef_hnk;
+  vec<double> false_hit_v; // empirical non-self hit mixture; empty = old model
 
-  LLH(uint32_t k, uint32_t h, double rho, uint32_t hdist_th, T extrema, bool compute_derivatives = true)
+  LLH(uint32_t k, uint32_t h, double rho, uint32_t hdist_th, T extrema, bool compute_derivatives = true,
+      vec<double> false_hit_v = {})
     : k(k)
     , h(h)
     , rho(rho)
@@ -31,6 +33,7 @@ public:
     , extrema(extrema)
     , binom_coef_k(k + 1)
     , binom_coef_hnk(hdist_th + 1)
+    , false_hit_v(std::move(false_hit_v))
     , fdc_v(compute_derivatives ? hdist_th + 1 : 0)
     , sdc_v(compute_derivatives ? hdist_th + 1 : 0)
   {
@@ -134,10 +137,28 @@ public:
     return (rho * p) + 1.0 - rho;
   }
 
-  double prob_hit(double D, uint32_t x) const { return rho * prob_collide(x) * prob_mutate(D, x); }
+  double prob_hit(double D, uint32_t x) const
+  {
+    const double own = rho * prob_collide(x) * prob_mutate(D, x);
+    if (false_hit_v.empty() || x >= false_hit_v.size()) return own;
+    return own + (1.0 - rho) * false_hit_v[x];
+  }
 
   double nll(const double& D, const uint64_t* vv, uint64_t uu) const
   {
+    if (!false_hit_v.empty()) {
+      double lsum = 0.0;
+      double sum_p = 0.0;
+      for (uint32_t x = 0; x <= hdist_th; ++x) {
+        const double p = prob_hit(D, x);
+        if (p <= 0.0) return pinf();
+        lsum -= static_cast<double>(vv[x]) * std::log(p);
+        sum_p += p;
+      }
+      const double pmiss = 1.0 - sum_p;
+      if (pmiss <= 0.0) return pinf();
+      return lsum - static_cast<double>(uu) * std::log(pmiss);
+    }
     if (D == 0.0) {
       for (uint32_t x = 1; x <= hdist_th; ++x)
         if (vv[x] > 0) return pinf();

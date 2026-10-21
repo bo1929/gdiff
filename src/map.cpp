@@ -67,7 +67,35 @@ namespace {
         << std::endl;
     }
   }
-} // namespace
+  // Experimental reference leave-one-out false-hit distribution.
+  vec<double> reference_false_hits(const Sketch& sketch, uint32_t hdist_th)
+  {
+    vec<uint64_t> cnt(hdist_th + 1, 0);
+    uint64_t miss = 0;
+    const Buckets& buckets = sketch.get_buckets();
+    for (uint32_t bix = 0; bix < buckets.get_nrows(); ++bix) {
+      const enc_t* beg = nullptr;
+      const enc_t* end = nullptr;
+      if (!buckets.range(bix, beg, end)) continue;
+      const size_t m = static_cast<size_t>(end - beg);
+      for (size_t i = 0; i < m; ++i) {
+        uint32_t best = hdist_th + 1;
+        for (size_t j = 0; j < m; ++j) {
+          if (i == j) continue;
+          const uint32_t d = popcount_lr32(beg[i] ^ beg[j]);
+          if (d < best) best = d;
+        }
+        if (best <= hdist_th) ++cnt[best]; else ++miss;
+      }
+    }
+    uint64_t total = miss;
+    for (uint64_t c : cnt) total += c;
+    vec<double> out(hdist_th + 1, 0.0);
+    if (total == 0) return out;
+    for (uint32_t x = 0; x <= hdist_th; ++x) out[x] = static_cast<double>(cnt[x]) / static_cast<double>(total);
+    return out;
+  }
+}
 
 bool fit_gamma_mom(const vec<double>& sample_v, gamma_fit_t& fit, size_t min_samples)
 {
@@ -374,7 +402,7 @@ void IntMap<T>::build_null(ThreadPool& pool)
 {
   if (opts.sample_size == 0) return;
 
-  BackgroundSampler sampler(sketch, batch_v, opts.tau, opts.bin_shift, opts.hdist_th);
+  BackgroundSampler sampler(sketch, batch_v, opts.tau, opts.bin_shift, opts.hdist_th, false_hit_v);
   const vec<sample_point_t> points = sampler.sample(opts.sample_size, pool);
 
   null_v.clear();
@@ -389,7 +417,7 @@ void IntMap<T>::build_null(ThreadPool& pool)
   d_null = linear_quantile(null_v, 0.5);
   d_min = null_v.front();
   d_max = null_v.back();
-  const LLH<double> probe = make_llhf(sketch, opts.hdist_th);
+  const LLH<double> probe = make_llhf(sketch, opts.hdist_th, false_hit_v);
   const uint64_t n_winmers = get_nwinmers(opts.tau, opts.bin_shift);
   d_floor = min_estimable_distance(probe, n_winmers);
   d_ceiling = max_estimable_distance(probe, n_winmers);
@@ -398,6 +426,7 @@ void IntMap<T>::build_null(ThreadPool& pool)
 template<typename T>
 void IntMap<T>::map_sequences(std::ostream& sout, const str& rname, ThreadPool& pool)
 {
+  false_hit_v = opts.false_hits ? reference_false_hits(sketch, opts.hdist_th) : vec<double>{};
   build_null(pool);
   if (null_v.empty()) {
     warn_pmsg(rname, "skipped: no valid background windows (sample-size=", opts.sample_size, ")");
@@ -417,7 +446,7 @@ void IntMap<T>::map_sequences(std::ostream& sout, const str& rname, ThreadPool& 
   const T dist_th = make_dist_th<T>(th_v);
   map_params<T> dparams(dist_th, opts.hdist_th, opts.tau, opts.bin_shift, opts.chisq);
   dparams.n_active = static_cast<uint8_t>(n_active);
-  const LLH<T> llhf(k, hpos, sketch.get_rho(), opts.hdist_th, dist_th);
+  const LLH<T> llhf(k, hpos, sketch.get_rho(), opts.hdist_th, dist_th, true, false_hit_v);
 
   for (size_t bix = 0; bix < batch_v.size(); ++bix)
     scan_sequence(dparams, llhf, bix);
@@ -712,14 +741,15 @@ BackgroundSampler::BackgroundSampler(const Sketch& sketch,
                                      const vec<qseq_t>& batch_v,
                                      uint64_t tau,
                                      uint64_t bin_shift,
-                                     uint32_t hdist_th)
+                                     uint32_t hdist_th,
+                                     const vec<double>& false_hit_v)
   : sketch(sketch)
   , batch_v(batch_v)
   , hdist_th(hdist_th)
   , tau(tau)
   , bin_shift(bin_shift)
   , nwinmers(get_nwinmers(tau, bin_shift))
-  , llhf(make_llhf(sketch, hdist_th))
+  , llhf(make_llhf(sketch, hdist_th, false_hit_v))
 {
   sketch_canonical = sketch.is_canonical();
 }
@@ -933,6 +963,9 @@ MapSC::MapSC(CLI::App& sc)
   sc.add_option("-b,--bin-shift", params.bin_shift,
                 "Bin width as a power of two (0 = one k-mer per bin)")
     ->check(CLI::Range(0, 16));
+  sc.add_flag("--false-hit",
+              params.false_hits,
+              "Experimental: reference leave-one-out non-self hd mixture");
   sc.add_flag("--independent-levels",
               params.independent_levels,
               "Let every level enumerate its own intervals; off, levels claim in order of extremity and "
