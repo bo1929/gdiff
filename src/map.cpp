@@ -211,7 +211,8 @@ bool level_thresholds(const vec<double>& sample_v,
                       vec<double>& alpha_v,
                       size_t min_samples,
                       gamma_fit_t* fit_out,
-                      double floor)
+                      double floor,
+                      bool empirical_fallback)
 {
   th_v.clear();
   alpha_v.clear();
@@ -228,6 +229,9 @@ bool level_thresholds(const vec<double>& sample_v,
 
   gamma_fit_t fit;
   const bool gamma_ok = fit_background_gamma(sample_v, fit, min_samples, floor);
+  // Default is fail-closed: thresholds and p_gamma must come from the same fitted model.
+  // The empirical fallback is available only as an explicit diagnostic opt-in.
+  if (!gamma_ok && !empirical_fallback) return false;
   for (const double alpha : levels) {
     double t_low = nanx();
     double t_high = nanx();
@@ -405,8 +409,9 @@ void IntMap<T>::map_sequences(std::ostream& sout, const str& rname, ThreadPool& 
     return;
   }
   const size_t min_samples = std::max<size_t>(1, opts.sample_size / 10);
-  if (!level_thresholds(null_v, opts.levels_v, th_v, th_alpha_v, min_samples, &gamma_fit, d_floor)) {
-    warn_pmsg(rname, "skipped: no threshold could be placed from the background");
+  if (!level_thresholds(null_v, opts.levels_v, th_v, th_alpha_v, min_samples, &gamma_fit, d_floor,
+                        opts.empirical_levels)) {
+    warn_pmsg(rname, "skipped: no gamma threshold; use --empirical-levels to allow the empirical fallback");
     return;
   }
   n_active = th_v.size();
@@ -936,6 +941,9 @@ MapSC::MapSC(CLI::App& sc)
   sc.add_option("-b,--bin-shift", params.bin_shift,
                 "Bin width as a power of two (0 = one k-mer per bin)")
     ->check(CLI::Range(0, 16));
+  sc.add_flag("--empirical-levels",
+              params.empirical_levels,
+              "Diagnostic: use empirical quantiles when the gamma threshold fit is rejected [off]");
   sc.add_flag("--independent-levels",
               params.independent_levels,
               "Let every level enumerate its own intervals; off, levels claim in order of extremity and "

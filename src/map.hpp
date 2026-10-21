@@ -44,6 +44,7 @@ struct map_opts
   // claimed in order of extremity and later levels only fill the gaps left by earlier ones.
   // The independent mode lets every level enumerate its own intervals.
   bool independent_levels = false;
+  bool empirical_levels = false; // diagnostic opt-in: empirical fallback when gamma rejects
   uint32_t verbosity = 1;
 };
 
@@ -140,7 +141,8 @@ bool level_thresholds(const vec<double>& sample_v,
                       vec<double>& alpha_v,
                       size_t min_samples,
                       gamma_fit_t* fit_out,
-                      double floor = nanx());
+                      double floor = nanx(),
+                      bool empirical_fallback = false);
 
 // Two-sided thresholds for `levels_v` from the background pool itself: one low and one high
 // threshold per level, sorted ascending. `min_samples` is the smallest pool that may place a
