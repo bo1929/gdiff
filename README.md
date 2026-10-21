@@ -100,8 +100,11 @@ Use `--output-samples` to write one row per sampled window instead of the per-pa
 | `-l` | `333` | Sampled window length in k-mers; **`0` stores buckets only** |
 | `--sample-size` | `1000` | Windows sampled across each genome; capped by the eligible starts |
 | `--keep-seq` | off | Store sampled windows as 2-bit packed bases instead of pre-resolved keys |
+| `--ignore-spurious` | off | Do not store the bucket-local spurious-hit histogram (w > k) |
 
 `-l 0` produces a buckets-only sketch. `map` and `roll` work with it (they only need the reference index); `dist` needs sampled windows. By default sketches carry windows.
+
+For `w > k`, `sketch` also stores a per-genome histogram of the nearest non-self reference k-mer within each LSH bucket (Hamming 0–7). `map` and `roll` use it as the spurious-hit component of the likelihood; zero falls back to the old likelihood when the field is absent. It is not computed for `w = k`, where all k-mers are retained and `rho = 1`.
 
 A window of `-l L` spans `L + k - 1` bases, so a sequence shorter than that contributes no windows and `--sample-size` is an upper bound rather than a promise: the draw cannot exceed the eligible starts across the input. `gdiff sketch` warns when it stores fewer than requested and `gdiff info -i <container>` reports the number actually stored (`Windows:`), which is also the number of rows `dist --output-samples` emits per direction.
 
