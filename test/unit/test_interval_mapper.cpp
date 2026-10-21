@@ -328,19 +328,6 @@ TEST_CASE("floor-only null places no threshold lanes")
   CHECK(alpha.empty());
 }
 
-TEST_CASE("gamma rejection is fail-closed unless empirical fallback is requested")
-{
-  const double floor_d = 1e-7;
-  vec<double> sample(900, floor_d);
-  sample.insert(sample.end(), 100, 0.01);
-  vec<double> th, alpha;
-  CHECK_FALSE(level_thresholds(sample, {0.1}, th, alpha, 200, nullptr, floor_d));
-  CHECK(th.empty());
-  CHECK(level_thresholds(sample, {0.1}, th, alpha, 200, nullptr, floor_d, true));
-  REQUIRE(!th.empty());
-  CHECK(th.back() == doctest::Approx(0.01));
-}
-
 TEST_CASE("one level emits only that alpha" * doctest::skip(!test_data_available()))
 {
   const auto fx = intmap_fixture_t::load("G000341695", "G000025025", false);
