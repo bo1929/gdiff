@@ -436,7 +436,7 @@ TEST_CASE("the fit carries the floor spike separately and keeps the gamma on the
   gamma_fit_t fit;
   REQUIRE(fit_background_gamma(pool, fit, min_null_samples));
   CHECK(fit.p0 == doctest::Approx(0.2).epsilon(0.02));
-  CHECK(fit.d_lo == doctest::Approx(floor_d));
+  CHECK(fit.d_min == doctest::Approx(floor_d));
   CHECK(fit.shape == doctest::Approx(shape).epsilon(0.05));
   CHECK(fit.via_ml);
 
@@ -454,6 +454,24 @@ TEST_CASE("the fit carries the floor spike separately and keeps the gamma on the
   apply_gamma_significance(r, fit);
   CHECK(r.pvalue == doctest::Approx(2.0 * fit.p0).epsilon(0.02));
   CHECK(std::isfinite(r.fold));
+}
+
+TEST_CASE("the hurdle anchors at the physical floor when the sample minimum is above it")
+{
+  const double floor_d = 1e-9;
+  vec<double> sample;
+  for (int i = 0; i < 500; ++i)
+    sample.push_back(floor_d + 0.001 + 0.0001 * static_cast<double>(i));
+  gamma_fit_t fit;
+  REQUIRE(fit_background_gamma(sample, fit, 10, floor_d));
+  CHECK(fit.d_min == doctest::Approx(floor_d));
+  CHECK(fit.p0 == doctest::Approx(0.0));
+  CHECK(fit.shape > 0.0);
+
+  vec<double> th, alpha;
+  REQUIRE(level_thresholds(sample, {0.1}, th, alpha, 10, nullptr, floor_d));
+  REQUIRE(!th.empty());
+  CHECK(th.front() > floor_d);
 }
 
 TEST_CASE("the gamma path fits the same pool the empirical path quantiles") {

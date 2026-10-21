@@ -57,9 +57,10 @@ struct record_t
   // Likelihood-ratio statistics.
   double lr_ub; // this interval vs the max estimable distance (extreme match counts)
   double lr_lb; // this interval vs perfect identity (all k-mers matching)
-  double lr_bg = nanx();       // this interval vs the sampled background median
-  double p_interval = nanx();  // chi-square p-value of lr_bg
+  double lr_null = nanx();     // this interval vs the sampled null center
+  double p_interval = nanx();  // chi-square p-value of lr_null
   double q_interval = nanx();  // BH-adjusted p_interval, per strand
+  double p_gamma = nanx();     // two-sided p-value from the fitted hurdle gamma
 
   record_t(uint64_t bix,
            uint64_t L,

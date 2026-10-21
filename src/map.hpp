@@ -35,15 +35,15 @@ struct map_opts
   uint64_t tau = 1;
   uint64_t bin_shift = 0;
   double chisq = 33.00051;
-  uint64_t sample_size = 500;
+  uint64_t sample_size = 1000;
   vec<double> levels_v; // one to three two-sided tail probabilities (two thresholds each)
   // Deprecated compatibility fields for direct IntMap callers; the CLI no longer sets them.
   vec<double> thresholds_v;
   bool iterative_removal = false;
-  // By default levels are claimed in order of extremity and later levels only fill the gaps left
-  // by earlier ones. `--independent-levels` lets every level enumerate its own intervals.
+  // Low and high thresholds are always independent. By default, levels of the same side are
+  // claimed in order of extremity and later levels only fill the gaps left by earlier ones.
+  // The independent mode lets every level enumerate its own intervals.
   bool independent_levels = false;
-  double fdr = 0.05;
   uint32_t verbosity = 1;
 };
 
@@ -51,6 +51,7 @@ struct map_opts
 // either 0 (skip the test) or at least this large, and a record is tested against at least a tenth
 // of the requested pool.
 inline constexpr uint64_t min_sample_size = 100;
+inline constexpr uint64_t sample_size_reqf = 10; // denominator for the positive-tail fit minimum
 
 // `--levels` budgets the lanes: two thresholds per level, so at most rwidth / 2 levels fit the
 // register; the CLI caps the list at max_levels.
@@ -108,15 +109,15 @@ struct bp_t
   size_t ix = 0;
 };
 
-// The background's distance distribution: a hurdle of a point mass `p0` at the estimable floor
-// `d_lo` (windows with the same histogram get the same MLE, so that spike is exact) plus a gamma
+// The background distance distribution: a hurdle of a point mass p0 at the observed
+// minimum d_min (windows with the same histogram get the same MLE, so that spike is exact)
 // above it. `via_ml` says whether the gamma came from the likelihood or the moment fallback.
 struct gamma_fit_t
 {
   double shape = nanx();
   double scale = nanx();
   double p0 = 0.0;
-  double d_lo = nanx();
+  double d_min = nanx();
   bool via_ml = false;
 };
 
@@ -124,10 +125,21 @@ struct gamma_fit_t
 // (zero variance). It is the start and the fallback of `fit_background_gamma`.
 bool fit_gamma_mom(const vec<double>& sample_v, gamma_fit_t& fit, size_t min_samples);
 
-// Fit the background pool as a hurdle: the spike at its floor plus a gamma on the windows above it,
+// plus a gamma above it.
 // by ML from the moment start. False when fewer than `min_samples` windows sit above the spike or
 // the continuous part is degenerate.
-bool fit_background_gamma(const vec<double>& sample_v, gamma_fit_t& fit, size_t min_samples);
+bool fit_background_gamma(const vec<double>& sample_v, gamma_fit_t& fit, size_t min_samples,
+                          double floor = nanx());
+
+// The --levels threshold set from a sorted null sample, including the alpha that placed each
+// distinct threshold. Thresholds at the estimable floor are skipped on either side.
+bool level_thresholds(const vec<double>& sample_v,
+                      const vec<double>& levels_v,
+                      vec<double>& th_v,
+                      vec<double>& alpha_v,
+                      size_t min_samples,
+                      gamma_fit_t* fit_out,
+                      double floor = nanx());
 
 // Two-sided thresholds for `levels_v` from the background pool itself: one low and one high
 // threshold per level, sorted ascending. `min_samples` is the smallest pool that may place a
@@ -159,7 +171,8 @@ bool thresholds_from_levels(const vec<double>& sample_v,
                             const vec<double>& levels_v,
                             vec<double>& out_v,
                             size_t min_samples,
-                            gamma_fit_t* fit_out = nullptr);
+                            gamma_fit_t* fit_out = nullptr,
+                            double floor = nanx());
 
 // Per-reference detection pass: null, thresholds, scan, intervals, significance.
 template<typename T>
@@ -176,7 +189,7 @@ private:
   void build_null(ThreadPool& pool);
   void scan_sequence(const map_params<T>& params, const LLH<T>& llhf, size_t bix);
   void extract_lane_intervals(IntExt<T>& ext, const LLH<T>& llhf, bool is_rc, uint64_t tau_eff, size_t bix);
-  void extract_iterative_intervals(IntExt<T>& ext, const LLH<T>& llhf, bool is_rc, uint64_t tau_eff, size_t bix);
+  void extract_iterative_intervals(IntExt<T>& ext, const LLH<T>& llhf, bool is_rc, uint64_t tau_eff, size_t bix, bool low_side);
   // `a_bin`/`b_bin` are the half-open 0-based bin range the extractor scored: bins [a_bin, b_bin).
   void emit_record(IntExt<T>& ext, const LLH<T>& llhf, size_t bix, uint64_t a_bin, uint64_t b_bin, size_t th_ix, bool is_rc);
   void report_null(const str& rname) const;
@@ -193,9 +206,11 @@ private:
   size_t n_active = 0;       // lanes carrying a threshold
   vec<double> null_v;        // sampled background distances, sorted
   gamma_fit_t gamma_fit;     // hurdle fit behind th_v (NaN on the empirical fallback)
-  double null_median = nanx();
-  double d_low = nanx();     // lower estimable distance (null floor)
-  double d_high = nanx();    // upper estimable distance
+  double d_null = nanx();   // median of the sampled null
+  double d_min = nanx();    // minimum sampled null distance
+  double d_max = nanx();    // maximum sampled null distance
+  double d_floor = nanx();  // minimum estimable distance
+  double d_ceiling = nanx();// maximum estimable distance
   uint64_t null_floored = 0; // background samples below d_eps
   vec<uint64_t> scratch_v;
   vec<uint64_t> acc_v;

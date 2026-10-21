@@ -1,4 +1,4 @@
-// Integration tests for the simple-map IntMap: sampled hurdle thresholds, interval FDR,
+// Integration tests for the simple-map IntMap: sampled hurdle thresholds, q-values,
 // gap-claiming vs independent levels, and the new CLI.
 
 #include "doctest/doctest.h"
@@ -45,37 +45,38 @@ static const std::string GENOMES_DIR = TEST_DIR + "genomes/";
 static const std::string SKETCHES_DIR_A = test_util::path("sketches-saware").string() + "/";
 static const std::string SKETCHES_DIR_B = test_util::path("sketches-sagnostic").string() + "/";
 
-// Canonical output: seq seq_len start end reference side alpha threshold
-// interval_len n_kmers d d_null_median delta n_at_bound p_interval q_interval
-static constexpr int k_ag_cols = 16;
-static constexpr int k_ag_tabs = 15;
+// Canonical output: seq seq_len start end reference alpha threshold
+// interval_len n_kmers d d_seq d_null delta d_min d_max d_floor d_ceiling
+// n_at_floor n_at_ceiling p_interval q_interval p_gamma
+static constexpr int k_ag_cols = 22;
+static constexpr int k_ag_tabs = 21;
 static constexpr int k_ag_len = 1;
 static constexpr int k_ag_start = 2;
 static constexpr int k_ag_end = 3;
 static constexpr int k_ag_ref = 4;
-static constexpr int k_ag_side = 5;
-static constexpr int k_ag_alpha = 6;
-static constexpr int k_ag_threshold = 7;
-static constexpr int k_ag_dist = 10;
+static constexpr int k_ag_alpha = 5;
+static constexpr int k_ag_threshold = 6;
+static constexpr int k_ag_dist = 9;
+static constexpr int k_ag_dseq = 10;
 static constexpr int k_ag_null = 11;
 static constexpr int k_ag_delta = 12;
-static constexpr int k_ag_pvalue = 14;
-static constexpr int k_ag_qvalue = 15;
-
+static constexpr int k_ag_pvalue = 19;
+static constexpr int k_ag_qvalue = 20;
+static constexpr int k_ag_pgamma = 21;
 // Strand-aware output inserts strand and is_rc after end.
-static constexpr int k_sa_cols = 18;
-static constexpr int k_sa_tabs = 17;
+static constexpr int k_sa_cols = 24;
+static constexpr int k_sa_tabs = 23;
 static constexpr int k_sa_len = 1;
 static constexpr int k_sa_start = 2;
 static constexpr int k_sa_end = 3;
 static constexpr int k_sa_strand = 4;
 static constexpr int k_sa_rc = 5;
 static constexpr int k_sa_ref = 6;
-static constexpr int k_sa_side = 7;
-static constexpr int k_sa_alpha = 8;
-static constexpr int k_sa_dist = 12;
-static constexpr int k_sa_pvalue = 16;
-static constexpr int k_sa_qvalue = 17;
+static constexpr int k_sa_alpha = 7;
+static constexpr int k_sa_dist = 11;
+static constexpr int k_sa_pvalue = 21;
+static constexpr int k_sa_qvalue = 22;
+static constexpr int k_sa_pgamma = 23;
 
 static bool test_data_available()
 {
@@ -147,8 +148,7 @@ struct intmap_fixture_t
 static map_opts make_opts(uint64_t sample_size = 500,
                           bool independent_levels = false,
                           double chisq = 33.0,
-                          vec<double> levels = {0.05, 0.01, 0.005},
-                          double fdr = 0.05)
+                          vec<double> levels = {0.05, 0.01, 0.005})
 {
   map_opts opts;
   opts.hdist_th = 4;
@@ -158,7 +158,6 @@ static map_opts make_opts(uint64_t sample_size = 500,
   opts.sample_size = sample_size;
   opts.levels_v = std::move(levels);
   opts.independent_levels = independent_levels;
-  opts.fdr = fdr;
   return opts;
 }
 
@@ -166,6 +165,7 @@ static std::string run_intmap(const intmap_fixture_t& fx, const map_opts& opts)
 {
   std::ostringstream sout;
   ThreadPool pool(1);
+  init_thread_rng(1);
   IntMap<cmlane_t> intmap(opts, fx.sketch, fx.qs->get_batch_v());
   intmap.map_sequences(sout, fx.sketch.get_rname(), pool);
   return sout.str();
@@ -194,19 +194,16 @@ static bool any_finite_col(const std::string& s, int col, int cols)
   return false;
 }
 
-static bool all_rows_finite(const std::string& s, int col, int cols)
+static std::vector<std::string> sorted_lines(const std::string& s)
 {
-  bool any = false;
+  std::vector<std::string> v;
   std::istringstream iss(s);
   std::string line;
   while (std::getline(iss, line)) {
-    if (line.empty()) continue;
-    const auto fields = split_tsv(line);
-    if (static_cast<int>(fields.size()) != cols) continue;
-    any = true;
-    if (!token_is_finite(fields[col])) return false;
+    if (!line.empty()) v.push_back(line);
   }
-  return any;
+  std::sort(v.begin(), v.end());
+  return v;
 }
 
 static void check_output_shape(const std::string& output, bool strand_aware)
@@ -284,7 +281,7 @@ TEST_CASE("end-to-end with real sketch and query" * doctest::skip(!test_data_ava
   }
 }
 
-TEST_CASE("default output is thresholded intervals with interval FDR" * doctest::skip(!test_data_available()))
+TEST_CASE("default output reports all threshold intervals with q-values" * doctest::skip(!test_data_available()))
 {
   const auto fx = intmap_fixture_t::load("G000341695", "G000025025", false);
   REQUIRE(!fx.qs->is_empty());
@@ -298,15 +295,14 @@ TEST_CASE("default output is thresholded intervals with interval FDR" * doctest:
     if (line.empty()) continue;
     const auto f = split_tsv(line);
     CHECK(f[k_ag_ref].find("G000341695") != std::string::npos);
-    CHECK((f[k_ag_side] == "low" || f[k_ag_side] == "high"));
     CHECK(std::isfinite(std::stod(f[k_ag_alpha])));
     CHECK(std::isfinite(std::stod(f[k_ag_threshold])));
     CHECK(std::isfinite(std::stod(f[k_ag_dist])));
-    CHECK(std::isfinite(std::stod(f[k_ag_qvalue])));
-    CHECK(std::stod(f[k_ag_qvalue]) <= 0.05);
+    CHECK(f.size() == k_ag_cols);
   }
   CHECK(any_finite_col(out, k_ag_dist, k_ag_cols));
-  CHECK(all_rows_finite(out, k_ag_pvalue, k_ag_cols));
+  CHECK(any_finite_col(out, k_ag_qvalue, k_ag_cols));
+  CHECK(any_finite_col(out, k_ag_pgamma, k_ag_cols));
 }
 
 TEST_CASE("independent levels claim more than gap-claiming" * doctest::skip(!test_data_available()))
@@ -319,6 +315,15 @@ TEST_CASE("independent levels claim more than gap-claiming" * doctest::skip(!tes
   REQUIRE(!ind.empty());
   CHECK(count_lines(ind) >= count_lines(def));
   CHECK(redundancy(ind) >= redundancy(def));
+}
+
+TEST_CASE("floor-only null places no threshold lanes")
+{
+  vec<double> sample(1000, 1e-7);
+  vec<double> th, alpha;
+  CHECK_FALSE(level_thresholds(sample, {0.1}, th, alpha, 10, nullptr));
+  CHECK(th.empty());
+  CHECK(alpha.empty());
 }
 
 TEST_CASE("one level emits only that alpha" * doctest::skip(!test_data_available()))
@@ -335,6 +340,17 @@ TEST_CASE("one level emits only that alpha" * doctest::skip(!test_data_available
     const auto f = split_tsv(line);
     CHECK(std::stod(f[k_ag_alpha]) == doctest::Approx(0.01));
   }
+}
+
+TEST_CASE("single level: low/high are independent in both modes" * doctest::skip(!test_data_available()))
+{
+  const auto fx = intmap_fixture_t::load("G000341695", "G000025025", false);
+  REQUIRE(!fx.qs->is_empty());
+  const std::string def = run_intmap(fx, make_opts(500, false, 33.0, {0.05}));
+  const std::string ind = run_intmap(fx, make_opts(500, true, 33.0, {0.05}));
+  REQUIRE_FALSE(def.empty());
+  REQUIRE_FALSE(ind.empty());
+  CHECK(sorted_lines(def) == sorted_lines(ind));
 }
 
 TEST_CASE("higher chisq merges at least as much" * doctest::skip(!test_data_available()))
@@ -469,14 +485,14 @@ TEST_CASE("map --levels before the positionals does not swallow them" * doctest:
   CHECK(test_util::strip_comments(test_util::read_file(out)) == via_stdout);
 }
 
-TEST_CASE("removed -d and -b are rejected" * doctest::skip(!gdiff_cli_available()))
+TEST_CASE("-d is rejected and -b is accepted" * doctest::skip(!gdiff_cli_available()))
 {
   const cli_fixture_t fx = make_cli_fixture();
   REQUIRE_FALSE(fx.ref.empty());
   const auto sink = test_util::path("cli_map_sink.tsv");
   const std::string tail = "-l 9900 --sample-size 200 " + fx.query.string() + " " + fx.ref.string();
   CHECK_FALSE(run_cli("map -d 0.1 " + tail, sink));
-  CHECK_FALSE(run_cli("map -b 2 " + tail, sink));
+  CHECK(run_cli("map -b 2 " + tail, sink));
 }
 
 TEST_CASE("--independent-levels is accepted and does not reduce the report" * doctest::skip(!gdiff_cli_available()))

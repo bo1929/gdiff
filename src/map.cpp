@@ -53,102 +53,18 @@ namespace {
   {
     if (canonical) {
       write_tsv(sout,
-                "seq",
-                "seq_len",
-                "start",
-                "end",
-                "reference",
-                "side",
-                "alpha",
-                "threshold",
-                "interval_len",
-                "n_kmers",
-                "d",
-                "d_null_median",
-                "delta",
-                "n_at_bound",
-                "p_interval",
-                "q_interval")
-        << '\n';
+                "seq", "seq_len", "start", "end", "reference", "alpha", "threshold",
+                "interval_len", "n_kmers", "d", "d_seq", "d_null", "delta",
+                "d_min", "d_max", "d_floor", "d_ceiling",
+                "n_at_floor", "n_at_ceiling", "p_interval", "q_interval", "p_gamma")
+        << std::endl;
     } else {
       write_tsv(sout,
-                "seq",
-                "seq_len",
-                "start",
-                "end",
-                "strand",
-                "is_rc",
-                "reference",
-                "side",
-                "alpha",
-                "threshold",
-                "interval_len",
-                "n_kmers",
-                "d",
-                "d_null_median",
-                "delta",
-                "n_at_bound",
-                "p_interval",
-                "q_interval")
-        << '\n';
-    }
-  }
-
-  // One output line; canonical mode drops the strand columns. Keep the two branches in step.
-  inline void write_map_line(std::ostream& sout,
-                             const str& qid,
-                             bool canonical,
-                             const str& rname,
-                             const record_t& r,
-                             const char* side,
-                             double alpha,
-                             double threshold,
-                             uint64_t interval_len,
-                             uint64_t n_kmers,
-                             int n_at_bound,
-                             double d_null_median)
-  {
-    const double delta = r.d - d_null_median;
-    if (canonical) {
-      write_tsv(sout,
-                qid,
-                r.L,
-                r.seq_iv.a,
-                r.seq_iv.b,
-                rname,
-                side,
-                alpha,
-                threshold,
-                interval_len,
-                n_kmers,
-                r.d,
-                d_null_median,
-                delta,
-                n_at_bound,
-                r.p_interval,
-                r.q_interval)
-        << '\n';
-    } else {
-      write_tsv(sout,
-                qid,
-                r.L,
-                r.seq_iv.a,
-                r.seq_iv.b,
-                report_strand(r.is_rc, r.d_diff),
-                static_cast<uint32_t>(r.is_rc),
-                rname,
-                side,
-                alpha,
-                threshold,
-                interval_len,
-                n_kmers,
-                r.d,
-                d_null_median,
-                delta,
-                n_at_bound,
-                r.p_interval,
-                r.q_interval)
-        << '\n';
+                "seq", "seq_len", "start", "end", "strand", "is_rc", "reference", "alpha", "threshold",
+                "interval_len", "n_kmers", "d", "d_seq", "d_null", "delta",
+                "d_min", "d_max", "d_floor", "d_ceiling",
+                "n_at_floor", "n_at_ceiling", "p_interval", "q_interval", "p_gamma")
+        << std::endl;
     }
   }
 } // namespace
@@ -226,7 +142,7 @@ namespace {
   // hand-built or degenerate case - is the plain gamma.
   double hurdle_quantile(const gamma_fit_t& fit, double p)
   {
-    if (fit.p0 > 0.0 && !(p > fit.p0)) return fit.d_lo;
+    if (fit.p0 > 0.0 && !(p > fit.p0)) return fit.d_min;
     const boost::math::gamma_distribution<double> gamma(fit.shape, fit.scale);
     return boost::math::quantile(gamma, (p - fit.p0) / (1.0 - fit.p0));
   }
@@ -235,7 +151,7 @@ namespace {
   // distance domain, so it is the p-value scale as well as the threshold scale.
   double hurdle_cdf(const gamma_fit_t& fit, double d)
   {
-    if (fit.p0 > 0.0 && !(d > fit.d_lo)) return fit.p0;
+    if (fit.p0 > 0.0 && !(d > fit.d_min)) return fit.p0;
     const boost::math::gamma_distribution<double> gamma(fit.shape, fit.scale);
     return fit.p0 + ((1.0 - fit.p0) * boost::math::cdf(gamma, d));
   }
@@ -294,7 +210,8 @@ bool level_thresholds(const vec<double>& sample_v,
                       vec<double>& th_v,
                       vec<double>& alpha_v,
                       size_t min_samples,
-                      gamma_fit_t* fit_out)
+                      gamma_fit_t* fit_out,
+                      double floor)
 {
   th_v.clear();
   alpha_v.clear();
@@ -310,7 +227,7 @@ bool level_thresholds(const vec<double>& sample_v,
   vec<point_t> points_v;
 
   gamma_fit_t fit;
-  const bool gamma_ok = fit_background_gamma(sample_v, fit, min_samples);
+  const bool gamma_ok = fit_background_gamma(sample_v, fit, min_samples, floor);
   for (const double alpha : levels) {
     double t_low = nanx();
     double t_high = nanx();
@@ -326,10 +243,9 @@ bool level_thresholds(const vec<double>& sample_v,
       t_high = linear_quantile(sample_v, 1.0 - (alpha / 2.0));
     }
     if (!std::isfinite(t_low) || !std::isfinite(t_high)) return false;
-    // A low threshold at the estimable floor has no lower tail: the floor is the bulk, not an
-    // outlier. Skip that lane instead of extracting the whole near-identical part of the genome.
-    if (t_low > sample_v.front() * (1.0 + 1e-12)) points_v.push_back({t_low, alpha});
-    points_v.push_back({t_high, alpha});
+    const double floor_d = std::isfinite(floor) ? floor : sample_v.front();
+    if (t_low > floor_d * (1.0 + 1e-12)) points_v.push_back({t_low, alpha});
+    if (t_high > floor_d * (1.0 + 1e-12)) points_v.push_back({t_high, alpha});
   }
 
   std::sort(points_v.begin(), points_v.end(), [](const point_t& a, const point_t& b) { return a.t < b.t; });
@@ -371,10 +287,12 @@ void apply_gamma_significance(record_t& r, const gamma_fit_t& fit)
   if (!std::isfinite(cdf)) return;
 
   r.pvalue = std::clamp(2.0 * std::min(cdf, 1.0 - cdf), 0.0, 1.0);
+  r.p_gamma = r.pvalue;
   if (std::isfinite(median) && median > eps) r.fold = r.d / median;
 }
 
-bool fit_background_gamma(const vec<double>& sample_v, gamma_fit_t& fit, size_t min_samples)
+bool fit_background_gamma(const vec<double>& sample_v, gamma_fit_t& fit, size_t min_samples,
+                          double floor)
 {
   fit = {};
   if (sample_v.empty()) return false;
@@ -383,8 +301,10 @@ bool fit_background_gamma(const vec<double>& sample_v, gamma_fit_t& fit, size_t 
   // an exact point mass and `p0` counts it rather than modelling it with a continuous density - the
   // reason a bare gamma fit degenerates on a floored pool. Only the windows above the spike carry
   // the gamma, so `min_samples` counts those.
-  fit.d_lo = sample_v.front();
-  const size_t n_at = static_cast<size_t>(std::upper_bound(sample_v.begin(), sample_v.end(), fit.d_lo) - sample_v.begin());
+  fit.d_min = std::isfinite(floor) ? floor : sample_v.front();
+  const double floor_tol = 1e-12 * std::max(1.0, std::abs(fit.d_min));
+  const size_t n_at = static_cast<size_t>(
+      std::upper_bound(sample_v.begin(), sample_v.end(), fit.d_min + floor_tol) - sample_v.begin());
   fit.p0 = static_cast<double>(n_at) / static_cast<double>(sample_v.size());
   const size_t n_above = sample_v.size() - n_at;
   if (n_above < min_samples) return false;
@@ -413,7 +333,8 @@ bool thresholds_from_levels(const vec<double>& sample_v,
                             const vec<double>& levels_v,
                             vec<double>& out_v,
                             size_t min_samples,
-                            gamma_fit_t* fit_out)
+                            gamma_fit_t* fit_out,
+                            double floor)
 {
   out_v.clear();
   if (levels_v.empty()) return false;
@@ -422,7 +343,7 @@ bool thresholds_from_levels(const vec<double>& sample_v,
   // fallback, and the floor spike carried separately. Thresholds the fit places stay lanes of their
   // own; `compose_lanes` neither clamps them nor invents a replacement.
   gamma_fit_t fit;
-  if (fit_background_gamma(sample_v, fit, min_samples) && gamma_thresholds(fit, levels_v, out_v)) {
+  if (fit_background_gamma(sample_v, fit, min_samples, floor) && gamma_thresholds(fit, levels_v, out_v)) {
     if (fit_out != nullptr) *fit_out = fit;
     return true;
   }
@@ -465,10 +386,13 @@ void IntMap<T>::build_null(ThreadPool& pool)
   }
   std::sort(null_v.begin(), null_v.end());
   if (null_v.empty()) return;
-  null_median = linear_quantile(null_v, 0.5);
-  d_low = null_v.front();
+  d_null = linear_quantile(null_v, 0.5);
+  d_min = null_v.front();
+  d_max = null_v.back();
   const LLH<double> probe = make_llhf(sketch, opts.hdist_th);
-  d_high = max_estimable_distance(probe, get_nwinmers(opts.tau, opts.bin_shift));
+  const uint64_t n_winmers = get_nwinmers(opts.tau, opts.bin_shift);
+  d_floor = min_estimable_distance(probe, n_winmers);
+  d_ceiling = max_estimable_distance(probe, n_winmers);
 }
 
 template<typename T>
@@ -480,7 +404,7 @@ void IntMap<T>::map_sequences(std::ostream& sout, const str& rname, ThreadPool& 
     return;
   }
   const size_t min_samples = std::max<size_t>(1, opts.sample_size / 10);
-  if (!level_thresholds(null_v, opts.levels_v, th_v, th_alpha_v, min_samples, &gamma_fit)) {
+  if (!level_thresholds(null_v, opts.levels_v, th_v, th_alpha_v, min_samples, &gamma_fit, d_floor)) {
     warn_pmsg(rname, "skipped: no threshold could be placed from the background");
     return;
   }
@@ -544,10 +468,12 @@ void IntMap<T>::scan_sequence(const map_params<T>& params, const LLH<T>& llhf, s
     ext.set_seq_distance(d_seq);
     ext.extrema_scan();
 
-    if (!opts.independent_levels)
-      extract_iterative_intervals(ext, llhf, false, tau_eff, bix);
-    else
+    if (!opts.independent_levels) {
+      extract_iterative_intervals(ext, llhf, false, tau_eff, bix, true);
+      extract_iterative_intervals(ext, llhf, false, tau_eff, bix, false);
+    } else {
       extract_lane_intervals(ext, llhf, false, tau_eff, bix);
+    }
 
     for (size_t ri = srprev; ri < records_v.size(); ++ri) {
       records_v[ri].d_seq = d_seq;
@@ -579,8 +505,10 @@ void IntMap<T>::scan_sequence(const map_params<T>& params, const LLH<T>& llhf, s
     ext->extrema_scan();
 
   if (!opts.independent_levels) {
-    extract_iterative_intervals(ext_fw, llhf, false, tau_eff, bix);
-    extract_iterative_intervals(ext_rc, llhf, true, tau_eff, bix);
+    extract_iterative_intervals(ext_fw, llhf, false, tau_eff, bix, true);
+    extract_iterative_intervals(ext_fw, llhf, false, tau_eff, bix, false);
+    extract_iterative_intervals(ext_rc, llhf, true, tau_eff, bix, true);
+    extract_iterative_intervals(ext_rc, llhf, true, tau_eff, bix, false);
   } else {
     extract_lane_intervals(ext_fw, llhf, false, tau_eff, bix);
     extract_lane_intervals(ext_rc, llhf, true, tau_eff, bix);
@@ -618,7 +546,7 @@ void IntMap<T>::extract_lane_intervals(IntExt<T>& ext, const LLH<T>& llhf, bool 
 // --iterative-removal: lanes are walked from the most extreme threshold inward, and each lane
 // extracts only in the gaps the earlier lanes left, so records do not repeat across thresholds.
 template<typename T>
-void IntMap<T>::extract_iterative_intervals(IntExt<T>& ext, const LLH<T>& llhf, bool is_rc, uint64_t tau_eff, size_t bix)
+void IntMap<T>::extract_iterative_intervals(IntExt<T>& ext, const LLH<T>& llhf, bool is_rc, uint64_t tau_eff, size_t bix, bool low_side)
 {
   const uint64_t nbins = ext.get_nbins();
   bp_v.clear();
@@ -638,6 +566,8 @@ void IntMap<T>::extract_iterative_intervals(IntExt<T>& ext, const LLH<T>& llhf, 
   };
 
   for (size_t ix : thrank) {
+    const bool is_low = th_v[ix] <= d_null;
+    if (is_low != low_side) continue;
     merge_from(sbprev);
 
     // `bp_v` holds half-open 0-based bin ranges [a, b), the same range a record covers. Each gap
@@ -689,18 +619,18 @@ void IntMap<T>::emit_record(IntExt<T>& ext,
   double fisher_info = nanx();
   double lr_ub = nanx();
   double lr_lb = nanx();
-  double lr_bg = nanx();
+  double lr_null = nanx();
   double p_interval = nanx();
   if (is_valid_distance(d)) {
     const double raw_info = llhf.compute_fisher_info(scratch_v.data(), u, d);
     fisher_info = (std::isfinite(raw_info) && raw_info > 0.0) ? raw_info : nanx();
     lr_lb = compute_lr_lb(llhf, d, t + u);
     lr_ub = compute_lr_ub(llhf, d, t + u);
-    if (is_valid_distance(null_median)) {
-      const double nll_bg = llhf.nll(null_median, scratch_v.data(), u);
+    if (is_valid_distance(d_null)) {
+      const double nll_bg = llhf.nll(d_null, scratch_v.data(), u);
       const double nll_mle = llhf.nll(d, scratch_v.data(), u);
-      lr_bg = likelihood_ratio_statistic(nll_bg, nll_mle);
-      p_interval = lr_pvalue(lr_bg);
+      lr_null = likelihood_ratio_statistic(nll_bg, nll_mle);
+      p_interval = lr_pvalue(lr_null);
     }
   }
 
@@ -709,50 +639,28 @@ void IntMap<T>::emit_record(IntExt<T>& ext,
   const interval_t seq_iv = get_coordinates(bin_iv, opts.bin_shift, enmers, k);
   records_v.emplace_back(bix, L, seq_iv, is_rc, d, fisher_info, th_ix, lr_ub, lr_lb);
   record_t& r = records_v.back();
-  r.lr_bg = lr_bg;
+  r.lr_null = lr_null;
   r.p_interval = p_interval;
+  if (std::isfinite(gamma_fit.shape)) apply_gamma_significance(r, gamma_fit);
 }
 
 template<typename T>
 void IntMap<T>::report_null(const str& rname) const
 {
-  cerr_msg("[",
-           rname,
-           "] null: n=",
-           null_v.size(),
-           " median=",
-           null_median,
-           " d_low=",
-           d_low,
-           " d_high=",
-           d_high);
+  cerr_msg("[", rname, "] null: n=", null_v.size(),
+           " d_null=", d_null, " d_min=", d_min, " d_max=", d_max,
+           " d_floor=", d_floor, " d_ceiling=", d_ceiling);
   if (std::isfinite(gamma_fit.shape)) {
-    cerr_msg("[",
-             rname,
-             "] hurdle gamma: shape=",
-             gamma_fit.shape,
-             " scale=",
-             gamma_fit.scale,
-             " p0=",
-             gamma_fit.p0,
-             " (",
-             gamma_fit.via_ml ? "ml" : "mom",
-             ")");
+    cerr_msg("[", rname, "] hurdle gamma: shape=", gamma_fit.shape,
+             " scale=", gamma_fit.scale, " p0=", gamma_fit.p0,
+             " (", gamma_fit.via_ml ? "ml" : "mom", ")");
   } else {
     cerr_msg("[", rname, "] empirical quantiles (gamma fit rejected)");
   }
   for (size_t i = 0; i < n_active; ++i) {
-    const char* side = (th_v[i] <= null_median) ? "low" : "high";
-    cerr_msg("[",
-             rname,
-             "] level=",
-             th_alpha_v[i],
-             " threshold=",
-             th_v[i],
-             " side=",
-             side,
-             " min_delta=",
-             std::fabs(th_v[i] - null_median));
+    const char* side = (th_v[i] <= d_null) ? "low" : "high";
+    cerr_msg("[", rname, "] level=", th_alpha_v[i], " threshold=", th_v[i],
+             " side=", side, " min_delta=", std::fabs(th_v[i] - d_null));
   }
   if (!opts.independent_levels)
     cerr_msg("[", rname, "] levels claim in order of extremity; later levels fill gaps");
@@ -763,33 +671,33 @@ void IntMap<T>::report_contiguous(std::ostream& sout, const str& rname) const
 {
   size_t n_calls = 0;
   for (const auto& r : records_v) {
-    if (!std::isfinite(r.q_interval) || r.q_interval > opts.fdr) continue;
     if (r.th_ix >= n_active) continue;
     const double threshold = th_v[r.th_ix];
-    const char* side = (std::isnan(r.d_seq) || threshold <= r.d_seq) ? "low" : "high";
     const uint64_t interval_len = r.seq_iv.b - r.seq_iv.a + 1;
     const uint64_t n_kmers = interval_len >= k ? interval_len - k + 1 : 0;
-    int at_bound = 0;
-    if (is_valid_distance(r.d)) {
-      if (std::isfinite(d_low) && r.d <= d_low * (1.0 + 1e-9) + 1e-12) at_bound = 1;
-      if (std::isfinite(d_high) && r.d >= d_high * (1.0 - 1e-9)) at_bound = 1;
+    const double delta = r.d - d_null;
+    const uint32_t at_floor = (is_valid_distance(r.d) && std::isfinite(d_floor) &&
+                               r.d <= d_floor * (1.0 + 1e-9) + 1e-12) ? 1 : 0;
+    const uint32_t at_ceiling = (is_valid_distance(r.d) && std::isfinite(d_ceiling) &&
+                                 r.d >= d_ceiling * (1.0 - 1e-9)) ? 1 : 0;
+    if (sketch_canonical) {
+      write_tsv(sout, batch_v[r.bix].qid, r.L, r.seq_iv.a, r.seq_iv.b, rname,
+                th_alpha_v[r.th_ix], threshold, interval_len, n_kmers,
+                r.d, r.d_seq, d_null, delta, d_min, d_max, d_floor, d_ceiling,
+                at_floor, at_ceiling, r.p_interval, r.q_interval, r.p_gamma)
+        << "\n";
+    } else {
+      write_tsv(sout, batch_v[r.bix].qid, r.L, r.seq_iv.a, r.seq_iv.b,
+                report_strand(r.is_rc, r.d_diff), static_cast<uint32_t>(r.is_rc),
+                rname, th_alpha_v[r.th_ix], threshold, interval_len, n_kmers,
+                r.d, r.d_seq, d_null, delta, d_min, d_max, d_floor, d_ceiling,
+                at_floor, at_ceiling, r.p_interval, r.q_interval, r.p_gamma)
+        << "\n";
     }
-    write_map_line(sout,
-                   batch_v[r.bix].qid,
-                   sketch_canonical,
-                   rname,
-                   r,
-                   side,
-                   th_alpha_v[r.th_ix],
-                   threshold,
-                   interval_len,
-                   n_kmers,
-                   at_bound,
-                   null_median);
     ++n_calls;
   }
   if (opts.verbosity >= 1)
-    cerr_msg("[", rname, "] calls: ", n_calls, " / ", records_v.size(), " candidates at FDR ", opts.fdr);
+    cerr_msg("[", rname, "] calls: ", n_calls, " / ", records_v.size(), " candidates");
 }
 
 template class IntMap<double>;
@@ -942,10 +850,6 @@ bool MapSC::validate_configuration()
     is_invalid = true;
     cerr_msg("--sample-size must be at least ", min_sample_size, "; got ", params.sample_size);
   }
-  if (!std::isfinite(params.fdr) || params.fdr <= 0.0 || params.fdr > 1.0) {
-    is_invalid = true;
-    cerr_msg("--fdr must be in (0, 1]: ", params.fdr);
-  }
   if (params.hdist_th > hdist_bound) {
     is_invalid = true;
     cerr_msg("--hdist-th must be in [0, ", hdist_bound, "] with the current SIMD histogram layout; got ", params.hdist_th);
@@ -1024,9 +928,11 @@ MapSC::MapSC(CLI::App& sc)
     ->check(CLI::Range(1e-8, 0.5));
   sc.add_option("--sample-size",
                 params.sample_size,
-                "Background windows sampled per reference; at least 100 [500]")
+                "Background windows sampled per reference; at least 100 [1000]")
     ->check(CLI::NonNegativeNumber);
-  sc.add_option("--fdr", params.fdr, "Interval-level Benjamini-Hochberg FDR [0.05]")->check(CLI::Range(0.0, 1.0));
+  sc.add_option("-b,--bin-shift", params.bin_shift,
+                "Bin width as a power of two (0 = one k-mer per bin)")
+    ->check(CLI::Range(0, 16));
   sc.add_flag("--independent-levels",
               params.independent_levels,
               "Let every level enumerate its own intervals; off, levels claim in order of extremity and "

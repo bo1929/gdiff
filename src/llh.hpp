@@ -292,6 +292,16 @@ inline double max_estimable_distance(const LLH<T>& llhf, uint64_t n_total, doubl
   return llhf.mle(v.data(), n_total - 1, nll_min);
 }
 
+// All k-mers matching: the smallest estimable distance (the estimator floor).
+template<typename T>
+inline double min_estimable_distance(const LLH<T>& llhf, uint64_t n_total)
+{
+  if (n_total == 0) return nanx();
+  arr<uint64_t, hdist_bound + 1> v{};
+  v[0] = n_total;
+  return llhf.mle(v.data(), 0);
+}
+
 // LR of d vs the sketch's max estimable distance on the ceiling match counts.
 template<typename T>
 inline double compute_lr_ub(const LLH<T>& llhf, double d, uint64_t n_total)

@@ -118,7 +118,7 @@ Positional: `<query.fasta> <reference.skc>`.
 | `--hdist-th` | `3` | Max Hamming distance for a k-mer hit (0–7) |
 | `--chisq` | `33.00051` | Chi-squared threshold for merging overlapping intervals |
 | `-b, --bin-shift` | `0` | Bin size = 2^b; groups consecutive k-mers |
-| `--sample-size` | `500` | Background windows sampled per reference; `0` skips the test, otherwise at least `100` |
+| `--sample-size` | `1000` | Background windows sampled per reference; `0` skips the test, otherwise at least `100` |
 | `--iterative-removal` | off | Let each threshold claim its intervals and search only the remaining gaps, the two bounds first; off, every threshold enumerates its own intervals |
 | `--lr-th` | `6.635` | Where the two `--levels` bounds sit: a `-l` window must clear this likelihood ratio to be resolvable from perfect identity and from the sketch ceiling |
 | `--bg-model` | `empirical` | `--levels` thresholds from `empirical` quantiles of the pool, or from a `gamma` hurdle fitted to that same pool, which then also supplies `PVALUE` and `FOLD` |
