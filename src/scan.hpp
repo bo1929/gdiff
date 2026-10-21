@@ -18,9 +18,9 @@ inline uint32_t bucket_hdist_min(const enc_t* ix1, const enc_t* ix2, const enc_t
 }
 
 // Scalar LLH for one reference/threshold pair; derivatives are not needed.
-inline LLH<double> make_llhf(const Sketch& sketch, uint32_t hdist_th, vec<double> false_hit_v = {})
+inline LLH<double> make_llhf(const Sketch& sketch, uint32_t hdist_th, vec<double> spurious_f_v = {})
 {
-  return {sketch.get_k(), sketch.get_h(), sketch.get_rho(), hdist_th, 0.0, false, std::move(false_hit_v)};
+  return {sketch.get_k(), sketch.get_h(), sketch.get_rho(), hdist_th, 0.0, false, std::move(spurious_f_v)};
 }
 
 struct scan_ctx_t

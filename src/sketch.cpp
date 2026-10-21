@@ -151,18 +151,54 @@ namespace {
     write_array(os, pool.win_ix_v.data(), n);
   }
 
-} // namespace
+  // Bucket-local nearest non-self Hamming distance histogram. The last slot counts entries with
+  // no non-self neighbor within max_hd.
+  vec<uint64_t> compute_spurious_counts(const Buckets& buckets, uint32_t max_hd)
+  {
+    vec<uint64_t> counts(max_hd + 2, 0);
+    for (uint32_t bix = 0; bix < buckets.get_nrows(); ++bix) {
+      const enc_t* beg = nullptr;
+      const enc_t* end = nullptr;
+      if (!buckets.range(bix, beg, end)) continue;
+      const size_t m = static_cast<size_t>(end - beg);
+      for (size_t i = 0; i < m; ++i) {
+        uint32_t best = max_hd + 1;
+        for (size_t j = 0; j < m; ++j) {
+          if (i == j) continue;
+          const uint32_t d = popcount_lr32(beg[i] ^ beg[j]);
+          if (d < best) best = d;
+        }
+        if (best <= max_hd) ++counts[best]; else ++counts[max_hd + 1];
+      }
+    }
+    return counts;
+  }
+}
 
-Sketch::Sketch(const sketch_config_t& cfg, str rname, Buckets&& buckets, double card, double rho)
+Sketch::Sketch(const sketch_config_t& cfg, str rname, Buckets&& buckets, double card, double rho,
+               vec<uint64_t> spurious_v)
   : rname(std::move(rname))
   , rho(rho)
   , nkmers(buckets.get_nkmers())
   , card(card)
+  , spurious_v(std::move(spurious_v))
   , cfg(cfg)
   , lshf(std::make_shared<LSHF>(cfg.ppos_v, cfg.npos_v))
   , buckets(std::move(buckets))
 {
   loaded_buckets = true;
+}
+
+vec<double> Sketch::get_spurious_f(uint32_t hdist_th) const
+{
+  if (spurious_v.empty()) return {};
+  uint64_t total = 0;
+  for (uint64_t c : spurious_v) total += c;
+  if (total == 0) return {};
+  vec<double> out(hdist_th + 1, 0.0);
+  for (uint32_t x = 0; x <= hdist_th && x < spurious_v.size(); ++x)
+    out[x] = static_cast<double>(spurious_v[x]) / static_cast<double>(total);
+  return out;
 }
 
 void Sketch::canonicalize()
@@ -190,6 +226,7 @@ void Sketch::canonicalize()
   rebuilt.build(nrows, std::move(keys_v));
   buckets = std::move(rebuilt);
   nkmers = buckets.get_nkmers();
+  spurious_v = cfg.w > cfg.k ? compute_spurious_counts(buckets, hdist_bound) : vec<uint64_t>{};
   cfg.canonical = true;
 }
 
@@ -217,6 +254,11 @@ Sketch Container::open(uint32_t rec, SketchLoad part) const
   gs.card = static_cast<double>(read_trivial<uint64_t>(p, end, "card"));
   gs.nkmers = read_trivial<uint64_t>(p, end, "nkmers");
   gs.rho = read_trivial<double>(p, end, "rho");
+  if (p < base + static_cast<ptrdiff_t>(e.buckets_offset)) {
+    const uint64_t nsp = read_trivial<uint64_t>(p, end, "spurious count");
+    gs.spurious_v.resize(static_cast<size_t>(nsp));
+    for (uint64_t i = 0; i < nsp; ++i) gs.spurious_v[i] = read_trivial<uint64_t>(p, end, "spurious");
+  }
 
   const bool want_buckets = (static_cast<uint8_t>(part) & static_cast<uint8_t>(SketchLoad::Buckets)) != 0;
   const bool want_windows = (static_cast<uint8_t>(part) & static_cast<uint8_t>(SketchLoad::Windows)) != 0;
@@ -281,7 +323,7 @@ bool compatible_configs(const sketch_config_t& a, const sketch_config_t& b)
   return a.ppos_v == b.ppos_v && a.npos_v == b.npos_v;
 }
 
-Sketch build_sketch(const str& input_path, const sketch_config_t& cfg, str rname)
+Sketch build_sketch(const str& input_path, const sketch_config_t& cfg, str rname, bool compute_spurious)
 {
   const lshf_sptr_t lshf = std::make_shared<LSHF>(cfg.ppos_v, cfg.npos_v);
   RSeq rs(input_path, *lshf, cfg.w, cfg.nrows, cfg.canonical);
@@ -308,7 +350,9 @@ Sketch build_sketch(const str& input_path, const sketch_config_t& cfg, str rname
       "rho > 1 for ", input_path, " (retained ", nkmers, " vs estimated ", card, " distinct k-mers); clamping to 1"));
   }
   const double rho = std::min(1.0, std::max(d_eps, raw));
-  return Sketch(cfg, std::move(rname), std::move(buckets), card, rho);
+  vec<uint64_t> spurious_v;
+  if (compute_spurious && cfg.w > cfg.k) spurious_v = compute_spurious_counts(buckets, hdist_bound);
+  return Sketch(cfg, std::move(rname), std::move(buckets), card, rho, std::move(spurious_v));
 }
 
 void BaseLSH::set_lshf() { lshf = std::make_shared<LSHF>(k, h); }
@@ -585,6 +629,9 @@ scentry SketchSC::write_sketch(str& bytes,
   write_trivial(os, static_cast<uint64_t>(built.get_card() + 0.5));
   write_trivial(os, built.get_nkmers());
   write_trivial(os, built.get_rho());
+  const vec<uint64_t>& sp = built.get_spurious_v();
+  write_trivial(os, static_cast<uint64_t>(sp.size()));
+  for (uint64_t c : sp) write_trivial(os, c);
 
   e.buckets_offset = static_cast<uint64_t>(os.tellp());
   built.get_buckets().save(os);
@@ -650,7 +697,7 @@ void SketchSC::process()
         (i < rnames_v.size() && !rnames_v[i].empty()) ? rnames_v[i] : std::filesystem::path(input_path).filename().string();
       const uint64_t timestamp =
         std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-      Sketch built = build_sketch(input_path, make_config(timestamp), rname);
+      Sketch built = build_sketch(input_path, make_config(timestamp), rname, !params.ignore_spurious);
 
       uint64_t ntotal_bp = 0, nvalid_bp = 0;
       window_sample_t sample = sample_windows(input_path, ntotal_bp, nvalid_bp);
@@ -707,6 +754,9 @@ SketchSC::SketchSC(CLI::App& sc)
     ->check(CLI::NonNegativeNumber);
   sc.add_option("--sample-size", params.sample_size, "Windows sampled across each genome [1000]")
     ->check(CLI::Range(1, 65535));
+  sc.add_flag("--ignore-spurious",
+              params.ignore_spurious,
+              "Do not estimate the per-genome bucket-local spurious-hit histogram [off]");
   sc.add_flag("--keep-seq,!--no-keep-seq",
               params.keep_seq,
               "Store sampled windows as 2-bit packed bases (compact) instead of the default pre-resolved keys");

@@ -250,7 +250,7 @@ void RollSC::roll()
 
   for (uint32_t i = 0; i < nsketches; ++i) {
     const Sketch reference = file.open(i, SketchLoad::Buckets);
-    const LLH<double> llhf = make_llhf(reference, params.hdist_th);
+    const LLH<double> llhf = make_llhf(reference, params.hdist_th, reference.get_spurious_f(params.hdist_th));
     const roll_ctx_t ctx{reference, llhf, params.hdist_th, params.tau, params.step, reference.get_k()};
 
     // Stream the query in batches so it never becomes fully resident.

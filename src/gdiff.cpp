@@ -138,6 +138,11 @@ void InfoSC::info()
     std::cout << "  k-mers:           " << sk.get_nkmers() << "\n";
     std::cout << "  card:              " << sk.get_card() << "\n";
     std::cout << "  rho:              " << sk.get_rho() << "\n";
+    if (!sk.get_spurious_v().empty()) {
+      uint64_t sp_total = 0;
+      for (uint64_t c : sk.get_spurious_v()) sp_total += c;
+      std::cout << "  spurious:         " << sp_total << " reference k-mers\n";
+    }
     std::cout << "  Nonempty buckets: " << sk.get_buckets().get_nnonempty() << "\n";
     std::cout << "  Windows:          " << sk.get_windows().wins_v.size() << "\n";
     const scentry& e = file.get_entry(i);

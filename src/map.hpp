@@ -44,7 +44,6 @@ struct map_opts
   // claimed in order of extremity and later levels only fill the gaps left by earlier ones.
   // The independent mode lets every level enumerate its own intervals.
   bool independent_levels = false;
-  bool false_hits = false; // experimental reference-LOO non-self hit mixture
   uint32_t verbosity = 1;
 };
 
@@ -72,7 +71,7 @@ class BackgroundSampler
 {
 public:
   BackgroundSampler(const Sketch& sketch, const vec<qseq_t>& batch_v, uint64_t tau, uint64_t bin_shift, uint32_t hdist_th,
-                    const vec<double>& false_hit_v = {});
+                    const vec<double>& spurious_f_v = {});
 
   // Draw at most `sample_size` windows across the whole batch and score them against the
   // reference. Returned in source order. Call once: the points are moved out.
@@ -207,7 +206,7 @@ private:
   vec<double> th_alpha_v;    // the level alpha that placed th_v[i]
   size_t n_active = 0;       // lanes carrying a threshold
   vec<double> null_v;        // sampled background distances, sorted
-  vec<double> false_hit_v;   // experimental non-self hit distribution
+  vec<double> spurious_f_v;   // experimental non-self hit distribution
   gamma_fit_t gamma_fit;     // hurdle fit behind th_v (NaN on the empirical fallback)
   double d_null = nanx();   // median of the sampled null
   double d_min = nanx();    // minimum sampled null distance
