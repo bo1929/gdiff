@@ -53,14 +53,14 @@ namespace {
   {
     if (canonical) {
       write_tsv(sout,
-                "seq", "seq_len", "start", "end", "reference", "alpha", "threshold",
+                "seq", "seq_len", "start", "end", "reference", "alpha", "threshold", "side",
                 "interval_len", "n_kmers", "d", "d_seq", "d_null", "delta",
                 "d_min", "d_max", "d_floor", "d_ceiling",
                 "n_at_floor", "n_at_ceiling", "p_interval", "q_interval", "p_gamma")
         << std::endl;
     } else {
       write_tsv(sout,
-                "seq", "seq_len", "start", "end", "strand", "is_rc", "reference", "alpha", "threshold",
+                "seq", "seq_len", "start", "end", "strand", "is_rc", "reference", "alpha", "threshold", "side",
                 "interval_len", "n_kmers", "d", "d_seq", "d_null", "delta",
                 "d_min", "d_max", "d_floor", "d_ceiling",
                 "n_at_floor", "n_at_ceiling", "p_interval", "q_interval", "p_gamma")
@@ -670,7 +670,26 @@ void IntMap<T>::report_contiguous(std::ostream& sout, const str& rname) const
   size_t n_calls = 0;
   for (const auto& r : records_v) {
     if (r.th_ix >= n_active) continue;
-    if (!is_valid_distance(r.d)) continue; // no hits / undefined distance cannot be a call
+    const char* side = (th_v[r.th_ix] <= d_null) ? "low" : "high";
+    if (!is_valid_distance(r.d)) {
+      const uint64_t interval_len = r.seq_iv.b - r.seq_iv.a + 1;
+      const uint64_t n_kmers = interval_len >= k ? interval_len - k + 1 : 0;
+      if (sketch_canonical) {
+        write_tsv(sout, batch_v[r.bix].qid, r.L, r.seq_iv.a, r.seq_iv.b, rname,
+                  th_alpha_v[r.th_ix], th_v[r.th_ix], side, interval_len, n_kmers,
+                  "NA", r.d_seq, d_null, "NA", d_min, d_max, d_floor, d_ceiling,
+                  0u, 0u, "NA", "NA", 0.0)
+          << "\n";
+      } else {
+        write_tsv(sout, batch_v[r.bix].qid, r.L, r.seq_iv.a, r.seq_iv.b,
+                  report_strand(r.is_rc, r.d_diff), static_cast<uint32_t>(r.is_rc),
+                  rname, th_alpha_v[r.th_ix], th_v[r.th_ix], side, interval_len, n_kmers,
+                  "NA", r.d_seq, d_null, "NA", d_min, d_max, d_floor, d_ceiling,
+                  0u, 0u, "NA", "NA", 0.0)
+          << "\n";
+      }
+      continue;
+    }
     const double threshold = th_v[r.th_ix];
     const uint64_t interval_len = r.seq_iv.b - r.seq_iv.a + 1;
     const uint64_t n_kmers = interval_len >= k ? interval_len - k + 1 : 0;
@@ -681,14 +700,14 @@ void IntMap<T>::report_contiguous(std::ostream& sout, const str& rname) const
                                  r.d >= d_ceiling * (1.0 - 1e-9)) ? 1 : 0;
     if (sketch_canonical) {
       write_tsv(sout, batch_v[r.bix].qid, r.L, r.seq_iv.a, r.seq_iv.b, rname,
-                th_alpha_v[r.th_ix], threshold, interval_len, n_kmers,
+                th_alpha_v[r.th_ix], threshold, side, interval_len, n_kmers,
                 r.d, r.d_seq, d_null, delta, d_min, d_max, d_floor, d_ceiling,
                 at_floor, at_ceiling, r.p_interval, r.q_interval, r.p_gamma)
         << "\n";
     } else {
       write_tsv(sout, batch_v[r.bix].qid, r.L, r.seq_iv.a, r.seq_iv.b,
                 report_strand(r.is_rc, r.d_diff), static_cast<uint32_t>(r.is_rc),
-                rname, th_alpha_v[r.th_ix], threshold, interval_len, n_kmers,
+                rname, th_alpha_v[r.th_ix], threshold, side, interval_len, n_kmers,
                 r.d, r.d_seq, d_null, delta, d_min, d_max, d_floor, d_ceiling,
                 at_floor, at_ceiling, r.p_interval, r.q_interval, r.p_gamma)
         << "\n";
