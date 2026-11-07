@@ -1,0 +1,5 @@
+seq	start	end	strand	gene	locus_tag	product
+AG-899-N21_NODE_6	49276	49941	-	ubiE_3	AG-899-N21_00764	Ubiquinone/menaquinone biosynthesis C-methyltransferase UbiE
+AG-899-N21_NODE_6	49968	50801	-	phnE_3	AG-899-N21_00765	Phosphate-import permease protein PhnE
+AG-899-N21_NODE_6	50819	51586	-	phnC_2	AG-899-N21_00766	Phosphate-import ATP-binding protein PhnC
+AG-899-N21_NODE_6	51643	52521	-	phnD_2	AG-899-N21_00767	Phosphate-import protein PhnD

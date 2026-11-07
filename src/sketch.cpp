@@ -168,15 +168,17 @@ namespace {
           const uint32_t d = popcount_lr32(beg[i] ^ beg[j]);
           if (d < best) best = d;
         }
-        if (best <= max_hd) ++counts[best]; else ++counts[max_hd + 1];
+        if (best <= max_hd)
+          ++counts[best];
+        else
+          ++counts[max_hd + 1];
       }
     }
     return counts;
   }
 }
 
-Sketch::Sketch(const sketch_config_t& cfg, str rname, Buckets&& buckets, double card, double rho,
-               vec<uint64_t> spurious_v)
+Sketch::Sketch(const sketch_config_t& cfg, str rname, Buckets&& buckets, double card, double rho, vec<uint64_t> spurious_v)
   : rname(std::move(rname))
   , rho(rho)
   , nkmers(buckets.get_nkmers())
@@ -193,7 +195,8 @@ vec<double> Sketch::get_spurious_f(uint32_t hdist_th) const
 {
   if (spurious_v.empty()) return {};
   uint64_t total = 0;
-  for (uint64_t c : spurious_v) total += c;
+  for (uint64_t c : spurious_v)
+    total += c;
   if (total == 0) return {};
   vec<double> out(hdist_th + 1, 0.0);
   for (uint32_t x = 0; x <= hdist_th && x < spurious_v.size(); ++x)
@@ -257,7 +260,8 @@ Sketch Container::open(uint32_t rec, SketchLoad part) const
   if (p < base + static_cast<ptrdiff_t>(e.buckets_offset)) {
     const uint64_t nsp = read_trivial<uint64_t>(p, end, "spurious count");
     gs.spurious_v.resize(static_cast<size_t>(nsp));
-    for (uint64_t i = 0; i < nsp; ++i) gs.spurious_v[i] = read_trivial<uint64_t>(p, end, "spurious");
+    for (uint64_t i = 0; i < nsp; ++i)
+      gs.spurious_v[i] = read_trivial<uint64_t>(p, end, "spurious");
   }
 
   const bool want_buckets = (static_cast<uint8_t>(part) & static_cast<uint8_t>(SketchLoad::Buckets)) != 0;
@@ -631,7 +635,8 @@ scentry SketchSC::write_sketch(str& bytes,
   write_trivial(os, built.get_rho());
   const vec<uint64_t>& sp = built.get_spurious_v();
   write_trivial(os, static_cast<uint64_t>(sp.size()));
-  for (uint64_t c : sp) write_trivial(os, c);
+  for (uint64_t c : sp)
+    write_trivial(os, c);
 
   e.buckets_offset = static_cast<uint64_t>(os.tellp());
   built.get_buckets().save(os);
@@ -752,11 +757,9 @@ SketchSC::SketchSC(CLI::App& sc)
               "Canonical k-mers only by default; --no-canonical extracts k-mers based on the reference strand");
   sc.add_option("-l", params.tau, "Length of sampled windows in k-mers; 0 stores buckets only [333]")
     ->check(CLI::NonNegativeNumber);
-  sc.add_option("--sample-size", params.sample_size, "Windows sampled across each genome [1000]")
-    ->check(CLI::Range(1, 65535));
-  sc.add_flag("--ignore-spurious",
-              params.ignore_spurious,
-              "Do not estimate the per-genome bucket-local spurious-hit histogram [off]");
+  sc.add_option("--sample-size", params.sample_size, "Windows sampled across each genome [500]")->check(CLI::Range(1, 65535));
+  sc.add_flag(
+    "--ignore-spurious", params.ignore_spurious, "Do not estimate the per-genome bucket-local spurious-hit histogram [off]");
   sc.add_flag("--keep-seq,!--no-keep-seq",
               params.keep_seq,
               "Store sampled windows as 2-bit packed bases (compact) instead of the default pre-resolved keys");

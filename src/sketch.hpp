@@ -19,8 +19,7 @@ class Sketch
 public:
   Sketch() = default;
   // Built from a FASTA rather than read from a container.
-  Sketch(const sketch_config_t& cfg, str rname, Buckets&& buckets, double card, double rho,
-         vec<uint64_t> spurious_v = {});
+  Sketch(const sketch_config_t& cfg, str rname, Buckets&& buckets, double card, double rho, vec<uint64_t> spurious_v = {});
 
   [[nodiscard]] const str& get_rname() const noexcept { return rname; }
   [[nodiscard]] double get_rho() const noexcept { return rho; }
@@ -103,7 +102,7 @@ public:
   struct params
   {
     uint64_t tau = 333;
-    uint64_t sample_size = 1000;
+    uint64_t sample_size = 500;
     bool keep_seq = false;
     bool ignore_spurious = false;
   };

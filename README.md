@@ -1,261 +1,155 @@
 # gdiff
 
-Detect genomic regions where the evolutionary distance between a query and a reference differs from the genome-wide background. gdiff builds a compact sketch of a reference genome, then scans query sequences to find intervals that are significantly closer or more distant than expected.
+`gdiff` estimates how sequence distance varies along a genome without alignment.
+It compares a query sequence against a reference sketch and uses a pseudo-likelihood model to estimate distances and find unusually close or divergent regions.
+
+The same sketch supports three analyses:
+
+- `dist`: randomly sample windows and estimate distances, summarize the sample into a genome-wide estimate.
+- `roll`: estimate local distances in sliding windows -- very fast!
+- `map`: map intervals with distances that deviate from the rest of the genome (e.g., horizontal transfers).
 
 ## Installation
 
+Requires a C++17 compiler (clang or GCC), Make, and zlib.
+libcurl is optional and enables URL input when available at build time.
+
 ```bash
 git clone --recurse-submodules -j8 https://github.com/bo1929/gdiff.git
-cd gdiff && make
+cd gdiff
+make
 ./gdiff --help
 ```
 
-Requires a C++17 compiler (clang or gcc), `libz`, and `libcurl`. The binary is self-contained — copy `./gdiff` anywhere on your `$PATH`.
+Add the resulting `gdiff` binary to your `PATH` to use the commands below.
 
-## Quickstart
+## Demo
 
-gdiff works in two steps: **sketch** a reference, then **map** queries against it.
+The [demo walkthrough](demo/) introduces `sketch`, `dist`, `roll`, and `map` with commands you can run one at a time.
 
-### 1. Sketch a reference genome
+## Usage
 
-```bash
-gdiff sketch -i reference.fasta -o reference.skc
-```
-
-Multiple references can be sketched into one container in a single step (use `--num-threads` to sketch files in parallel; save order is not fixed):
+### Sketch a reference
 
 ```bash
-gdiff --num-threads 8 sketch -i ref_A.fasta ref_B.fasta ref_C.fasta -o combined.skc
+gdiff sketch -i reference.fasta -o reference.gds
 ```
 
-Uses sensible defaults (`k=23`, `w=23`, `h=9`). For large genomes, tune the LSH parameters to trade speed for sensitivity (see Options below).
+Sketches use canonical k-mers by default (`k=23`, `w=23`, `h=9`, `--frac 0.5`) and store up to 500 sampled windows of 333 k-mers for `dist`.
+Use `-l 0` to omit the windows if you only need `map` or `roll`.
 
-### 2. Map queries to find divergent intervals
+Multiple genomes can share one container. Each input file becomes a separate sketch:
 
 ```bash
-gdiff map queries.fasta reference.skc -d 0.05 -l 500 --sample-size 200 -o intervals.tsv
+gdiff --num-threads 8 sketch -i ref_A.fasta ref_B.fasta ref_C.fasta -o combined.gds
 ```
 
-`-d 0.05` looks for regions whose MLE distance departs from the query's own distance toward 0.05: thresholds below the query distance flag closer regions, thresholds above it flag more distant ones. `-l 500` sets the minimum interval to 500 k-mers. `--sample-size 200` controls how many background windows are sampled for significance testing.
-
-You can provide multiple thresholds (up to 8) in one pass:
+### Pairwise & genome-wide distance comparison
 
 ```bash
-gdiff map queries.fasta reference.skc -d 0.02 0.05 0.10 0.20 0.30 0.40 0.50 0.60 -l 500
+gdiff dist ref_A.gds ref_B.gds -o distances.tsv
+gdiff dist combined.gds -o all_pairs.tsv
+gdiff dist ref_A.gds ref_B.gds --output-samples -o samples.tsv
 ```
 
-Without `-d`, thresholds come from the background null as tail probabilities (the default is `0.1 0.05 0.01 0.005`):
+Two containers compare every genome in one against every genome in the other; one container compares all pairs within it. Both inputs must contain sampled windows. `--list-a` and `--list-b` accept lists of container paths.
+
+The default output has one row per pair, with a reconciled distance `d`, directional medians `d_ab` and `d_ba`, and window counts.
+`--output-samples` reports individual windows in both directions.
+Distance is on the `1 - ANI/100` scale.
+
+FASTA/FASTQ and gzip input are supported.
+For large sets of inputs, you could also use `--input-list paths.txt`, with one path per line or `name<TAB>path` to assign ref. names.
+
+### Estimate local distances through a sliding window
+A standard sliding window view:
+```bash
+gdiff roll query.fasta reference.gds -l 1000 -s 200 -o windows.tsv
+```
+
+Here, `-l` is the window length in k-mers; `-s` is the step between starts (default: `-l`).
+Make sure to use multi-threading if you have resources available.
+
+### Find outlier intervals
 
 ```bash
-gdiff map queries.fasta reference.skc -l 500
-gdiff map queries.fasta reference.skc --levels 0.05 0.01 0.005 -l 500
+gdiff map query.fasta reference.gds -l 500 -o intervals.tsv
 ```
 
-To skip significance testing and just enumerate intervals:
+`-l 500` sets the minimum interval length and background sampling window to 500 k-mers. gdiff samples query windows against each reference, fits a gamma background with a point mass at the distance floor, and derives lower and upper thresholds. If the fit fails, it uses empirical quantiles.
+
+The default two-sided levels are `0.05 0.01 0.005`. For example, `0.05` places thresholds at the 2.5th and 97.5th percentiles. To change the levels or sample more background windows:
 
 ```bash
-gdiff map queries.fasta reference.skc -d 0.05 -l 500 --sample-size 0
+gdiff map query.fasta reference.gds -l 500 --levels 0.01 0.005 --sample-size 5000 -o intervals.tsv
 ```
 
-### 3. Merge sketches (optional)
+On each side, the most extreme level claims intervals first; later levels search the remaining gaps. Use `--independent-levels` to enumerate each level separately, allowing overlapping calls. A container with multiple references produces results for each reference.
 
-Combine sketches from multiple references into one file; gdiff maps against all of them in parallel. Prefer `gdiff sketch -i a.fa b.fa -o combined.skc` when starting from FASTA:
+### Inspect or merge sketches
 
 ```bash
-gdiff merge -i ref_A.skc ref_B.skc ref_C.skc -o combined.skc
+gdiff info -i reference.gds
+gdiff merge -i ref_A.gds ref_B.gds -o combined.gds
 ```
 
-### 4. Inspect a sketch
+`info` reports sketch parameters and stored window counts. `merge` requires compatible sketch configurations; when starting from sequences, pass multiple inputs to `sketch` instead.
 
-```bash
-gdiff info -i reference.skc
-```
+## Output
 
-### 5. Compare sketches (optional)
+Results are tab-separated, with a header and provenance comments. Coordinates are 1-based and inclusive. `map` reports query coordinates, not corresponding positions in the reference.
 
-`dist` compares the sampled windows stored in sketches, so both inputs must have been created with `-l`:
+Key `map` columns:
 
-```bash
-gdiff dist ref_A.skc ref_B.skc -o distances.tsv
-gdiff dist combined.skc                 # every pair within one container
-gdiff dist --list-a a.txt --list-b b.txt
-```
+| Column | Meaning |
+|--------|---------|
+| `seq`, `reference`, `start`, `end` | Query sequence, reference sketch, and interval coordinates |
+| `alpha`, `threshold`, `side` | Background level, distance cutoff, and low/high side |
+| `d`, `d_seq`, `d_null` | Interval distance, whole-sequence distance, and background median |
+| `delta` | `d - d_null` |
+| `p_interval`, `q_interval` | Likelihood-ratio p-value against `d_null` and its BH adjustment across reported candidates |
+| `p_gamma` | Two-sided tail probability under the fitted background model |
 
-Use `--output-samples` to write one row per sampled window instead of the per-pair summary. `--num-threads` processes pairs in parallel; the global `--seed` controls sampling at sketch time.
+`roll` reports one distance per window, or separate forward and reverse-complement distances for sketches made with `--no-canonical`.
 
-## Options
+## Common options
 
-### `gdiff sketch`
+Run `gdiff <command> --help` for the full option list.
 
-| Option | Default | Description |
-|--------|--------|-------------|
-| `-i, --input-path` | - | Input FASTA/FASTQ file(s) or URL (gzip compatible) |
-| `--input-list` | - | Read input paths from a file, one per line (optional `name<TAB>path`); combines with `-i` |
-| `-o, --output-path` | (required) | Output container (one or more sketches) |
-| `-k, --mer-len` | `23` | k-mer length (19–31) |
-| `-w, --win-len` | `k` | Minimizer window length (>= k) |
-| `-h, --num-positions` | `max(floor(k/2)-2, k-16)` | Number of LSH positions |
-| `--frac` | `0.5` | Keep a k-mer if LSH(x) < frac · 2^2h; subsampling ratio |
-| `--canonical` / `--no-canonical` | `--canonical` | Canonical (strand-agnostic) k-mers, or keep forward/reverse separate |
-| `-l` | `333` | Sampled window length in k-mers; **`0` stores buckets only** |
-| `--sample-size` | `1000` | Windows sampled across each genome; capped by the eligible starts |
-| `--keep-seq` | off | Store sampled windows as 2-bit packed bases instead of pre-resolved keys |
-| `--ignore-spurious` | off | Do not store the bucket-local spurious-hit histogram (w > k) |
+| Command | Option | Default | Purpose |
+|---------|--------|---------|---------|
+| `sketch` | `-k`, `-w`, `-h` | `23`, `k`, derived from `k` | k-mer length, minimizer window length, and LSH positions |
+| `sketch` | `--frac` | `0.5` | Fraction of LSH buckets retained |
+| `sketch` | `-l` | `333` | Sampled window length in k-mers; `0` omits windows |
+| `sketch` | `--sample-size` | `1000` | Maximum windows stored per genome |
+| `map` | `--levels` | `0.05 0.01 0.005` | One to three two-sided background levels |
+| `map` | `--sample-size` | `1000` | Background windows per reference; at least `100` |
+| `map` | `-b`, `--bin-shift` | `0` | Group k-mers into bins of size `2^b` to reduce memory and coordinate resolution |
+| `map`, `roll` | `--hdist-th` | `3` | Maximum Hamming distance for a k-mer hit |
+| `dist` | `--hdist-th` | `3`, or `2` for inputs >20 Mb | Maximum Hamming distance for a k-mer hit |
+| Global | `--num-threads` | `1` | Worker threads |
+| Global | `--seed` | `0` | Random seed |
+| Global | `--verbose` | off | Report progress when stderr is not a terminal |
 
-`-l 0` produces a buckets-only sketch. `map` and `roll` work with it (they only need the reference index); `dist` needs sampled windows. By default sketches carry windows.
-
-For `w > k`, `sketch` also stores a per-genome histogram of the nearest non-self reference k-mer within each LSH bucket (Hamming 0–7). `map` and `roll` use it as the spurious-hit component of the likelihood; zero falls back to the old likelihood when the field is absent. It is not computed for `w = k`, where all k-mers are retained and `rho = 1`.
-
-A window of `-l L` spans `L + k - 1` bases, so a sequence shorter than that contributes no windows and `--sample-size` is an upper bound rather than a promise: the draw cannot exceed the eligible starts across the input. `gdiff sketch` warns when it stores fewer than requested and `gdiff info -i <container>` reports the number actually stored (`Windows:`), which is also the number of rows `dist --output-samples` emits per direction.
-
-### `gdiff map`
-
-Positional: `<query.fasta> <reference.skc>`.
-
-| Option | Default | Description |
-|--------|--------|-------------|
-| `-d, --dist-th` | - | Absolute distance threshold(s): exactly 1 or 8; overrides `--levels` |
-| `--levels` | `0.05 0.01 0.005` | Two-sided tail probabilities: 1–3 (each adds a low and a high threshold) |
-| `-l` | (required) | Minimum interval length in k-mers (rounded up to whole `-b` bins); also the background window length |
-| `-o, --output-path` | stdout | Write output to a file |
-| `--hdist-th` | `3` | Max Hamming distance for a k-mer hit (0–7) |
-| `--chisq` | `33.00051` | Chi-squared threshold for merging overlapping intervals |
-| `-b, --bin-shift` | `0` | Bin size = 2^b; groups consecutive k-mers |
-| `--sample-size` | `1000` | Background windows sampled per reference; `0` skips the test, otherwise at least `100` |
-| `--iterative-removal` | off | Let each threshold claim its intervals and search only the remaining gaps, the two bounds first; off, every threshold enumerates its own intervals |
-| `--lr-th` | `6.635` | Where the two `--levels` bounds sit: a `-l` window must clear this likelihood ratio to be resolvable from perfect identity and from the sketch ceiling |
-| `--bg-model` | `empirical` | `--levels` thresholds from `empirical` quantiles of the pool, or from a `gamma` hurdle fitted to that same pool, which then also supplies `PVALUE` and `FOLD` |
-| `--verbosity` | `1` | Background and threshold report detail (0–1) |
-
-Distance thresholds may be given directly (`-d`, exactly 1 or 8 values) or as tail probabilities of the background (`--levels`, 1 to 3 levels; the default is 3). The two are mutually exclusive, and either way the run fills its SIMD lanes: `-d` with 1 value uses the scalar path, everything else uses up to 8 lanes. Each level contributes a low and a high threshold, and the two bounds of the range a `-l` window can resolve at `--lr-th` are always lanes as well. A run therefore always reports the low bound — the near-identical claim, "no evidence of a difference from the reference at this length" — and the high bound, "as divergent as this sketch can resolve", even when the model has nothing to add in between.
-
-Thresholds are used exactly as derived: nothing is clamped, so a model threshold outside the bounds stays a lane of its own, and `P_LB`/`P_UB` — computed from each record's own k-mer count, not from `-l` — say whether that record resolved. By default, a rejected gamma fit places no thresholds and contributes no calls. Lanes hold distinct thresholds, so a level whose quantile repeats another's collapses into that one band, which is what a background with a point mass at the floor produces. `--levels` thus runs between 3 and 8 lanes (`2 × levels` plus the two bounds); a reference is skipped only when no distance is resolvable for a `-l` window at all, which the run reports once before the first reference is processed. `--sample-size` sets how finely the quantiles resolve.
-
-By default every threshold enumerates its own maximal intervals, so records from different thresholds can overlap. With `--iterative-removal` the two bounds claim first and the interior lanes then work from the most extreme inward, each searching only the gaps the earlier ones left, so a region is reported once, under the tightest threshold that claimed it.
-
-The background null is the empirical distribution of `-l`-long query windows scored against the reference. `PVALUE` is the two-sided empirical tail probability of a record's distance in that null and `FOLD` is `d` over the pool median; this path is non-parametric. `QVALUE` is the Benjamini–Hochberg adjustment of `PVALUE`, computed per strand, so the two columns are always on the same scale. `P_LB` and `P_UB` are the chi-square (one degree of freedom) p-values of the interval's identifiability from below (against perfect identity) and from above (against the sketch's weakest detectable match), on the interval's own k-mer counts. Small values mean the distance is resolved from that end; since the pair is symmetric, `P_LB` and `P_UB` together say whether an interval is resolved at all, they read `0.01` exactly at the resolvable bounds `t_min`/`t_max`, and they scale with the number of k-mers, so they compare intervals of similar size. With `--bg-model gamma` one model supplies both: the thresholds are quantiles of a hurdle fitted to the same pool -- a point mass at the estimable floor, which repeated histograms make exact, plus a gamma above it, fitted by maximum likelihood from a moment start -- and `PVALUE`/`FOLD` are its CDF at `d` and `d` over its median; the pool ranks are used only when that fit is rejected. `map` only reads the reference's bucket index, so a buckets-only sketch (`-l 0`) is sufficient.
-
-### `gdiff dist`
-
-Positional: `<sketch-a> [sketch-b]`.
-
-| Option | Default | Description |
-|--------|--------|-------------|
-| `--list-a`, `--list-b` | - | Read set A / set B as a list file of sketch containers |
-| `--hdist-th` | `3` | Maximum Hamming distance for a k-mer to match; the default is capped to 2 for inputs >20 Mbp, an explicit value is used as given |
-| `--lr-th` | `6.635` | Likelihood-ratio cut for the reconciliation filter |
-| `--min-portion` | `0.66` | Apply the filter only if at least this fraction of windows exceeds `--lr-th` |
-| `-o, --output-path` | stdout | Write output to a file |
-| `--output-samples` | off | Write per-window sample rows instead of per-pair summaries |
-
-Inputs are containers whose sketches were created with `-l` (sampled windows). One positional compares every pair within that container; two compare the cross product of set A and set B. Pairs are reconciled across both directions.
-
-Summary output, one row per pair:
-
-```
-genome_a  genome_b  d  d_median  d_mean  d_upper  d_highest  d_ab  d_ba  n_ab  n_ba  n_ub  n_na  n_filtered
-```
-
-`d` is the reconciled distance and `d_ab`/`d_ba` the two directional medians. `--output-samples` instead writes one row per sampled window:
-
-```
-config  genome_a  genome_b  seq  start  end  [strand]  direction  d  p_ub
-```
-
-`P_UB` is the chi-square (one degree of freedom) p-value of the likelihood-ratio statistic of the sample's distance against the sketch's maximum estimable distance: a small value means the window is confidently not explained by the no-homology ceiling. Coordinates are 1-based and inclusive; for strand-aware sketches each sample uses the lower of the forward and reverse-complement distances and reports the selected strand, while a canonical sketch drops the `strand` column.
-
-### `gdiff roll`
-
-Positional: `<query.fasta> <reference.skc>`.
-
-| Option | Default | Description |
-|--------|--------|-------------|
-| `-l` | (required) | Window length in k-mers |
-| `-s` | `-l` | Step between consecutive window starts |
-| `--hdist-th` | `3` | Maximum Hamming distance for a k-mer to match |
-| `-o, --output-path` | stdout | Write output to a file |
-
-### `gdiff merge`
-
-| Option | Default | Description |
-|--------|--------|-------------|
-| `-i, --sketch-paths` | (required) | Input containers to merge |
-| `-o, --output-path` | (required) | Path to store the merged container |
-
-### `gdiff info`
-
-| Option | Default | Description |
-|--------|--------|-------------|
-| `-i, --sketch-path` | (required) | Container to inspect |
-
-### Global options
-
-| Option | Default | Description |
-|--------|--------|-------------|
-| `--verbose` | off | Report progress even when stderr is not a terminal |
-| `--seed` | `0` | Random seed for the LSH and other randomness |
-| `--num-threads` | `1` | Worker threads per subcommand |
+The number of sampled windows is capped by the available starts. Sequences shorter than `L + k - 1` bases contribute no windows; check `gdiff info` for the count stored in a sketch.
 
 ## Visualization
 
-Two tools, two jobs.
-
-### `gviz.py` — one report for any output
-
-`gviz.py` turns a single `map`, `roll` or `dist` result file into a static HTML
-page: two or three panels and a filter bar. The panels never zoom, pan or hover —
-changing a filter redraws them, which is what keeps the page fast. Plotly.js comes
-from the CDN; `--inline` embeds it.
+`gviz.py` creates HTML reports with filters for distance profiles (`roll`), pairwise summaries (`dist`), and sampled distances (`dist --output-samples`).
 
 ```bash
-python gviz.py map-mus_pwk-v020rc.tsv            # 2 panels, 2.4 MB
-python gviz.py roll-mus_pwk-v020rc.tsv           # 3 panels, 3M windows in 4.5 s
-python gviz.py roll.tsv --seq chr7 --bins 6000   # one chromosome in fine bins, 0.7 MB
-python gviz.py dist-m1-v020rc.tsv --annotations genes.gff3 --open
-python gviz.py map.tsv --print-schema
+pip install numpy pandas
+python gviz.py windows.tsv --seq chr7 --open
+python gviz.py distances.tsv --open
 ```
 
-Panels, position on x wherever the output has coordinates:
+Use `--annotations genes.gff3` to add a gene track and `--bins` to change profile resolution. Reports load Plotly.js from a CDN; for offline use, install `plotly` and pass `--inline`.
 
-| Input | Panels |
-|-------|--------|
-| `map` | interval track — one row per reference and direction, colour per reference, area ∝ length · significance along the sequence (-log10 q, q = 0.05 line) |
-| `roll` | distance profile per reference, binned and smoothed with a running median · reference x position heat map · unmapped-window map |
-| `dist` | pairwise distance matrix — square tiles, rows and columns in one shared order (nearest genomes adjacent), mirrored for all-by-all, values printed in the cells, empty tiles for pairs the file does not contain · estimator spread per pair · window accounting |
-| `dist --output-samples` | per-window profile · per-pair ECDF |
-
-Reading the report:
-
-- **Axes are pinned** to the full data extent (log axes to the enclosing powers of
-  ten), so filtering never rescales a plot or moves a label. Only the Sequence
-  selector changes the x range, because each sequence has its own length; `‹` and
-  `›` step through sequences, which are listed longest first.
-- **One sequence at a time** — the Sequence filter is a single select, so a 2.5 Gb
-  genome never becomes a smear. Sequences below 0.2 % of the assembly are left out
-  unless you pass `--keep-all`.
-- **Thresholds are named, not numbered in CLI terms**: the Threshold filter lists
-  e.g. `3 · closer d ≤ 0.000344`, reconstructed from the bracket each interval fell
-  into, and holds any combination.
-- **Colour** encodes a value (distance, -log10 q) with viridis; when colour encodes
-  a series it is the reference, in muted lichen tones.
-- `roll` drops unmapped windows instead of drawing gaps, averages each sequence
-  into ~1000 bins and smooths with a running median (`smoothing` control, default
-  5 points) so spikes do not drag the line; `log y` is a checkbox.
-- `--annotations genes.gff3` adds a gene track; a whole chromosome of genes is
-  dense by nature, so at most the 3,000 longest features are drawn and `--seq`
-  is the way to zoom in.
-
-Options: `--seq`, `--bins`, `--keep-all`, `--assembly-report`, `--annotations`,
-`--title`, `--inline`, `--kind`, `--print-schema`. Adding an output format means
-one branch in `kind_of`, a `prepare_*` and a `*_panels` function.
-
-### `plot.py` — phylogeny-aware interval explorer
-
-Use `plot.py` when a tree is part of the question:
+`plot.py` provides a tree-based explorer for legacy interval tables (`QUERY_ID`, `REF_ID`, `INTERVAL_START`, etc.):
 
 ```bash
 pip install -r plot-reqs.txt
-python plot.py --input intervals.tsv --tree tree.nwk --query query_name
+python plot.py --input legacy_intervals.tsv --tree tree.nwk --query query_name
 ```
 
-Supports optional genome annotations (GFF3/GTF/TSV) and legacy enum-only files (`--enum-only`). Run `python plot.py --help` for all options.
+Analysis scripts and datasets from the paper are available in [gdiff-analyses](https://github.com/bo1929/gdiff-analyses).
