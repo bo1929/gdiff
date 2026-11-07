@@ -33,7 +33,7 @@ struct map_opts
 {
   uint32_t hdist_th = 3;
   uint64_t tau = 1;
-  uint64_t bin_shift = 0;
+  uint64_t bin_shift = 1;
   double chisq = 33.00051;
   uint64_t sample_size = 1000;
   vec<double> levels_v; // one to three two-sided tail probabilities (two thresholds each)
@@ -70,7 +70,11 @@ struct sample_point_t
 class BackgroundSampler
 {
 public:
-  BackgroundSampler(const Sketch& sketch, const vec<qseq_t>& batch_v, uint64_t tau, uint64_t bin_shift, uint32_t hdist_th,
+  BackgroundSampler(const Sketch& sketch,
+                    const vec<qseq_t>& batch_v,
+                    uint64_t tau,
+                    uint64_t bin_shift,
+                    uint32_t hdist_th,
                     const vec<double>& spurious_f_v = {});
 
   // Draw at most `sample_size` windows across the whole batch and score them against the
@@ -129,11 +133,10 @@ bool fit_gamma_mom(const vec<double>& sample_v, gamma_fit_t& fit, size_t min_sam
 // plus a gamma above it.
 // by ML from the moment start. False when fewer than `min_samples` windows sit above the spike or
 // the continuous part is degenerate.
-bool fit_background_gamma(const vec<double>& sample_v, gamma_fit_t& fit, size_t min_samples,
-                          double floor = nanx());
+bool fit_background_gamma(const vec<double>& sample_v, gamma_fit_t& fit, size_t min_samples, double floor = nanx());
 
 // The --levels threshold set from a sorted null sample, including the alpha that placed each
-// distinct threshold. Thresholds at the estimable floor are skipped on either side.
+// distinct threshold. Thresholds at the estimable floor or outside the distance domain are skipped.
 bool level_thresholds(const vec<double>& sample_v,
                       const vec<double>& levels_v,
                       vec<double>& th_v,
@@ -190,7 +193,8 @@ private:
   void build_null(ThreadPool& pool);
   void scan_sequence(const map_params<T>& params, const LLH<T>& llhf, size_t bix);
   void extract_lane_intervals(IntExt<T>& ext, const LLH<T>& llhf, bool is_rc, uint64_t tau_eff, size_t bix);
-  void extract_iterative_intervals(IntExt<T>& ext, const LLH<T>& llhf, bool is_rc, uint64_t tau_eff, size_t bix, bool low_side);
+  void
+  extract_iterative_intervals(IntExt<T>& ext, const LLH<T>& llhf, bool is_rc, uint64_t tau_eff, size_t bix, bool low_side);
   // `a_bin`/`b_bin` are the half-open 0-based bin range the extractor scored: bins [a_bin, b_bin).
   void emit_record(IntExt<T>& ext, const LLH<T>& llhf, size_t bix, uint64_t a_bin, uint64_t b_bin, size_t th_ix, bool is_rc);
   void report_null(const str& rname) const;
@@ -206,13 +210,13 @@ private:
   vec<double> th_alpha_v;    // the level alpha that placed th_v[i]
   size_t n_active = 0;       // lanes carrying a threshold
   vec<double> null_v;        // sampled background distances, sorted
-  vec<double> spurious_f_v;   // experimental non-self hit distribution
+  vec<double> spurious_f_v;  // experimental non-self hit distribution
   gamma_fit_t gamma_fit;     // hurdle fit behind th_v (NaN on the empirical fallback)
-  double d_null = nanx();   // median of the sampled null
-  double d_min = nanx();    // minimum sampled null distance
-  double d_max = nanx();    // maximum sampled null distance
-  double d_floor = nanx();  // minimum estimable distance
-  double d_ceiling = nanx();// maximum estimable distance
+  double d_null = nanx();    // median of the sampled null
+  double d_min = nanx();     // minimum sampled null distance
+  double d_max = nanx();     // maximum sampled null distance
+  double d_floor = nanx();   // minimum estimable distance
+  double d_ceiling = nanx(); // maximum estimable distance
   uint64_t null_floored = 0; // background samples below d_eps
   vec<uint64_t> scratch_v;
   vec<uint64_t> acc_v;

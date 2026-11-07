@@ -241,8 +241,10 @@ bool level_thresholds(const vec<double>& sample_v,
     }
     if (!std::isfinite(t_low) || !std::isfinite(t_high)) return false;
     const double floor_d = std::isfinite(floor) ? floor : sample_v.front();
-    if (t_low > floor_d * (1.0 + 1e-12)) points_v.push_back({t_low, alpha});
-    if (t_high > floor_d * (1.0 + 1e-12)) points_v.push_back({t_high, alpha});
+    // Gamma tails can extend beyond the distance model's domain. Such thresholds cannot
+    // be exceeded by a valid estimate, and evaluating derivatives there can create false calls.
+    if (is_valid_distance(t_low) && t_low > floor_d * (1.0 + 1e-12)) points_v.push_back({t_low, alpha});
+    if (is_valid_distance(t_high) && t_high > floor_d * (1.0 + 1e-12)) points_v.push_back({t_high, alpha});
   }
 
   std::sort(points_v.begin(), points_v.end(), [](const point_t& a, const point_t& b) { return a.t < b.t; });
@@ -925,7 +927,7 @@ void MapSC::map()
 MapSC::MapSC(CLI::App& sc)
 {
   sc.validate_optional_arguments();
-  params.levels_v = {0.05, 0.01, 0.005};
+  params.levels_v = {0.01, 0.001, 0.0001};
 
   sc.add_option("query-path", query_path, "Query FASTA/FASTQ file <path> (or URL) (gzip compatible)")
     ->required()
@@ -942,7 +944,7 @@ MapSC::MapSC(CLI::App& sc)
   sc.add_option("--levels",
                 params.levels_v,
                 "One to three two-sided tail probabilities; each supplies a low and a high threshold "
-                "from the sampled hurdle null [0.05 0.01 0.005]")
+                "from the sampled hurdle null [0.01 0.001 0.0001]")
     ->expected(1, max_levels)
     ->check(CLI::Range(1e-8, 0.5));
   sc.add_option("--sample-size",

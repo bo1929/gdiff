@@ -10,6 +10,7 @@ build
 .tmp
 tmp
 stash
+__pycache__/
 
 # Local working notes and reference material, not part of the project (see TODO.md)
 docs/

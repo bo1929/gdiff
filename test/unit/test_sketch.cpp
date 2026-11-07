@@ -559,7 +559,7 @@ TEST_CASE("-l 0 stores a buckets-only sketch that map accepts" * doctest::skip(!
 
   const Container sf(skc);
   CHECK(sf.get_config().tau == 0);
-  CHECK(sf.get_config().sample_size == 1000);
+  CHECK(sf.get_config().sample_size == 500);
 
   const Sketch sk = sf.open(0, SketchLoad::All);
   CHECK(sk.has_buckets());
@@ -684,7 +684,7 @@ TEST_SUITE("merge and info")
     CHECK(info_value(report, "h (LSH pos):") == "9");
     CHECK(info_value(report, "canonical:") == "true");
     CHECK(info_value(report, "-l (window len):") == "333");
-    CHECK(info_value(report, "--sample-size:") == "1000");
+    CHECK(info_value(report, "--sample-size:") == "500");
     CHECK(info_value(report, "--keep-seq:") == "false");
     CHECK(info_value(report, "seed:") == "0");
 

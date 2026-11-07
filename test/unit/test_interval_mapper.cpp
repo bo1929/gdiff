@@ -45,27 +45,27 @@ static const std::string GENOMES_DIR = TEST_DIR + "genomes/";
 static const std::string SKETCHES_DIR_A = test_util::path("sketches-saware").string() + "/";
 static const std::string SKETCHES_DIR_B = test_util::path("sketches-sagnostic").string() + "/";
 
-// Canonical output: seq seq_len start end reference alpha threshold
+// Canonical output: seq seq_len start end reference alpha threshold side
 // interval_len n_kmers d d_seq d_null delta d_min d_max d_floor d_ceiling
 // n_at_floor n_at_ceiling p_interval q_interval p_gamma
-static constexpr int k_ag_cols = 22;
-static constexpr int k_ag_tabs = 21;
+static constexpr int k_ag_cols = 23;
+static constexpr int k_ag_tabs = 22;
 static constexpr int k_ag_len = 1;
 static constexpr int k_ag_start = 2;
 static constexpr int k_ag_end = 3;
 static constexpr int k_ag_ref = 4;
 static constexpr int k_ag_alpha = 5;
 static constexpr int k_ag_threshold = 6;
-static constexpr int k_ag_dist = 9;
-static constexpr int k_ag_dseq = 10;
-static constexpr int k_ag_null = 11;
-static constexpr int k_ag_delta = 12;
-static constexpr int k_ag_pvalue = 19;
-static constexpr int k_ag_qvalue = 20;
-static constexpr int k_ag_pgamma = 21;
+static constexpr int k_ag_dist = 10;
+static constexpr int k_ag_dseq = 11;
+static constexpr int k_ag_null = 12;
+static constexpr int k_ag_delta = 13;
+static constexpr int k_ag_pvalue = 20;
+static constexpr int k_ag_qvalue = 21;
+static constexpr int k_ag_pgamma = 22;
 // Strand-aware output inserts strand and is_rc after end.
-static constexpr int k_sa_cols = 24;
-static constexpr int k_sa_tabs = 23;
+static constexpr int k_sa_cols = 25;
+static constexpr int k_sa_tabs = 24;
 static constexpr int k_sa_len = 1;
 static constexpr int k_sa_start = 2;
 static constexpr int k_sa_end = 3;
@@ -73,10 +73,10 @@ static constexpr int k_sa_strand = 4;
 static constexpr int k_sa_rc = 5;
 static constexpr int k_sa_ref = 6;
 static constexpr int k_sa_alpha = 7;
-static constexpr int k_sa_dist = 11;
-static constexpr int k_sa_pvalue = 21;
-static constexpr int k_sa_qvalue = 22;
-static constexpr int k_sa_pgamma = 23;
+static constexpr int k_sa_dist = 12;
+static constexpr int k_sa_pvalue = 22;
+static constexpr int k_sa_qvalue = 23;
+static constexpr int k_sa_pgamma = 24;
 
 static bool test_data_available()
 {
@@ -297,7 +297,12 @@ TEST_CASE("default output reports all threshold intervals with q-values" * docte
     CHECK(f[k_ag_ref].find("G000341695") != std::string::npos);
     CHECK(std::isfinite(std::stod(f[k_ag_alpha])));
     CHECK(std::isfinite(std::stod(f[k_ag_threshold])));
-    CHECK(std::isfinite(std::stod(f[k_ag_dist])));
+    if (f[k_ag_dist] == "NA") {
+      CHECK(f[k_ag_pvalue] == "NA");
+      CHECK(f[k_ag_qvalue] == "NA");
+    } else {
+      CHECK(token_is_finite(f[k_ag_dist]));
+    }
     CHECK(f.size() == k_ag_cols);
   }
   CHECK(any_finite_col(out, k_ag_dist, k_ag_cols));
@@ -521,6 +526,38 @@ TEST_CASE("--num-threads does not change the map output" * doctest::skip(!gdiff_
   REQUIRE(run_cli("--num-threads 1" + opts, one));
   REQUIRE(run_cli("--num-threads 4" + opts, four));
   CHECK(test_util::strip_comments(test_util::read_file(one)) == test_util::strip_comments(test_util::read_file(four)));
+}
+
+TEST_CASE("demo background calls stay localized with normal merging" *
+          doctest::skip(!gdiff_cli_available() ||
+                        !std::filesystem::exists("demo/data/AG-899-N21_contigs.fasta.gz")))
+{
+  const auto reference = test_util::path("operon_references.gds");
+  REQUIRE(run_cli("sketch -i demo/data/AG-894-M23_contigs.fasta.gz "
+                  "demo/data/AG-893-E15_contigs.fasta.gz -o " + reference.string(),
+                  test_util::path("operon_sketch.log")));
+  const std::string out = map_stdout("-l 500 --sample-size 20000 "
+                                    "demo/data/AG-899-N21_contigs.fasta.gz " + reference.string());
+  // Independent Prokka annotation: ubiE_3 through phnD_2, 1-based inclusive.
+  constexpr uint64_t gene_start = 49276, gene_end = 52521;
+  size_t calls = 0;
+  bool covered = false;
+  std::istringstream stream(out);
+  std::string line;
+  while (std::getline(stream, line)) {
+    const auto f = split_tsv(line);
+    if (f.size() != k_ag_cols || f[0] != "AG-899-N21_NODE_6" || f[7] != "low" ||
+        f[k_ag_ref].find("AG-893-E15") == std::string::npos) continue;
+    ++calls;
+    CHECK(token_is_finite(f[k_ag_alpha]));
+    const uint64_t start = std::stoull(f[k_ag_start]), end = std::stoull(f[k_ag_end]);
+    // Broad maximal calls are expected, but contig-wide calls are not a useful demo.
+    CHECK(end - start + 1 < std::stoull(f[k_ag_len]) * 0.4);
+    if (start <= gene_start && end >= gene_end) covered = true;
+  }
+  CHECK(calls > 0);
+  CHECK(calls <= 12);
+  CHECK(covered);
 }
 
 } // TEST_SUITE

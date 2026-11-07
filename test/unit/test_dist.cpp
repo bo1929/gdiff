@@ -474,6 +474,27 @@ TEST_CASE("the hurdle anchors at the physical floor when the sample minimum is a
   CHECK(th.front() > floor_d);
 }
 
+TEST_CASE("map skips gamma thresholds outside the distance model domain")
+{
+  vec<double> pool;
+  for (size_t i = 0; i < 1000; ++i)
+    pool.push_back(0.01 + 0.0008 * static_cast<double>(i));
+
+  gamma_fit_t fit;
+  vec<double> thresholds, alpha;
+  const vec<double> levels{0.01, 0.001, 0.0001};
+  REQUIRE(level_thresholds(pool, levels, thresholds, alpha, 10, &fit, 1e-9));
+  const boost::math::gamma_distribution<double> model(fit.shape, fit.scale);
+  REQUIRE(boost::math::quantile(model, 1.0 - levels.back() / 2.0) > d_ub);
+  REQUIRE(!thresholds.empty());
+  REQUIRE(thresholds.size() == alpha.size());
+  for (size_t i = 0; i < thresholds.size(); ++i) {
+    CHECK(is_valid_distance(thresholds[i]));
+    // Only the lower tails lie inside the model domain for this pool.
+    CHECK(thresholds[i] == doctest::Approx(boost::math::quantile(model, alpha[i] / 2.0)));
+  }
+}
+
 TEST_CASE("the gamma path fits the same pool the empirical path quantiles") {
   // Whatever the --bg-model, both paths read the background null: the fit is not conditioned on
   // lr_ub, because that test is a hard cut at the high bound and would bias every quantile it

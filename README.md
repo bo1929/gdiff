@@ -78,11 +78,13 @@ gdiff map query.fasta reference.gds -l 500 -o intervals.tsv
 
 `-l 500` sets the minimum interval length and background sampling window to 500 k-mers. gdiff samples query windows against each reference, fits a gamma background with a point mass at the distance floor, and derives lower and upper thresholds. If the fit fails, it uses empirical quantiles.
 
-The default two-sided levels are `0.05 0.01 0.005`. For example, `0.05` places thresholds at the 2.5th and 97.5th percentiles. To change the levels or sample more background windows:
+The default two-sided levels are `0.01 0.001 0.0001`. For example, `0.01` places thresholds at the 0.5th and 99.5th percentiles. Smaller levels select more extreme tails. To use more permissive levels or sample more background windows:
 
 ```bash
-gdiff map query.fasta reference.gds -l 500 --levels 0.01 0.005 --sample-size 5000 -o intervals.tsv
+gdiff map query.fasta reference.gds -l 500 --levels 0.05 0.01 0.005 --sample-size 5000 -o intervals.tsv
 ```
+
+For the stringent default levels, `--sample-size 20000` provides more background support for the fitted tails. Model thresholds outside the valid distance range are skipped.
 
 On each side, the most extreme level claims intervals first; later levels search the remaining gaps. Use `--independent-levels` to enumerate each level separately, allowing overlapping calls. A container with multiple references produces results for each reference.
 
@@ -122,7 +124,7 @@ Run `gdiff <command> --help` for the full option list.
 | `sketch` | `--frac` | `0.5` | Fraction of LSH buckets retained |
 | `sketch` | `-l` | `333` | Sampled window length in k-mers; `0` omits windows |
 | `sketch` | `--sample-size` | `1000` | Maximum windows stored per genome |
-| `map` | `--levels` | `0.05 0.01 0.005` | One to three two-sided background levels |
+| `map` | `--levels` | `0.01 0.001 0.0001` | One to three two-sided background levels |
 | `map` | `--sample-size` | `1000` | Background windows per reference; at least `100` |
 | `map` | `-b`, `--bin-shift` | `0` | Group k-mers into bins of size `2^b` to reduce memory and coordinate resolution |
 | `map`, `roll` | `--hdist-th` | `3` | Maximum Hamming distance for a k-mer hit |
@@ -135,21 +137,20 @@ The number of sampled windows is capped by the available starts. Sequences short
 
 ## Visualization
 
-`gviz.py` creates HTML reports with filters for distance profiles (`roll`), pairwise summaries (`dist`), and sampled distances (`dist --output-samples`).
+`gviz.py` creates static, self-contained HTML reports for `map`, `roll`, `dist`, and `dist --output-samples`. Requires Python 3.10+; no server or internet connection is needed.
 
 ```bash
-pip install numpy pandas
-python gviz.py windows.tsv --seq chr7 --open
-python gviz.py distances.tsv --open
+python3 -m pip install -r gviz/requirements.txt
+python3 gviz.py demo/output/distances.tsv
+python3 gviz.py demo/output/roll.tsv --seq AG-899-N21_NODE_6
+python3 gviz.py demo/output/intervals.tsv --seq AG-899-N21_NODE_6
+python3 gviz.py samples.tsv
 ```
 
-Use `--annotations genes.gff3` to add a gene track and `--bins` to change profile resolution. Reports load Plotly.js from a CDN; for offline use, install `plotly` and pass `--inline`.
+Positional plots show the longest sequence by default. Use `--region 45000:60000` with `--seq` to focus on a locus, `--reference NAME` to select comparisons, and `--bins` to set resolution (default: 1,000). Add `--open` to open the report, or `-o gviz.png` / `-o gviz.svg` to save a figure.
 
-`plot.py` provides a tree-based explorer for legacy interval tables (`QUERY_ID`, `REF_ID`, `INTERVAL_START`, etc.):
+`map` shows reported intervals in separate reference tracks, using mean overlap when tracks are crowded. `roll` shows distance profiles on a shared scale. `dist` uses a matrix for small comparisons, and sampled distances use cumulative distributions with both directions shown together. Gray marks indicate missing estimates.
 
-```bash
-pip install -r plot-reqs.txt
-python plot.py --input legacy_intervals.tsv --tree tree.nwk --query query_name
-```
+The reader streams plain or gzipped TSVs in two passes; plot arrays and image size are bounded. Narrow features can disappear in chromosome-wide bins, so select a region for local detail. Comparisons with more than 60 genomes show a distance distribution and the 20 closest reported pairs. Reading, aggregation, rendering, and CLI code are separate modules in `gviz/`.
 
 Analysis scripts and datasets from the paper are available in [gdiff-analyses](https://github.com/bo1929/gdiff-analyses).
