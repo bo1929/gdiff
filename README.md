@@ -81,10 +81,10 @@ gdiff map query.fasta reference.gds -l 500 -o intervals.tsv
 The default two-sided levels are `0.01 0.001 0.0001`. For example, `0.01` places thresholds at the 0.5th and 99.5th percentiles. Smaller levels select more extreme tails. To use more permissive levels or sample more background windows:
 
 ```bash
-gdiff map query.fasta reference.gds -l 500 --levels 0.05 0.01 0.005 --sample-size 5000 -o intervals.tsv
+gdiff map query.fasta reference.gds -l 500 --levels 0.05 0.01 0.005 --sample-size 1000 -o intervals.tsv
 ```
 
-For the stringent default levels, `--sample-size 20000` provides more background support for the fitted tails. Model thresholds outside the valid distance range are skipped.
+For the stringent default levels, `--sample-size 1000` provides more background support for the fitted tails. Model thresholds outside the valid distance range are skipped.
 
 On each side, the most extreme level claims intervals first; later levels search the remaining gaps. Use `--independent-levels` to enumerate each level separately, allowing overlapping calls. A container with multiple references produces results for each reference.
 
