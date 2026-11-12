@@ -3,9 +3,11 @@
 `gdiff` estimates how sequence distance varies along a genome without alignment.
 It compares a query sequence against a reference sketch and uses a pseudo-likelihood model to estimate distances and find unusually close or divergent regions.
 
+Analysis scripts and datasets from the paper are available in [gdiff-analyses](https://github.com/bo1929/gdiff-analyses).
+
 The same sketch supports three analyses:
 
-- `dist`: randomly sample windows and estimate distances, summarize the sample into a genome-wide estimate.
+- `dist`: randomly sample windows and estimate distances; summarize the sample into a genome-wide estimate.
 - `roll`: estimate local distances in sliding windows -- very fast!
 - `map`: map intervals with distances that deviate from the rest of the genome (e.g., horizontal transfers).
 
@@ -100,57 +102,3 @@ gdiff merge -i ref_A.gds ref_B.gds -o combined.gds
 ## Output
 
 Results are tab-separated, with a header and provenance comments. Coordinates are 1-based and inclusive. `map` reports query coordinates, not corresponding positions in the reference.
-
-Key `map` columns:
-
-| Column | Meaning |
-|--------|---------|
-| `seq`, `reference`, `start`, `end` | Query sequence, reference sketch, and interval coordinates |
-| `alpha`, `threshold`, `side` | Background level, distance cutoff, and low/high side |
-| `d`, `d_seq`, `d_null` | Interval distance, whole-sequence distance, and background median |
-| `delta` | `d - d_null` |
-| `p_interval`, `q_interval` | Likelihood-ratio p-value against `d_null` and its BH adjustment across reported candidates |
-| `p_gamma` | Two-sided tail probability under the fitted background model |
-
-`roll` reports one distance per window, or separate forward and reverse-complement distances for sketches made with `--no-canonical`.
-
-## Common options
-
-Run `gdiff <command> --help` for the full option list.
-
-| Command | Option | Default | Purpose |
-|---------|--------|---------|---------|
-| `sketch` | `-k`, `-w`, `-h` | `23`, `k`, derived from `k` | k-mer length, minimizer window length, and LSH positions |
-| `sketch` | `--frac` | `0.5` | Fraction of LSH buckets retained |
-| `sketch` | `-l` | `333` | Sampled window length in k-mers; `0` omits windows |
-| `sketch` | `--sample-size` | `1000` | Maximum windows stored per genome |
-| `map` | `--levels` | `0.01 0.001 0.0001` | One to three two-sided background levels |
-| `map` | `--sample-size` | `1000` | Background windows per reference; at least `100` |
-| `map` | `-b`, `--bin-shift` | `0` | Group k-mers into bins of size `2^b` to reduce memory and coordinate resolution |
-| `map`, `roll` | `--hdist-th` | `3` | Maximum Hamming distance for a k-mer hit |
-| `dist` | `--hdist-th` | `3`, or `2` for inputs >20 Mb | Maximum Hamming distance for a k-mer hit |
-| Global | `--num-threads` | `1` | Worker threads |
-| Global | `--seed` | `0` | Random seed |
-| Global | `--verbose` | off | Report progress when stderr is not a terminal |
-
-The number of sampled windows is capped by the available starts. Sequences shorter than `L + k - 1` bases contribute no windows; check `gdiff info` for the count stored in a sketch.
-
-## Visualization
-
-`gviz.py` creates static, self-contained HTML reports for `map`, `roll`, `dist`, and `dist --output-samples`. Requires Python 3.10+; no server or internet connection is needed.
-
-```bash
-python3 -m pip install -r gviz/requirements.txt
-python3 gviz.py demo/output/distances.tsv
-python3 gviz.py demo/output/roll.tsv --seq AG-899-N21_NODE_6
-python3 gviz.py demo/output/intervals.tsv --seq AG-899-N21_NODE_6
-python3 gviz.py samples.tsv
-```
-
-Positional plots show the longest sequence by default. Use `--region 45000:60000` with `--seq` to focus on a locus, `--reference NAME` to select comparisons, and `--bins` to set resolution (default: 1,000). Add `--open` to open the report, or `-o gviz.png` / `-o gviz.svg` to save a figure.
-
-`map` shows reported intervals in separate reference tracks, using mean overlap when tracks are crowded. `roll` shows distance profiles on a shared scale. `dist` uses a matrix for small comparisons, and sampled distances use cumulative distributions with both directions shown together. Gray marks indicate missing estimates.
-
-The reader streams plain or gzipped TSVs in two passes; plot arrays and image size are bounded. Narrow features can disappear in chromosome-wide bins, so select a region for local detail. Comparisons with more than 60 genomes show a distance distribution and the 20 closest reported pairs. Reading, aggregation, rendering, and CLI code are separate modules in `gviz/`.
-
-Analysis scripts and datasets from the paper are available in [gdiff-analyses](https://github.com/bo1929/gdiff-analyses).
