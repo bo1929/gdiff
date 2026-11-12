@@ -102,3 +102,40 @@ gdiff merge -i ref_A.gds ref_B.gds -o combined.gds
 ## Output
 
 Results are tab-separated, with a header and provenance comments. Coordinates are 1-based and inclusive. `map` reports query coordinates, not corresponding positions in the reference.
+<<<<<<< HEAD
+=======
+
+Key `map` columns:
+
+| Column | Meaning |
+|--------|---------|
+| `seq`, `reference`, `start`, `end` | Query sequence, reference sketch, and interval coordinates |
+| `alpha`, `threshold`, `side` | Background level, distance cutoff, and low/high side |
+| `d`, `d_seq`, `d_null` | Interval distance, whole-sequence distance, and background median |
+| `delta` | `d - d_null` |
+| `p_interval`, `q_interval` | Likelihood-ratio p-value against `d_null` and its BH adjustment across reported candidates |
+| `p_gamma` | Two-sided tail probability under the fitted background model |
+
+`roll` reports one distance per window, or separate forward and reverse-complement distances for sketches made with `--no-canonical`.
+
+## Common options
+
+Run `gdiff <command> --help` for the full option list.
+
+| Command | Option | Default | Purpose |
+|---------|--------|---------|---------|
+| `sketch` | `-k`, `-w`, `-h` | `23`, `k`, derived from `k` | k-mer length, minimizer window length, and LSH positions |
+| `sketch` | `--frac` | `0.5` | Fraction of LSH buckets retained |
+| `sketch` | `-l` | `333` | Sampled window length in k-mers; `0` omits windows |
+| `sketch` | `--sample-size` | `1000` | Maximum windows stored per genome |
+| `map` | `--levels` | `0.01 0.001 0.0001` | One to three two-sided background levels |
+| `map` | `--sample-size` | `1000` | Background windows per reference; at least `100` |
+| `map` | `-b`, `--bin-shift` | `0` | Group k-mers into bins of size `2^b` to reduce memory and coordinate resolution |
+| `map`, `roll` | `--hdist-th` | `3` | Maximum Hamming distance for a k-mer hit |
+| `dist` | `--hdist-th` | `3`, or `2` for inputs >20 Mb | Maximum Hamming distance for a k-mer hit |
+| Global | `--num-threads` | `1` | Worker threads |
+| Global | `--seed` | `0` | Random seed |
+| Global | `--verbose` | off | Report progress when stderr is not a terminal |
+
+The number of sampled windows is capped by the available starts. Sequences shorter than `L + k - 1` bases contribute no windows; check `gdiff info` for the count stored in a sketch.
+Analysis scripts and datasets from the paper are available in [gdiff-analyses](https://github.com/bo1929/gdiff-analyses).
