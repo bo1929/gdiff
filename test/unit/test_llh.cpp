@@ -274,44 +274,4 @@ TEST_CASE("compute_lr_ub falls to zero at the estimable ceiling") {
   CHECK(std::abs(compute_lr_ub(llh, d_max_est, 500)) < 1e-6);
 }
 
-TEST_CASE("admissible_distance_range brackets the resolvable distances") {
-  LLH<double> llh(23, 9, 0.5, 3, 0.0, false);
-  const a_range_t r = admissible_distance_range(llh, 500, 6.635);
-  REQUIRE(r.is_ok);
-  CHECK(r.t_min == doctest::Approx(2.8844e-4).epsilon(0.02));
-  CHECK(r.t_max == doctest::Approx(0.276462).epsilon(1e-3));
-  CHECK(r.t_min < r.t_max);
-  CHECK(r.t_max < max_estimable_distance(llh, 500));
-
-  // Inside the range both LRs clear the cut; outside it, the violated end does not.
-  CHECK(compute_lr_lb(llh, r.t_min, 500) == doctest::Approx(6.635).epsilon(0.01));
-  CHECK(compute_lr_ub(llh, r.t_max, 500) == doctest::Approx(6.635).epsilon(0.01));
-  CHECK(compute_lr_lb(llh, 1e-5, 500) < 6.635);
-  CHECK(compute_lr_ub(llh, 0.35, 500) < 6.635);
-}
-
-TEST_CASE("the p-value columns calibrate the statistics the admissible range solves") {
-  // `map` reports p_lb / p_ub as these two statistics calibrated on chi-square, and the resolvable
-  // bounds are exactly where they cross --lr-th, so the bounds must land on p = 0.01.
-  LLH<double> llh(23, 9, 0.5, 3, 0.0, false);
-  constexpr uint64_t n_win = 500;
-  const a_range_t r = admissible_distance_range(llh, n_win, 6.635);
-  REQUIRE(r.is_ok);
-  CHECK(lr_pvalue(compute_lr_lb(llh, r.t_min, n_win)) == doctest::Approx(0.01).epsilon(1e-3));
-  CHECK(lr_pvalue(compute_lr_ub(llh, r.t_max, n_win)) == doctest::Approx(0.01).epsilon(1e-3));
-  // Inside the band the distance is resolved from both ends: each contrast rejects its own extreme.
-  CHECK(lr_pvalue(compute_lr_lb(llh, 1.5 * r.t_min, n_win)) < 0.01);
-  CHECK(lr_pvalue(compute_lr_ub(llh, 0.5 * r.t_max, n_win)) < 0.01);
-  // Below the floor the lower contrast stops rejecting identity, above the ceiling the upper stops
-  // rejecting the weakest detectable match, so the two values read the band from either side.
-  CHECK(lr_pvalue(compute_lr_lb(llh, 0.5 * r.t_min, n_win)) > 0.01);
-  CHECK(lr_pvalue(compute_lr_ub(llh, 1.5 * r.t_max, n_win)) > 0.01);
-}
-
-TEST_CASE("admissible_distance_range rejects a window nothing can be resolved in") {
-  LLH<double> llh(23, 9, 0.5, 3, 0.0, false);
-  CHECK_FALSE(admissible_distance_range(llh, 0, 6.635).is_ok);
-  CHECK_FALSE(admissible_distance_range(llh, 500, 1e9).is_ok); // no distance can clear the cut
-}
-
 } // TEST_SUITE

@@ -393,6 +393,34 @@ TEST_CASE("levels derive thresholds from the background" * doctest::skip(!test_d
   CHECK(any_finite_col(out, k_ag_null, k_ag_cols));
 }
 
+TEST_CASE("explicit thresholds become lanes verbatim" * doctest::skip(!test_data_available()))
+{
+  const auto fx = intmap_fixture_t::load("G000341695", "G000025025", false);
+  REQUIRE(!fx.qs->is_empty());
+  auto opts = make_opts(500, false, 33.0, {});
+  opts.thresholds_v = {0.02, 0.3};
+  const std::string out = run_intmap(fx, opts);
+  REQUIRE_FALSE(out.empty());
+  check_output_shape(out, false);
+  size_t rows = 0;
+  std::istringstream iss(out);
+  std::string line;
+  while (std::getline(iss, line)) {
+    if (line.empty()) continue;
+    const auto f = split_tsv(line);
+    REQUIRE(static_cast<int>(f.size()) == k_ag_cols);
+    const double th = std::stod(f[k_ag_threshold]);
+    CHECK((th == doctest::Approx(0.02) || th == doctest::Approx(0.3)));
+    // No level placed the threshold, so the alpha column stays NaN.
+    CHECK_FALSE(token_is_finite(f[k_ag_alpha]));
+    ++rows;
+  }
+  CHECK(rows > 0);
+  CHECK(any_finite_col(out, k_ag_dist, k_ag_cols));
+  // The hurdle gamma still scores significance even though it placed no threshold.
+  CHECK(any_finite_col(out, k_ag_pgamma, k_ag_cols));
+}
+
 } // TEST_SUITE
 
 TEST_SUITE("BackgroundSampler")
@@ -490,6 +518,33 @@ TEST_CASE("map --levels before the positionals does not swallow them" * doctest:
   REQUIRE(run_cli("map " + levels + target + " -o " + out.string() + " " + opts,
                   test_util::path("cli_map_devnull2.txt")));
   CHECK(test_util::strip_comments(test_util::read_file(out)) == via_stdout);
+}
+
+TEST_CASE("--thresholds bypasses level detection" * doctest::skip(!gdiff_cli_available()))
+{
+  const cli_fixture_t fx = make_cli_fixture();
+  REQUIRE_FALSE(fx.ref.empty());
+  const std::string target = fx.query.string() + " " + fx.ref.string();
+  const std::string opts = "-l 9900 --hdist-th 4 --sample-size 200 ";
+  const std::string out = map_stdout(opts + "--thresholds 0.02 0.3 " + target);
+  REQUIRE_FALSE(out.empty());
+  check_output_shape(out, false);
+  std::istringstream iss(out);
+  std::string line;
+  while (std::getline(iss, line)) {
+    if (line.empty()) continue;
+    const auto f = split_tsv(line);
+    if (static_cast<int>(f.size()) != k_ag_cols || f[0] == "seq") continue;
+    const double th = std::stod(f[k_ag_threshold]);
+    CHECK((th == doctest::Approx(0.02) || th == doctest::Approx(0.3)));
+    CHECK_FALSE(token_is_finite(f[k_ag_alpha]));
+  }
+  // The option replaces --levels and inherits the distance domain and uniqueness rules.
+  const auto sink = test_util::path("cli_map_thresholds_sink.tsv");
+  CHECK_FALSE(run_cli("map " + opts + "--thresholds 0.1 --levels 0.05 " + target, sink));
+  CHECK_FALSE(run_cli("map " + opts + "--thresholds 1.5 " + target, sink));
+  CHECK_FALSE(run_cli("map " + opts + "--thresholds 0 " + target, sink));
+  CHECK_FALSE(run_cli("map " + opts + "--thresholds 0.1 0.1 " + target, sink));
 }
 
 TEST_CASE("-d is rejected and -b is accepted" * doctest::skip(!gdiff_cli_available()))

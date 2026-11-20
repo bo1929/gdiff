@@ -5,8 +5,11 @@ set -euo pipefail
 #
 # Phases 1-2 pin `map` against the committed ground truth in gt/, comparing the complete row
 # (column header included) rather than a stable prefix:
-#   gt/*.enum.txt  -- expected per-threshold enumeration output (the default mode)
-#   gt/*.cont.txt  -- expected --iterative-removal output
+#   gt/*.enum.txt  -- expected per-lane enumeration output (--independent-levels)
+#   gt/*.cont.txt  -- expected gap-claiming output (the default mode)
+# Both golden phases pass fixed distance cutoffs through --thresholds, so the ground truth is
+# independent of the background detection; the --levels path is covered by the phase 4
+# invariants instead.
 # A legitimate change to any column, including the significance ones, means regenerating gt/:
 # delete the files and re-run, and the bootstrap below rewrites them.
 #
@@ -52,7 +55,9 @@ strip_comments() { grep -v '^#' "$1" || true; }
 # True when an output holds at least one data line, i.e. more than its provenance header.
 has_data() { [ -n "$(strip_comments "$1")" ]; }
 
-first_name="$(head -n 1 genome_names.txt)"
+# True when a map TSV holds at least one record, i.e. more than its column header.
+has_records() { [ -n "$(strip_comments "$1" | awk 'NR == 2 { print; exit }')" ]; }
+
 first_query="$(cut -f1 genome_pairs.txt | head -n 1)"
 first_ref="$(cut -f2 genome_pairs.txt | head -n 1)"
 # Two distinct genomes, for the phases that need a pair of sketches.
@@ -67,10 +72,10 @@ while read -r name; do
 done < genome_names.txt
 wait
 
-# -- Phase 1: per-threshold enumeration (default) ------------------------------
+# -- Phase 1: per-lane enumeration (--independent-levels) ------------------------
 echo "=== Phase 1: enumeration regression ==="
 mkdir -p "$WORK/est"
-ENUM_OPTS="-d 0.10 -l 9900 --hdist-th 4 --chisq 10000"
+ENUM_OPTS="--thresholds 0.02 0.3 -l 9900 --hdist-th 4 --chisq 10000 --independent-levels"
 while IFS=$'\t' read -r query ref; do
   "$GDIFF" map $ENUM_OPTS \
     "genomes/${query}.fna.gz" \
@@ -83,9 +88,13 @@ wait
 ENUM_FAIL=0
 ENUM_DETAIL=""
 ENUM_GT_MISSING=0
+ENUM_WITH_RECORDS=0
 while IFS=$'\t' read -r query ref; do
   gt_f="gt/query_${query}-ref_${ref}.enum.txt"
   es_f="$WORK/est/query_${query}-ref_${ref}.enum.txt"
+  if [ -s "$es_f" ] && has_records "$es_f"; then
+    ENUM_WITH_RECORDS=$((ENUM_WITH_RECORDS + 1))
+  fi
   if [ ! -f "$gt_f" ]; then
     ENUM_GT_MISSING=1
     continue
@@ -96,11 +105,21 @@ while IFS=$'\t' read -r query ref; do
     ENUM_DETAIL+="  differs: $es_f vs $gt_f\n"
   fi
 done < genome_pairs.txt
+# A divergent pair may legitimately stay silent at the pinned cutoffs - its header-only report
+# is then the ground truth, pinning the absence of calls - but a silent whole corpus means the
+# pipeline is broken.
+if [ "$ENUM_WITH_RECORDS" -eq 0 ]; then
+  ENUM_FAIL=1
+  ENUM_DETAIL+="  no pair produced any records\n"
+fi
 
-if [ "$ENUM_GT_MISSING" -eq 1 ]; then
+if [ "$ENUM_GT_MISSING" -eq 1 ] && [ "$ENUM_WITH_RECORDS" -gt 0 ]; then
   echo "WARN: gt/*.enum.txt not found; generating ground truth from current output."
   while IFS=$'\t' read -r query ref; do
-    strip_comments "$WORK/est/query_${query}-ref_${ref}.enum.txt" > "gt/query_${query}-ref_${ref}.enum.txt"
+    es_f="$WORK/est/query_${query}-ref_${ref}.enum.txt"
+    if [ -s "$es_f" ]; then
+      strip_comments "$es_f" > "gt/query_${query}-ref_${ref}.enum.txt"
+    fi
   done < genome_pairs.txt
   ENUM_FAIL=0
   echo "PASS: enumeration ground truth generated (first run)."
@@ -111,9 +130,9 @@ else
   echo "PASS: enumeration"
 fi
 
-# -- Phase 2: iterative removal ------------------------------------------------
-echo "=== Phase 2: iterative-removal regression ==="
-CONT_OPTS="-d 0.10 -l 9900 --hdist-th 4 --chisq 33.00051 --iterative-removal"
+# -- Phase 2: gap-claiming (default mode) ---------------------------------------
+echo "=== Phase 2: gap-claiming regression ==="
+CONT_OPTS="--thresholds 0.02 0.3 -l 9900 --hdist-th 4 --chisq 33.00051"
 while IFS=$'\t' read -r query ref; do
   "$GDIFF" map $CONT_OPTS \
     "genomes/${query}.fna.gz" \
@@ -126,9 +145,13 @@ wait
 CONT_FAIL=0
 CONT_DETAIL=""
 CONT_GT_MISSING=0
+CONT_WITH_RECORDS=0
 while IFS=$'\t' read -r query ref; do
   gt_f="gt/query_${query}-ref_${ref}.cont.txt"
   es_f="$WORK/est/query_${query}-ref_${ref}.cont.txt"
+  if [ -s "$es_f" ] && has_records "$es_f"; then
+    CONT_WITH_RECORDS=$((CONT_WITH_RECORDS + 1))
+  fi
   if [ ! -f "$gt_f" ]; then
     CONT_GT_MISSING=1
     continue
@@ -139,53 +162,53 @@ while IFS=$'\t' read -r query ref; do
     CONT_DETAIL+="  differs: $es_f vs $gt_f\n"
   fi
 done < genome_pairs.txt
+# Same rule as phase 1: per-pair silence is ground truth, corpus-wide silence is a break.
+if [ "$CONT_WITH_RECORDS" -eq 0 ]; then
+  CONT_FAIL=1
+  CONT_DETAIL+="  no pair produced any records\n"
+fi
 
-if [ "$CONT_GT_MISSING" -eq 1 ]; then
+if [ "$CONT_GT_MISSING" -eq 1 ] && [ "$CONT_WITH_RECORDS" -gt 0 ]; then
   echo "WARN: gt/*.cont.txt not found; generating ground truth from current output."
   while IFS=$'\t' read -r query ref; do
-    strip_comments "$WORK/est/query_${query}-ref_${ref}.cont.txt" > "gt/query_${query}-ref_${ref}.cont.txt"
+    es_f="$WORK/est/query_${query}-ref_${ref}.cont.txt"
+    if [ -s "$es_f" ]; then
+      strip_comments "$es_f" > "gt/query_${query}-ref_${ref}.cont.txt"
+    fi
   done < genome_pairs.txt
   CONT_FAIL=0
-  echo "PASS: continuous ground truth generated (first run)."
+  echo "PASS: gap-claiming ground truth generated (first run)."
 elif [ "$CONT_FAIL" -ne 0 ]; then
-  echo "FAIL: continuous output differs from ground truth"
+  echo "FAIL: gap-claiming output differs from ground truth"
   printf "%b" "$CONT_DETAIL"
 else
-  echo "PASS: continuous"
+  echo "PASS: gap-claiming"
 fi
 
 # -- Phase 3: refused inputs ---------------------------------------------------
 echo "=== Phase 3: refused inputs ==="
-if "$GDIFF" map --hdist-th 8 -d 0.10 -l 9900 \
-  "genomes/${first_name}.fna.gz" "$WORK/sketches/${first_name}.gs" >/dev/null 2>&1; then
-  fail "map accepted unsupported --hdist-th 8"
-fi
-# A distance-threshold width of neither 1 nor 8 lanes has no meaning.
-if "$GDIFF" map -d 0.1 -d 0.2 -d 0.3 -l 9900 \
-  "genomes/${first_query}.fna.gz" "$WORK/sketches/${first_ref}.gs" >/dev/null 2>&1; then
-  fail "map accepted three distance lanes"
-fi
-# The threshold count is checked before any sequence is read.
-if "$GDIFF" map -d 0.1 -d 0.2 -l 9900 \
-  "genomes/${first_query}.fna.gz" "$WORK/sketches/${first_ref}.gs" >/dev/null 2>&1; then
-  fail "map accepted two distance lanes"
-fi
-if "$GDIFF" map -d 0.1 -l 9900 \
-  "genomes/${first_query}.fna.gz" "$WORK/does_not_exist.gs" >/dev/null 2>&1; then
-  fail "map accepted a missing reference container"
-fi
-
-# A p-value needs a usable pool: 0 (test off) or at least 100 background windows.
-if "$GDIFF" map -d 0.10 -l 9900 --sample-size 50 \
-  "genomes/${first_query}.fna.gz" "$WORK/sketches/${first_ref}.gs" >/dev/null 2>&1; then
-  fail "map accepted --sample-size 50, below the minimum pool"
-fi
-
-# --levels takes its thresholds from that pool, so 0 leaves nothing to place.
-if "$GDIFF" map --levels 0.1 0.05 -l 9900 --sample-size 0 \
-  "genomes/${first_query}.fna.gz" "$WORK/sketches/${first_ref}.gs" >/dev/null 2>&1; then
-  fail "map accepted --levels with --sample-size 0"
-fi
+rejects() { # $1 = label, rest = map arguments; the run must fail
+  local why="$1"
+  shift
+  if "$GDIFF" map "$@" >/dev/null 2>&1; then
+    fail "map accepted $why"
+  fi
+}
+refused_query="genomes/${first_query}.fna.gz"
+refused_ref="$WORK/sketches/${first_ref}.gs"
+rejects "unsupported --hdist-th 8" --hdist-th 8 --thresholds 0.1 -l 9900 "$refused_query" "$refused_ref"
+# --thresholds packs one lane per value: at most 8 fit the register, every value must sit in
+# (0, 1), values must be unique, and the option replaces --levels rather than joining it.
+rejects "nine threshold lanes" --thresholds 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9 -l 9900 "$refused_query" "$refused_ref"
+rejects "duplicate thresholds" --thresholds 0.1 0.1 -l 9900 "$refused_query" "$refused_ref"
+rejects "an out-of-domain threshold" --thresholds 1.5 -l 9900 "$refused_query" "$refused_ref"
+rejects "--thresholds together with --levels" --thresholds 0.1 --levels 0.05 -l 9900 "$refused_query" "$refused_ref"
+# --levels budgets two thresholds per level and caps the list at three.
+rejects "four levels" --levels 0.1 0.05 0.01 0.005 -l 9900 "$refused_query" "$refused_ref"
+rejects "a missing reference container" --thresholds 0.1 -l 9900 "$refused_query" "$WORK/does_not_exist.gs"
+# A p-value needs a usable pool: at least 100 background windows.
+rejects "--sample-size 50, below the minimum pool" --thresholds 0.1 -l 9900 --sample-size 50 "$refused_query" "$refused_ref"
+rejects "--levels with --sample-size 0" --levels 0.1 0.05 -l 9900 --sample-size 0 "$refused_query" "$refused_ref"
 echo "PASS: refused inputs"
 
 # -- Phase 4: map option equivalence ------------------------------------------
@@ -198,77 +221,71 @@ map_once() { # $1 = output file, rest = extra options
     > "$out" 2>/dev/null
 }
 
-map_once "$WORK/map_ref.tsv" -d 0.10
+map_once "$WORK/map_ref.tsv" --levels 0.05 0.01 0.005
 strip_comments "$WORK/map_ref.tsv" > "$WORK/map_ref.data"
-has_data "$WORK/map_ref.tsv" || fail "map produced no records at all"
+has_records "$WORK/map_ref.tsv" || fail "map produced no records at all"
 
 # -o must write exactly what stdout would.
-"$GDIFF" map -o "$WORK/map_o.tsv" -d 0.10 $MAP_BASE \
+"$GDIFF" map -o "$WORK/map_o.tsv" --levels 0.05 0.01 0.005 $MAP_BASE \
   "genomes/${first_query}.fna.gz" "$WORK/sketches/${first_ref}.gs" >/dev/null 2>&1
 strip_comments "$WORK/map_o.tsv" > "$WORK/map_o.data"
 cmp -s "$WORK/map_ref.data" "$WORK/map_o.data" || fail "map -o differs from the stdout report"
 
-# -d immediately before the positionals must not swallow them (regression: the following -o
-# became unreachable and the run died with "query-path is required").
-"$GDIFF" map -d 0.10 "genomes/${first_query}.fna.gz" "$WORK/sketches/${first_ref}.gs" \
-  -o "$WORK/map_d_first_o.tsv" $MAP_BASE >/dev/null 2>&1 \
-  || fail "map -d before the positionals with -o failed"
-strip_comments "$WORK/map_d_first_o.tsv" > "$WORK/map_d_first_o.data"
-cmp -s "$WORK/map_ref.data" "$WORK/map_d_first_o.data" \
-  || fail "map -d before the positionals differs from the reference report"
+# A multi-value option immediately before the positionals must not swallow them (regression:
+# the following -o became unreachable and the run died with "query-path is required"). Both
+# option families carry the trap.
+"$GDIFF" map --levels 0.05 0.01 0.005 "genomes/${first_query}.fna.gz" "$WORK/sketches/${first_ref}.gs" \
+  -o "$WORK/map_levels_first_o.tsv" $MAP_BASE >/dev/null 2>&1 \
+  || fail "map --levels before the positionals with -o failed"
+strip_comments "$WORK/map_levels_first_o.tsv" > "$WORK/map_levels_first_o.data"
+cmp -s "$WORK/map_ref.data" "$WORK/map_levels_first_o.data" \
+  || fail "map --levels before the positionals differs from the reference report"
+
+"$GDIFF" map --thresholds 0.02 0.3 "genomes/${first_query}.fna.gz" "$WORK/sketches/${first_ref}.gs" \
+  -o "$WORK/map_th_first_o.tsv" $MAP_BASE >/dev/null 2>&1 \
+  || fail "map --thresholds before the positionals with -o failed"
+has_records "$WORK/map_th_first_o.tsv" || fail "--thresholds before the positionals produced no output"
 
 # The worker count must not change the records.
-"$GDIFF" --num-threads 4 map -d 0.10 $MAP_BASE \
+"$GDIFF" --num-threads 4 map --levels 0.05 0.01 0.005 $MAP_BASE \
   "genomes/${first_query}.fna.gz" "$WORK/sketches/${first_ref}.gs" > "$WORK/map_t4.tsv" 2>/dev/null
 strip_comments "$WORK/map_t4.tsv" > "$WORK/map_t4.data"
 cmp -s "$WORK/map_ref.data" "$WORK/map_t4.data" || fail "map output depends on --num-threads"
 
-# --levels resolves its own thresholds from the background and must stay well formed.
-map_once "$WORK/map_levels.tsv" --levels 0.05 0.01 0.005
-has_data "$WORK/map_levels.tsv" || fail "map --levels produced no output"
-
-# The two bounds are always lanes, whatever the model places, and two model thresholds per level
-# plus the bounds fit the eight lanes.
-lanes() { # echoes "<n_lanes> <n_bounds>" from the run's threshold report
+# --levels resolves its own thresholds from the background and must stay well formed: each
+# level places at most one low and one high lane, so three levels fit at most 6 of the 8.
+n_lanes="$(
   "$GDIFF" map --levels 0.05 0.01 0.005 "genomes/${first_query}.fna.gz" \
     "$WORK/sketches/${first_ref}.gs" $MAP_BASE 2>&1 >/dev/null |
-    awk '/threshold=/ { n++; if ($0 ~ /\(bound\)/) b++ } END { print n + 0, b + 0 }'
-}
-read -r n_lanes n_bounds <<<"$(lanes)"
-[ "$n_lanes" -ge 3 ] && [ "$n_lanes" -le 8 ] || fail "--levels ran $n_lanes lanes, expected 3 to 8"
-[ "$n_bounds" -eq 2 ] || fail "--levels reported $n_bounds bounds, expected 2"
+    awk '/threshold=/ { n++ } END { print n + 0 }'
+)"
+[ "$n_lanes" -ge 2 ] && [ "$n_lanes" -le 6 ] || fail "--levels ran $n_lanes lanes, expected 2 to 6"
 
-# Iterative removal is where a collapsed or clamped lane used to yield an empty d_bin bracket, so
-# every record must name a band that really brackets its lane's threshold.
-map_once "$WORK/map_levels_iter.tsv" --levels 0.05 0.01 0.005 --iterative-removal
-has_data "$WORK/map_levels_iter.tsv" || fail "map --levels --iterative-removal produced no output"
-if ! strip_comments "$WORK/map_levels_iter.tsv" |
-  awk -F'\t' 'NR>1 { gsub(/[()]/, "", $8); split($8, p, ","); if (p[1] + 0 >= p[2] + 0) bad = 1 } END { exit bad ? 1 : 0 }'; then
-  fail "a map record reported an empty d_bin bracket"
+# --thresholds places the given cutoffs verbatim: every record must name one of them, carry no
+# alpha (no level placed it), and sit on the side of the background median its value implies.
+map_once "$WORK/map_th.tsv" --thresholds 0.02 0.3
+has_records "$WORK/map_th.tsv" || fail "map --thresholds produced no output"
+if ! strip_comments "$WORK/map_th.tsv" | awk -F'\t' '
+  NR == 1 { for (i = 1; i <= NF; i++) col[$i] = i; next }
+  {
+    th = $(col["threshold"]) + 0
+    dn = $(col["d_null"]) + 0
+    if (th != 0.02 && th != 0.3) bad = 1
+    else if ($(col["alpha"]) != "nan") bad = 2
+    else if (th <= dn && $(col["side"]) != "low") bad = 3
+    else if (th > dn && $(col["side"]) != "high") bad = 4
+  }
+  END { exit bad ? 1 : 0 }'; then
+  fail "a --thresholds record carried an unexpected threshold, alpha, or side"
 fi
 
-# --levels immediately before the positionals must not swallow them either (same CLI11 trap).
-"$GDIFF" map --levels 0.05 0.01 0.005 "genomes/${first_query}.fna.gz" \
-  "$WORK/sketches/${first_ref}.gs" -o "$WORK/map_levels_first_o.tsv" $MAP_BASE >/dev/null 2>&1 \
-  || fail "map --levels before the positionals with -o failed"
-strip_comments "$WORK/map_levels_first_o.tsv" > "$WORK/map_levels_first_o.data"
-cmp -s <(strip_comments "$WORK/map_levels.tsv") "$WORK/map_levels_first_o.data" \
-  || fail "map --levels before the positionals differs from the reference report"
-
-# --sample-size 0 switches the test off and no record may carry a p-value. The iterative mode
-# reports the whole query when nothing crosses, so records are guaranteed.
-"$GDIFF" map -d 0.10 -l 9900 --hdist-th 4 --sample-size 0 --iterative-removal \
-  "genomes/${first_query}.fna.gz" "$WORK/sketches/${first_ref}.gs" \
-  > "$WORK/map_nosample.tsv" 2>/dev/null || fail "map --sample-size 0 failed"
-n_nosample="$(strip_comments "$WORK/map_nosample.tsv" | awk 'NR>1' | wc -l | tr -d ' ')"
-[ "$n_nosample" -gt 0 ] || fail "map --sample-size 0 produced no records"
-if strip_comments "$WORK/map_nosample.tsv" | awk -F'\t' 'NR>1 && $11 != "nan" { found=1 } END { exit !found }'; then
-  fail "--sample-size 0 still reported p-values"
-fi
+# Both extraction modes must report on the same lanes.
+map_once "$WORK/map_th_ind.tsv" --thresholds 0.02 0.3 --independent-levels
+has_records "$WORK/map_th_ind.tsv" || fail "map --thresholds --independent-levels produced no output"
 
 # -b is an alternate mode, not a failure.
-map_once "$WORK/map_b2.tsv" -d 0.10 -b 2
-has_data "$WORK/map_b2.tsv" || fail "map -b 2 produced no output"
+map_once "$WORK/map_b2.tsv" --thresholds 0.02 0.3 -b 2
+has_records "$WORK/map_b2.tsv" || fail "map -b 2 produced no output"
 echo "PASS: map option equivalence"
 
 # -- Phase 5: dist -------------------------------------------------------------
@@ -358,7 +375,7 @@ echo "=== Phase 8: provenance header ==="
 # so theirs go to stderr.
 for probe in map dist roll info; do
   case "$probe" in
-    map)  "$GDIFF" map -d 0.10 $MAP_BASE "genomes/${first_query}.fna.gz" "$WORK/sketches/${first_ref}.gs" \
+    map)  "$GDIFF" map --thresholds 0.1 $MAP_BASE "genomes/${first_query}.fna.gz" "$WORK/sketches/${first_ref}.gs" \
             > "$WORK/prov_$probe.txt" 2>/dev/null ;;
     dist) "$GDIFF" dist "$sketch_a" "$sketch_b" > "$WORK/prov_$probe.txt" 2>/dev/null ;;
     roll) "$GDIFF" roll -l 100 -s 500 "genomes/${first_query}.fna.gz" "$sketch_a" \
@@ -387,15 +404,15 @@ echo "PASS: provenance header"
 echo "=== Phase 9: map output schema ==="
 # `map` names its columns so `gviz.py` can find them by name instead of by position; the
 # strand-aware variant is not covered by the gt/ files above.
-EXPECT_AGNOSTIC="seq seq_len start end reference d mask d_bin d_seq d_acc pvalue fold qvalue fisher_info p_lb p_ub"
-EXPECT_AWARE="seq seq_len start end strand is_rc reference d mask d_bin d_seq d_diff d_acc pvalue fold qvalue fisher_info p_lb p_ub"
+EXPECT_AGNOSTIC="seq seq_len start end reference alpha threshold side interval_len n_kmers d d_seq d_null delta d_min d_max d_floor d_ceiling n_at_floor n_at_ceiling p_interval q_interval p_gamma"
+EXPECT_AWARE="seq seq_len start end strand is_rc reference alpha threshold side interval_len n_kmers d d_seq d_null delta d_min d_max d_floor d_ceiling n_at_floor n_at_ceiling p_interval q_interval p_gamma"
 
 agnostic_header="$(strip_comments "$WORK/map_ref.tsv" | head -n 1 | tr '\t' ' ')"
 [ "$agnostic_header" = "$EXPECT_AGNOSTIC" ] || fail "strand-agnostic map header changed: $agnostic_header"
 
 "$GDIFF" sketch -k 27 -w 31 -h 11 --no-canonical -i "genomes/${first_query}.fna.gz" \
   -o "$WORK/aware.gs" >/dev/null 2>&1
-"$GDIFF" map -d 0.10 -l 9900 --hdist-th 4 --sample-size 100 "genomes/${first_query}.fna.gz" \
+"$GDIFF" map --thresholds 0.1 -l 9900 --hdist-th 4 --sample-size 100 "genomes/${first_query}.fna.gz" \
   "$WORK/aware.gs" > "$WORK/aware.tsv" 2>/dev/null
 aware_header="$(strip_comments "$WORK/aware.tsv" | head -n 1 | tr '\t' ' ')"
 [ "$aware_header" = "$EXPECT_AWARE" ] || fail "strand-aware map header changed: $aware_header"
@@ -429,7 +446,7 @@ gzip -dc "genomes/${first_query}.fna.gz" | awk '
   }' > "$WORK/nrun.fa"
 
 nrun_map() {
-  "$GDIFF" map -l 5000 -d 0.60 --hdist-th 4 "$WORK/nrun.fa" "$WORK/sketches/${first_query}.gs" \
+  "$GDIFF" map -l 5000 --thresholds 0.60 --hdist-th 4 "$WORK/nrun.fa" "$WORK/sketches/${first_query}.gs" \
     > "$1" 2>/dev/null
 }
 nrun_map "$WORK/nrun.tsv" || fail "map failed on an N-run query"

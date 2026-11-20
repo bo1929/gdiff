@@ -3,6 +3,7 @@
 import csv
 import gzip
 import math
+import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -10,11 +11,12 @@ from pathlib import Path
 ALIASES = {
     "query_id": "seq", "qid": "seq", "ref_id": "reference",
     "interval_start": "start", "interval_end": "end", "dist": "d",
+    "chrom": "seq", "chromosome": "seq", "contig": "seq",
 }
 MISSING = {"", ".", "na", "n/a", "nan", "-nan", "inf", "-inf"}
 MAX_SERIES = 12
 MATRIX_LIMIT = 60
-RAW_INTERVAL_LIMIT = 256
+MAX_FEATURES = 2000
 
 
 def detect_kind(columns):
@@ -81,7 +83,7 @@ class Table:
                     if len(fields) != len(self.columns):
                         raise ValueError(f"expected {len(self.columns)} fields, found {len(fields)}")
                     row = dict(zip(self.columns, fields))
-                    for name in ("d", "d_fw", "d_rc"):
+                    for name in ("d", "d_fw", "d_rc", "p_two", "alpha", "q_interval"):
                         if name in row:
                             row[name] = number(row[name])
                     if self.kind != "dist":
@@ -108,23 +110,9 @@ class Table:
 @dataclass
 class Selection:
     sequence: str | None = None
-    region: tuple | None = None
-    references: tuple = ()
 
     def matches(self, row, kind):
-        if self.sequence is not None and row.get("seq") != self.sequence:
-            return False
-        if self.references:
-            names = (row["genome_a"], row["genome_b"]) if kind in {"dist", "samples"} else (row["reference"],)
-            if not any(name in self.references for name in names):
-                return False
-        if self.region:
-            start, end = self.region
-            if kind == "map":
-                return row["end"] >= start and row["start"] <= end
-            center = (row["start"] - 1 + row["end"]) / 2
-            return start - 1 <= center < end
-        return True
+        return self.sequence is None or row.get("seq") == self.sequence
 
 
 def series(row, kind):
@@ -142,6 +130,19 @@ def series(row, kind):
     return [(key, row["d"])]
 
 
+def short_name(name):
+    for suffix in (".gz", ".fasta", ".fastq", ".fna", ".fa", "_contigs"):
+        name = name.removesuffix(suffix)
+    return name
+
+
+def display_names(names):
+    """Remove common suffixes only when the remaining names are unambiguous."""
+    names = set(names)
+    counts = Counter(short_name(name) for name in names)
+    return {name: short_name(name) if counts[short_name(name)] == 1 else name for name in names}
+
+
 @dataclass
 class Overview:
     total: int = 0
@@ -151,6 +152,8 @@ class Overview:
     high: float = -math.inf
     lengths: dict = field(default_factory=dict)
     groups: dict = field(default_factory=lambda: defaultdict(Counter))
+    span: dict = field(default_factory=dict)     # longest single interval per seq
+    spans: dict = field(default_factory=lambda: defaultdict(Counter))  # covered span per series key
     genomes: set = field(default_factory=set)
     genomes_a: set = field(default_factory=set)
     genomes_b: set = field(default_factory=set)
@@ -178,9 +181,12 @@ def inspect(table, selection):
             seq = row["seq"]
             overview.lengths[seq] = max(overview.lengths.get(seq, 0), row.get("seq_len", row["end"]))
             values = series(row, table.kind)
+            span = row["end"] - row["start"] + 1
+            overview.span[seq] = max(overview.span.get(seq, 0), span)
             scope = "all" if table.kind == "samples" else seq
             for key, _ in values:
                 overview.groups[scope][key] += 1
+                overview.spans[scope][key] += span
         for _, value in values:
             if math.isfinite(value):
                 overview.low = min(overview.low, value)
@@ -190,3 +196,63 @@ def inspect(table, selection):
     if not overview.selected:
         raise ValueError("No rows match the selection (use exact sequence/reference names)")
     return overview
+
+
+@dataclass
+class Feature:
+    seq: str
+    start: int
+    end: int
+    strand: str
+    name: str
+
+
+def _gff_name(attributes):
+    for key in ("Name", "gene_name", "gene", "ID"):
+        match = re.search(rf"(?:^|;){key}=([^;]+)", attributes)
+        if match:
+            return match.group(1)[:40]
+    return ""
+
+
+def read_annotations(path, limit=MAX_FEATURES):
+    """Gene/feature track from a TSV (seq, start, end, optional strand/name columns,
+    as in demo/data/operon.tsv) or a GFF3 file. 1-based inclusive coordinates."""
+    path = Path(path)
+    opener = gzip.open if path.suffix == ".gz" else open
+    features = []
+    truncated = False
+    with opener(path, "rt", encoding="utf-8-sig", errors="replace") as handle:
+        columns = None
+        for line_no, line in enumerate(handle, 1):
+            if not line.strip() or line.startswith("#"):
+                continue
+            parts = line.rstrip("\n").split("\t")
+            if columns is None and not (len(parts) >= 9 and parts[3].isdigit()):
+                names = [ALIASES.get(c.strip().lower(), c.strip().lower()) for c in parts]
+                if not {"seq", "start", "end"} <= set(names):
+                    raise ValueError(f"{path}: annotation header needs seq/chrom, start, end columns")
+                columns = names
+                continue
+            try:
+                if columns is not None:
+                    row = dict(zip(columns, parts))
+                    seq, start, end = row["seq"], int(row["start"]), int(row["end"])
+                    strand = row.get("strand", ".") or "."
+                    name = next((row[c] for c in ("gene", "name", "product", "locus_tag", "id")
+                                 if c in row and row[c]), "")
+                else:
+                    seq, start, end = parts[0], int(parts[3]), int(parts[4])
+                    strand = parts[6] if len(parts) > 6 else "."
+                    name = _gff_name(parts[8]) if len(parts) > 8 else ""
+                if end < start or start < 1:
+                    raise ValueError("coordinates must be 1-based with end >= start")
+            except (ValueError, KeyError, IndexError) as error:
+                raise ValueError(f"{path}:{line_no}: {error}") from error
+            if len(features) >= limit:
+                truncated = True
+                break
+            features.append(Feature(seq, start, end, strand, name or f"feature {len(features) + 1}"))
+    if not features:
+        raise ValueError(f"{path}: no annotation features parsed")
+    return features, truncated

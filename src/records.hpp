@@ -107,25 +107,6 @@ inline interval_t get_coordinates(const interval_t& bin_iv, uint64_t bin_shift, 
   return {a, b};
 }
 
-// Minimum background windows for a p-value to mean anything. `map` raises this to a tenth of its
-// `--sample-size`; 8 is the floor for callers that do not carry a sample size.
-inline constexpr size_t min_null_samples = 8;
-
-// Empirical two-sided p-value of r.d within a sorted background pool; sets pvalue and fold. Both
-// tails are treated alike, so a record that is unusually *similar* and one that is unusually
-// *divergent* are scored on the same scale - the scale `benjamini_hochberg_correction` consumes,
-// which is why the reported column and the q-value can never disagree.
-inline void apply_empirical_significance(record_t& r, const vec<double>& pool_v, size_t min_samples = min_null_samples)
-{
-  if (!is_valid_distance(r.d) || pool_v.size() < min_samples) return;
-  assert(std::is_sorted(pool_v.begin(), pool_v.end()));
-  const size_t le = static_cast<size_t>(std::upper_bound(pool_v.begin(), pool_v.end(), r.d) - pool_v.begin());
-  const double prob = static_cast<double>(le) / static_cast<double>(pool_v.size());
-  r.pvalue = std::clamp(2.0 * std::min(prob, 1.0 - prob), 0.0, 1.0);
-  const double median = linear_quantile(pool_v, 0.5);
-  if (median > eps) r.fold = r.d / median;
-}
-
 // Per-strand Benjamini-Hochberg adjustment of the interval-level p-values.
 inline void benjamini_hochberg_intervals(vec<record_t>& records_v)
 {
@@ -143,28 +124,6 @@ inline void benjamini_hochberg_intervals(vec<record_t>& records_v)
       record_t& r = records_v[idx_v[i]];
       q_min = std::min(q_min, std::min(1.0, r.p_interval * m / static_cast<double>(i + 1)));
       r.q_interval = q_min;
-    }
-  }
-}
-
-// Per-strand Benjamini-Hochberg adjustment of the p-values into qvalues.
-inline void benjamini_hochberg_correction(vec<record_t>& records_v)
-{
-  for (bool is_rc : {false, true}) {
-    vec<size_t> idx_v;
-    for (size_t i = 0; i < records_v.size(); ++i)
-      if (records_v[i].is_rc == is_rc && std::isfinite(records_v[i].pvalue)) idx_v.push_back(i);
-    if (idx_v.empty()) continue;
-
-    std::sort(idx_v.begin(), idx_v.end(), [&](size_t a, size_t b) { return records_v[a].pvalue < records_v[b].pvalue; });
-
-    const double m = static_cast<double>(idx_v.size());
-    double q_min = 1.0;
-    // Walk from the largest p down; `rank` counts from 1, so `i + 1` is the rank.
-    for (size_t i = idx_v.size(); i-- > 0;) {
-      record_t& r = records_v[idx_v[i]];
-      q_min = std::min(q_min, std::min(1.0, r.pvalue * m / static_cast<double>(i + 1)));
-      r.qvalue = q_min;
     }
   }
 }

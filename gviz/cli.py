@@ -1,51 +1,48 @@
-"""Command line for gviz.py."""
+"""Command line for gviz.py: inputs, output path, sequence, annotations. Nothing else."""
 
 import argparse
 from pathlib import Path
 import sys
-import webbrowser
 
-from .data import Selection, Table
-
-
-def region(value):
-    try:
-        start, end = map(int, value.split(":"))
-        if 1 <= start <= end:
-            return start, end
-    except ValueError:
-        pass
-    raise argparse.ArgumentTypeError("region must be START:END with 1 <= START <= END")
+from .data import Selection, Table, read_annotations
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Static, offline plots of gdiff map, roll, dist, and sampled distances.")
-    parser.add_argument("input", type=Path, help="gdiff TSV or TSV.gz")
-    parser.add_argument("-o", "--output", type=Path, help="HTML (default), PNG, or SVG")
-    parser.add_argument("--seq", help="exact sequence name; positional plots default to the longest sequence")
-    parser.add_argument("--region", type=region, help="1-based inclusive START:END; requires --seq")
-    parser.add_argument("--reference", action="append", default=[], metavar="NAME",
-                        help="exact reference name (repeatable); dist/samples select pairs involving NAME")
-    parser.add_argument("--bins", type=int, default=1000, help="maximum positional bins [1000], range 1–10000")
-    parser.add_argument("--open", action="store_true", help="open the output in a browser")
+    parser = argparse.ArgumentParser(
+        description="Static, offline plots of gdiff map, roll, dist, and sampled distances.")
+    parser.add_argument("input", type=Path, nargs="+",
+                        help="gdiff TSV or TSV.gz; an optional second positional file adds its "
+                             "tracks to the same position axis (map over roll, or roll over map)")
+    parser.add_argument("-o", "--output", type=Path,
+                        help="HTML (default, next to the input), PNG, or SVG")
+    parser.add_argument("--seq", help="exact sequence name for positional plots; without it the "
+                                      "HTML report traverses every sequence with arrow links")
+    parser.add_argument("--annotations", type=Path,
+                        help="gene track: TSV with seq, start, end (plus optional strand and name "
+                             "columns) or a GFF3 file; drawn under positional plots")
     args = parser.parse_args(argv)
-    if not 1 <= args.bins <= 10000:
-        parser.error("--bins must be between 1 and 10000")
-    if args.region and not args.seq:
-        parser.error("--region requires --seq")
-    output = args.output or args.input.with_name(args.input.name + ".html")
+    if len(args.input) > 2:
+        parser.error("at most two input tables (a primary and one overlay)")
+    output = args.output or args.input[0].with_name(args.input[0].name + ".html")
     if output.suffix.lower() not in {".html", ".png", ".svg"}:
         parser.error("output must end in .html, .png, or .svg")
-    if output.resolve() == args.input.resolve():
+    if output.resolve() == args.input[0].resolve():
         parser.error("output must differ from input")
     try:
         from .aggregate import summarize
         from .render import write_report
-        table = Table(args.input)
+        table = Table(args.input[0])
+        overlay = Table(args.input[1]) if len(args.input) == 2 else None
+        if table.kind in {"map", "roll"} and not args.seq and output.suffix.lower() != ".html":
+            parser.error("PNG/SVG output needs --seq; the HTML report traverses every "
+                         "sequence with arrow links")
+        if overlay is not None and {table.kind, overlay.kind} - {"map", "roll"}:
+            raise ValueError("overlay inputs must be map or roll outputs")
         if table.kind == "dist" and args.seq:
-            raise ValueError("--seq and --region apply to positional or sampled-window output")
-        selection = Selection(args.seq, args.region, tuple(args.reference))
-        report = summarize(table, selection, args.bins)
+            raise ValueError("--seq applies to positional or sampled-window output")
+        selection = Selection(args.seq)
+        annotations = read_annotations(args.annotations) if args.annotations else None
+        report = summarize(table, selection, overlay=overlay, annotations=annotations)
         write_report(report, table, output)
     except ImportError as error:
         parser.exit(2, f"gviz: {error}; install dependencies with python -m pip install -r gviz/requirements.txt\n")
@@ -54,8 +51,6 @@ def main(argv=None):
     print(f"{output}: {table.kind}, {report.rows:,}/{report.total:,} rows; {output.stat().st_size / 1024:.0f} KiB")
     for note in report.notes:
         print(note)
-    if args.open:
-        webbrowser.open(output.resolve().as_uri())
     return 0
 
 

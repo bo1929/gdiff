@@ -37,8 +37,10 @@ struct map_opts
   double chisq = 33.00051;
   uint64_t sample_size = 1000;
   vec<double> levels_v; // one to three two-sided tail probabilities (two thresholds each)
-  // Deprecated compatibility fields for direct IntMap callers; the CLI no longer sets them.
+  // --thresholds: explicit distance thresholds, one lane each. When non-empty, map_sequences
+  // uses them as-is and skips the background detection that places thresholds for levels_v.
   vec<double> thresholds_v;
+  // Deprecated compatibility field for direct IntMap callers; the CLI no longer sets it.
   bool iterative_removal = false;
   // Low and high thresholds are always independent. By default, levels of the same side are
   // claimed in order of extremity and later levels only fill the gaps left by earlier ones.
@@ -56,6 +58,9 @@ inline constexpr uint64_t sample_size_reqf = 10; // denominator for the positive
 // `--levels` budgets the lanes: two thresholds per level, so at most rwidth / 2 levels fit the
 // register; the CLI caps the list at max_levels.
 inline constexpr size_t max_levels = (rwidth / 2) - 1;
+
+// `--thresholds` places one lane per value, so at most rwidth thresholds fit the register.
+inline constexpr size_t max_thresholds = rwidth;
 
 // One scored background window: its source sequence, start and MLE distance.
 struct sample_point_t
@@ -145,38 +150,10 @@ bool level_thresholds(const vec<double>& sample_v,
                       gamma_fit_t* fit_out,
                       double floor = nanx());
 
-// Two-sided thresholds for `levels_v` from the background pool itself: one low and one high
-// threshold per level, sorted ascending. `min_samples` is the smallest pool that may place a
-// quantile; equal thresholds are left to `compose_lanes` to collapse into one lane.
-bool empirical_thresholds_from_levels(const vec<double>& sample_v,
-                                      const vec<double>& levels_v,
-                                      vec<double>& out_v,
-                                      size_t min_samples);
-
-// The `--levels` lane set: the two bounds plus the model's own thresholds, sorted and reduced to the
-// distinct values a lane can carry. Nothing is clamped - a threshold outside the bounds stays a lane
-// of its own - so the only threshold a lane can do without is an exact duplicate of another, which
-// is one band. Returns the number of lanes; `th_v` is sorted ascending and free of duplicates.
-size_t compose_lanes(vec<double>& th_v, const a_range_t& ar);
-
-// Two-sided p-value and fold from the fitted background gamma: the model-based counterpart of
-// `apply_empirical_significance`, used when `--bg-model gamma` placed the thresholds. Reads the
-// distance off the fitted CDF and the fold off the fitted median, so thresholds and significance
-// come from one model. Leaves the row untested when the distance is invalid or the fit is unusable.
+// Two-sided p-value and fold from the fitted background gamma. Reads the distance off the fitted
+// CDF and the fold off the fitted median, so thresholds and significance come from one model.
+// Leaves the row untested when the distance is invalid or the fit is unusable.
 void apply_gamma_significance(record_t& r, const gamma_fit_t& fit);
-
-// Two-sided thresholds for `levels_v` as quantiles of the gamma fitted to `sample_v`, which must be
-// sorted. A tail quantile that reaches the estimable floor is lifted to the nearest observed
-// distance. When the gamma is rejected (too few samples, no variance, or quantiles that cannot be
-// placed) this falls back to the empirical quantiles of the same sample; it returns false only when
-// that fails too, in which case the caller skips the sketch. `fit_out` receives the fitted
-// parameters on the gamma path and NaN on the empirical one, so the caller can report which was used.
-bool thresholds_from_levels(const vec<double>& sample_v,
-                            const vec<double>& levels_v,
-                            vec<double>& out_v,
-                            size_t min_samples,
-                            gamma_fit_t* fit_out = nullptr,
-                            double floor = nanx());
 
 // Per-reference detection pass: null, thresholds, scan, intervals, significance.
 template<typename T>
@@ -211,13 +188,12 @@ private:
   size_t n_active = 0;       // lanes carrying a threshold
   vec<double> null_v;        // sampled background distances, sorted
   vec<double> spurious_f_v;  // experimental non-self hit distribution
-  gamma_fit_t gamma_fit;     // hurdle fit behind th_v (NaN on the empirical fallback)
+  gamma_fit_t gamma_fit;     // hurdle fit behind th_v (NaN only when --thresholds mode rejects it)
   double d_null = nanx();    // median of the sampled null
   double d_min = nanx();     // minimum sampled null distance
   double d_max = nanx();     // maximum sampled null distance
   double d_floor = nanx();   // minimum estimable distance
   double d_ceiling = nanx(); // maximum estimable distance
-  uint64_t null_floored = 0; // background samples below d_eps
   vec<uint64_t> scratch_v;
   vec<uint64_t> acc_v;
   uint64_t u_acc = 0;

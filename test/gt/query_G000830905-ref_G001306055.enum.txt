@@ -1,1 +1,3 @@
-seq	seq_len	start	end	reference	d	mask	d_bin	d_seq	d_acc	pvalue	fold	qvalue	fisher_info	p_lb	p_ub
+seq	seq_len	start	end	reference	alpha	threshold	side	interval_len	n_kmers	d	d_seq	d_null	delta	d_min	d_max	d_floor	d_ceiling	n_at_floor	n_at_ceiling	p_interval	q_interval	p_gamma
+seq268	1382308	6793	90948	G001306055.fna.gz	nan	0.3	low	84156	84130	0.35368	0.42349	0.91778	-0.5641	0.23772	0.91778	4.7832e-08	0.91778	0	0	0	0	0.10911
+seq268	1382308	858069	929116	G001306055.fna.gz	nan	0.3	low	71048	71022	0.361	0.42349	0.91778	-0.55678	0.23772	0.91778	4.7832e-08	0.91778	0	0	0	0	0.11912
