@@ -106,7 +106,7 @@ LIB_OBJECTS = $(filter-out $(BDIR)/gdiff.o,$(OBJECTS))
 TEST_BIN = $(BDIR)/test_gdiff
 
 # Rules
-.PHONY: all dynamic static debug clang tidy tidy-fix clean test-unit test-regression test
+.PHONY: all dynamic static debug clang tidy tidy-fix clean test-unit test-regression test-gvizz test
 
 all: $(PROGRAM)
 
@@ -184,6 +184,10 @@ test-regression: $(PROGRAM)
 	@echo "Running regression tests..."
 	bash test/test_regression.sh
 
-test: test-unit test-regression
+test-gvizz:
+	@echo "Running gvizz tests..."
+	python3 -m unittest discover -s test -p 'test_gvizz.py'
+
+test: test-unit test-regression test-gvizz
 
 -include $(TDEPENDS)

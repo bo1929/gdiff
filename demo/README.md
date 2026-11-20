@@ -57,7 +57,7 @@ Look near **49,276–52,521 bp** on `AG-899-N21_NODE_6`: distances to the donor 
 To view the reported intervals:
 
 ```bash
-python3 gviz.py demo/output/intervals.tsv --seq AG-899-N21_NODE_6
+python3 gvizz.py demo/output/intervals.tsv --seq AG-899-N21_NODE_6
 ```
 
 Each reference and outlier direction has its own track; gray intervals have no distance estimate. The donor has eight overlapping calls of roughly 22–24 kb on this 80 kb contig. These maximal intervals cover the operon but do not identify its exact boundaries.

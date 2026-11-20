@@ -402,7 +402,7 @@ echo "PASS: provenance header"
 
 # -- Phase 9: map output schema ------------------------------------------------
 echo "=== Phase 9: map output schema ==="
-# `map` names its columns so `gviz.py` can find them by name instead of by position; the
+# `map` names its columns so `gvizz.py` can find them by name instead of by position; the
 # strand-aware variant is not covered by the gt/ files above.
 EXPECT_AGNOSTIC="seq seq_len start end reference alpha threshold side interval_len n_kmers d d_seq d_null delta d_min d_max d_floor d_ceiling n_at_floor n_at_ceiling p_interval q_interval p_gamma"
 EXPECT_AWARE="seq seq_len start end strand is_rc reference alpha threshold side interval_len n_kmers d d_seq d_null delta d_min d_max d_floor d_ceiling n_at_floor n_at_ceiling p_interval q_interval p_gamma"

@@ -1,7 +1,3 @@
-*/archive
-notes.md
-Q.md
-
 # Build files
 gdiff*
 build
@@ -11,11 +7,14 @@ build
 tmp
 stash
 __pycache__/
+archive
 
 # Local working notes and reference material, not part of the project (see TODO.md)
 docs/
 misc-material/
 ssh-exp.sh
+NOTES.md
+TODO.md
 
 # Prerequisites
 *.d

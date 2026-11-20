@@ -1,4 +1,4 @@
-"""Command line for gviz.py: inputs, output path, sequence, annotations. Nothing else."""
+"""Command line for gvizz.py: inputs, output path, sequence, annotations. Nothing else."""
 
 import argparse
 from pathlib import Path
@@ -45,9 +45,9 @@ def main(argv=None):
         report = summarize(table, selection, overlay=overlay, annotations=annotations)
         write_report(report, table, output)
     except ImportError as error:
-        parser.exit(2, f"gviz: {error}; install dependencies with python -m pip install -r gviz/requirements.txt\n")
+        parser.exit(2, f"gvizz: {error}; install dependencies with python -m pip install -r gvizz/requirements.txt\n")
     except (ValueError, OSError, EOFError) as error:
-        parser.exit(2, f"gviz: {error}\n")
+        parser.exit(2, f"gvizz: {error}\n")
     print(f"{output}: {table.kind}, {report.rows:,}/{report.total:,} rows; {output.stat().st_size / 1024:.0f} KiB")
     for note in report.notes:
         print(note)

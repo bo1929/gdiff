@@ -252,9 +252,8 @@ TEST_CASE("sign bitvector for mixed positive/negative thresholds") {
 } // TEST_SUITE
 
 // Reference values from an independent Python port of nll/mle for k=23, h=9, hdist=3, rho=0.5,
-// n=500: max_estimable_distance=0.358841, LR roots at lr_th=6.635 give t_min=2.8844e-4,
-// t_max=0.276462.
-TEST_SUITE("admissible distance range") {
+// n=500: max_estimable_distance=0.358841.
+TEST_SUITE("likelihood-ratio bounds") {
 
 TEST_CASE("compute_lr_lb is zero at the floor and grows with distance") {
   LLH<double> llh(23, 9, 0.5, 3, 0.0, false);

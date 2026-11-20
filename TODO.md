@@ -48,7 +48,7 @@ prioritized order) is in `docs/REVIEW-20OCT26.md` — items are not duplicated h
 
 ## Tooling / paper
 
-* `gviz` draws every reported interval and window as a segment at its exact
+* `gvizz` draws every reported interval and window as a segment at its exact
   coordinates (viridis by distance, gray when missing) on one level per track,
   with lower distances drawn on top where intervals overlap; paper notation in
   the labels (D-hat, theta_pi tail thresholds), gene annotation tracks
@@ -57,8 +57,8 @@ prioritized order) is in `docs/REVIEW-20OCT26.md` — items are not duplicated h
   HTML report is a dependency-free interactive viewer (sequence arrows,
   reference/side/genes checkboxes, drag-zoom), and PNG/SVG output requires
   --seq. No binning or per-position counters; caps keep longest
-  intervals and report omissions. Covered by 24 tests in `test/test_gviz.py`;
-  the archived `plot-notes.md`, `test-gviz.sh`, and `verify-gviz.js` stay
+  intervals and report omissions. Covered by 25 tests in `test/test_gvizz.py`;
+  the archived `plot-notes.md`, `test-gvizz.sh`, and `verify-gvizz.js` stay
   retired because the suite covers their role.
 * `docs/algorithm.tex` predates the current null model: it describes a plain moment-fit Gamma
   with percentiles, not the hurdle fit (spike at `d_min` + ML-refined Gamma), the empirical

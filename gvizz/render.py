@@ -331,7 +331,7 @@ def viewer_payload(report):
 
 
 VIEWER_JS = r"""
-const DATA = JSON.parse(document.getElementById('gviz-data').textContent);
+const DATA = JSON.parse(document.getElementById('gvizz-data').textContent);
 const $ = id => document.getElementById(id);
 const L = 170, R = 980, ROW = 16, GAP = 14;
 const state = {i: 0, refs: new Set(), sides: new Set(), genes: true, zoom: null};
@@ -499,7 +499,7 @@ def write_report(report, table, output):
                f'<pre>{provenance or "No provenance comments in input."}</pre></details>')
     head = f'''<!doctype html>
 <html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>gviz · {heading}</title>
+<title>gvizz · {heading}</title>
 <style>
 body {{font:15px/1.6 system-ui,sans-serif;color:#263746;background:#f7f9fb;max-width:1180px;margin:36px auto;padding:0 24px}}
 header {{margin:0 0 14px}} h1 {{font-size:25px;font-weight:600;letter-spacing:-.4px;margin:5px 0}}
@@ -519,7 +519,7 @@ figure {{margin:0 0 20px;padding:14px;background:white;border:1px solid #e1e7ec;
 img {{display:block;width:100%;height:auto}} details {{font-size:13px;color:#526575;border-top:1px solid #dde4ea;padding-top:14px;margin-top:18px}}
 summary {{cursor:pointer;font-weight:600}} li {{margin:6px 0}} pre {{white-space:pre-wrap;overflow-wrap:anywhere;background:white;padding:14px}}
 </style>
-<header><div class="kind">GVIZ / {escape(report.kind.upper())}</div>
+<header><div class="kind">GVIZZ / {escape(report.kind.upper())}</div>
 <h1>{heading}</h1><p class="meta">{escape(table.path.name)} · {escape(report.title)}</p></header>
 '''
     if report.kind in {"map", "roll"}:
@@ -532,7 +532,7 @@ summary {{cursor:pointer;font-weight:600}} li {{margin:6px 0}} pre {{white-space
 <div id="filters"></div>
 <svg id="plot" role="img" aria-label="interval tracks"></svg>
 {details}
-<script id="gviz-data" type="application/json">{payload}</script>
+<script id="gvizz-data" type="application/json">{payload}</script>
 <script>{VIEWER_JS}</script></html>''', encoding="utf-8")
         return
     fig = figure(report)

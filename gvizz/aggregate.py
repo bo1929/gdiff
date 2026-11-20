@@ -1,4 +1,4 @@
-"""Summaries for gviz: exact-coordinate interval tracks, empirical CDFs, pair matrices.
+"""Summaries for gvizz: exact-coordinate interval tracks, empirical CDFs, pair matrices.
 
 Nothing is binned or counted per position: every reported interval or window is
 kept at its exact coordinates, and distribution views use the raw values.

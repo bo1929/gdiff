@@ -1,6 +1,6 @@
 """Regression checks for schema handling, exact interval tracks, and bounded outputs.
 
-Run from the repository root: python3 -m unittest discover -s test -p 'test_gviz.py'
+Run from the repository root: python3 -m unittest discover -s test -p 'test_gvizz.py'
 """
 
 import gzip
@@ -11,9 +11,9 @@ import unittest
 
 import numpy as np
 
-from gviz import aggregate
-from gviz.aggregate import summarize
-from gviz.data import Selection, Table, detect_kind
+from gvizz import aggregate
+from gvizz.aggregate import summarize
+from gvizz.data import Selection, Table, detect_kind
 
 LABELS = {'$\\hat{D}$', 'lower tail', 'upper tail'}
 
@@ -76,7 +76,7 @@ class TableTests(unittest.TestCase):
         self.assertEqual(tracks[('ref', 'reverse complement')], [(1, 10, 0.3)])
 
     def test_map_tracks_keep_exact_intervals_and_gray_missing(self):
-        from gviz.render import figure, plt, GRAY
+        from gvizz.render import figure, plt, GRAY
         from matplotlib.colors import to_rgba
         table = self.table('seq\tseq_len\tstart\tend\treference\td\tside\n'
                            'chr1\t1000\t1\t1000\tref\t0.2\tlow\n'
@@ -102,7 +102,7 @@ class TableTests(unittest.TestCase):
             plt.close(fig)
 
     def test_lower_distance_is_drawn_on_top(self):
-        from gviz.render import draw_order
+        from gvizz.render import draw_order
         ordered = draw_order([(1, 10, 0.5), (2, 8, 0.1), (3, 9, math.nan), (4, 7, 0.3)])
         self.assertEqual([seg[0] for seg in ordered], [1, 4, 2, 3])
 
@@ -116,7 +116,7 @@ class TableTests(unittest.TestCase):
         self.assertEqual(tracks[('ref', 'low', 'is_rc=0')], [(1, 10, 0.1)])
 
     def test_many_references_are_bounded_and_filterable(self):
-        from gviz.render import figure, plt
+        from gvizz.render import figure, plt
         import warnings
         table = self.table('seq\tstart\tend\treference\td\n' + ''.join(
             f'chr1\t1\t10\tref{i}\t0.2\n' for i in range(20)))
@@ -145,7 +145,7 @@ class TableTests(unittest.TestCase):
             aggregate.MAX_SEGMENTS = original
 
     def test_overlapping_intervals_share_one_level(self):
-        from gviz.render import figure, plt
+        from gvizz.render import figure, plt
         table = self.table('seq\tstart\tend\treference\td\tside\n' + ''.join(
             'chr1\t1\t100\tref\t0.2\tlow\n' for _ in range(40)))
         report = summarize(table, Selection())
@@ -166,7 +166,7 @@ class TableTests(unittest.TestCase):
         self.assertEqual(report.data['missing'][('a', 'b', 'gdiff')], 1)
 
     def test_all_missing_samples_show_one_empty_panel(self):
-        from gviz.render import figure, plt
+        from gvizz.render import figure, plt
         table = self.table('genome_a\tgenome_b\tseq\tstart\tend\tdirection\td\n'
                            'a\tb\tchr1\t1\t10\tab\tNA\n')
         fig = figure(summarize(table, Selection()))
@@ -196,7 +196,7 @@ class TableTests(unittest.TestCase):
         self.assertEqual(report.data['y_names'], ['a', 'b', 'c'])
 
     def test_large_genome_sets_show_closest_pairs_instead_of_a_matrix(self):
-        from gviz.render import figure, plt
+        from gvizz.render import figure, plt
         table = self.table('genome_a\tgenome_b\td\n' + ''.join(f'q\tr{i}\t0.{i % 9 + 1}\n' for i in range(100)))
         report = summarize(table, Selection())
         self.assertIsNone(report.data['matrix'])
@@ -246,7 +246,7 @@ class ModeTests(unittest.TestCase):
         return path
 
     def test_overlay_tracks_join_the_matching_reference(self):
-        from gviz.render import figure, plt
+        from gvizz.render import figure, plt
         roll = Table(self.write('roll.tsv', self.ROLL))
         suffixed = self.MAP.replace('\tref\t', '\tref_contigs.fasta.gz\t')
         report = summarize(roll, Selection(), overlay=Table(self.write('m.tsv', suffixed)))
@@ -267,8 +267,8 @@ class ModeTests(unittest.TestCase):
         self.assertEqual(summarize(table, Selection()).rows, 3)  # no row filters remain
 
     def test_annotations_tsv_gff3_and_sequence_filter(self):
-        from gviz.data import read_annotations
-        from gviz.render import figure, plt
+        from gvizz.data import read_annotations
+        from gvizz.render import figure, plt
         tsv = self.write('genes.tsv', 'seq\tstart\tend\tstrand\tgene\nchr1\t3\t8\t-\tub\nchr2\t1\t5\t+\telsewhere\n')
         features, truncated = read_annotations(tsv)
         self.assertFalse(truncated)
@@ -287,7 +287,7 @@ class ModeTests(unittest.TestCase):
             plt.close(fig)
 
     def test_dist_matrix_orders_genomes_by_mean_distance(self):
-        from gviz.render import figure, plt
+        from gvizz.render import figure, plt
         table = Table(self.write('d.tsv', 'genome_a\tgenome_b\td\n'
                                           'b\tc\t0.4\n'
                                           'a\tb\t0.1\n'
@@ -308,7 +308,7 @@ class ModeTests(unittest.TestCase):
         self.assertTrue(any(label == 'Selected rows' for label, _ in report.stats))
 
     def test_html_viewer_embeds_data_controls_and_no_stat_cards(self):
-        from gviz.render import write_report, viewer_payload
+        from gvizz.render import write_report, viewer_payload
         table = Table(self.write('r.tsv', '# invocation: gdiff roll\n'
                                           'seq\tstart\tend\treference\td\n'
                                           'chr1\t1\t10\tref\t0.2\nchr2\t1\t10\tref\t0.3\n'))
@@ -320,20 +320,35 @@ class ModeTests(unittest.TestCase):
         out = self.root / 'report.html'
         write_report(report, table, out)
         html = out.read_text()
-        for needle in ('gviz-data', 'id="prev"', 'id="next"', 'id="filters"', 'id="plot"'):
+        for needle in ('gvizz-data', 'id="prev"', 'id="next"', 'id="filters"', 'id="plot"'):
             self.assertIn(needle, html)
         self.assertNotIn('class="card"', html)
         self.assertIn('invocation: gdiff roll', html)
         self.assertIn('lower distance is drawn on top', html)
 
     def test_cli_requires_seq_for_figure_output_and_writes_html_without_it(self):
-        from gviz.cli import main
+        from gvizz.cli import main
         table = self.write('c.tsv', self.ROLL)
         with self.assertRaises(SystemExit):
             main([str(table), '-o', str(self.root / 'out.png')])
         self.assertEqual(main([str(table), '-o', str(self.root / 'out.html')]), 0)
         self.assertEqual(main([str(table), '--seq', 'chr1', '-o', str(self.root / 'out.png')]), 0)
         self.assertTrue((self.root / 'out.png').stat().st_size > 0)
+
+    def test_cli_overlay_annotations_and_dist_seq_guard(self):
+        from gvizz.cli import main
+        roll = self.write('roll.tsv', self.ROLL)
+        mapped = self.write('map.tsv', self.MAP)
+        genes = self.write('genes.tsv', 'seq\tstart\tend\tstrand\tgene\nchr1\t3\t8\t-\tub\n')
+        out = self.root / 'overlay.html'
+        self.assertEqual(main([str(roll), str(mapped), '--annotations', str(genes),
+                               '-o', str(out)]), 0)
+        html = out.read_text()
+        self.assertIn('gvizz-data', html)
+        self.assertIn('lower tail', html)
+        dist = self.write('dist.tsv', 'genome_a\tgenome_b\td\na\tb\t0.2\n')
+        with self.assertRaises(SystemExit):
+            main([str(dist), '--seq', 'chr1', '-o', str(self.root / 'dist.html')])
 
 
 if __name__ == '__main__':
