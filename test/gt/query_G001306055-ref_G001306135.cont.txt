@@ -1,2 +1,2 @@
-seq	seq_len	start	end	reference	alpha	threshold	side	interval_len	n_kmers	d	d_seq	d_null	delta	d_min	d_max	d_floor	d_ceiling	n_at_floor	n_at_ceiling	p_interval	q_interval	p_gamma
-seq295	1203	1	1203	G001306135.fna.gz	nan	0.3	low	1203	1177	0.91778	0.91778	0.91778	6.196e-10	0.38224	0.91778	4.7832e-08	0.91778	0	1	1	1	0.94263
+seq	seq_len	start	end	reference	pi	threshold	side	interval_len	n_kmers	d	d_seq	d_null	delta	d_min	d_max	d_floor	d_ceiling	n_at_floor	n_at_ceiling	p_interval	q_interval	p_gamma
+seq295	1203	1	1203	G001306135.fna.gz	nan	0.3	low	1203	1177	0.5	0.5	0.5	0	0.38224	0.5	1.3364e-07	0.5	0	1	1	1	0.94352

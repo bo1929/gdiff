@@ -28,7 +28,7 @@ def detect_kind(columns):
             return "samples"
         return "dist"
     if {"seq", "start", "end", "reference"} <= cols:
-        if "d" in cols and cols & {"side", "alpha", "threshold", "mask", "d_interval"}:
+        if "d" in cols and cols & {"side", "pi", "threshold"}:
             return "map"
         if "d" in cols or {"d_fw", "d_rc"} <= cols:
             return "roll"
@@ -83,7 +83,7 @@ class Table:
                     if len(fields) != len(self.columns):
                         raise ValueError(f"expected {len(self.columns)} fields, found {len(fields)}")
                     row = dict(zip(self.columns, fields))
-                    for name in ("d", "d_fw", "d_rc", "p_two", "alpha", "q_interval"):
+                    for name in ("d", "d_fw", "d_rc", "pi", "q_interval"):
                         if name in row:
                             row[name] = number(row[name])
                     if self.kind != "dist":

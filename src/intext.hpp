@@ -5,9 +5,6 @@
 #include "llh.hpp"
 #include "records.hpp"
 
-struct window_counts_t;
-struct swindow_counts_t;
-
 inline uint64_t ceil_bins(uint64_t len, uint64_t bin_shift) { return (len + (uint64_t(1) << bin_shift) - 1) >> bin_shift; }
 
 class Histogram
@@ -18,8 +15,6 @@ public:
 
   void aggregate_mer(uint32_t hdist_min, uint64_t i);
   void extract_histogram(uint64_t a, uint64_t b, vec<uint64_t>& v, uint64_t& u, uint64_t& t) const;
-  void extract_histogram(uint64_t a, uint64_t b, window_counts_t& wc) const;
-  void extract_histogram(uint64_t a, uint64_t b, swindow_counts_t& wc, bool is_rc) const;
   void compute_prefhistsum();
   [[nodiscard]] uint64_t get_nbins() const { return nbins; }
 
@@ -50,8 +45,6 @@ struct map_params
   uint64_t bin_size;  // 2^bin_shift
   double chisq;       // Chi-square threshold for interval merging
   uint8_t n_active = rwidth;
-  double lo_bound = nanx();
-  double hi_bound = nanx();
 
   map_params(T dist_th, uint32_t hdist_th, uint64_t tau, uint64_t bin_shift, double chisq)
     : dist_th(dist_th)
@@ -81,13 +74,12 @@ public:
   void expand_intervals(double chisq_th, size_t ix = 0);
   void total_histogram(vec<uint64_t>& v, uint64_t& u, uint64_t& t) const;
   void extract_histogram(uint64_t a, uint64_t b, vec<uint64_t>& v, uint64_t& u, uint64_t& t) const;
-  void extract_histogram(uint64_t a, uint64_t b, window_counts_t& wc) const;
-  void extract_histogram(uint64_t a, uint64_t b, swindow_counts_t& wc, bool is_rc) const;
   uint64_t get_nbins() const { return nbins; }
   bool is_wskip() const { return wskip; }
   bool is_skip(uint64_t i) const { return wskip && skip_v[i - 1]; } // 1-based bin
   const vec<interval_t>& get_intervals_v(size_t ti) const { return intervals_v[ti]; }
   const vec<size_t>& get_thrank_v() const { return thrank_v; }
+  bool is_high_lane(size_t ix) const { return thneg_v[ix]; }
   static inline void add_to(T& dest, const T& source)
   {
     if constexpr (std::is_same_v<T, double>) {

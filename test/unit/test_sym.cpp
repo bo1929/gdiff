@@ -131,10 +131,7 @@ TEST_SUITE("summarize_symmetric summary")
   {
     const summary_t s = summarize({mle(0.1), mle(0.2)}, {mle(0.1), mle(0.2)});
     CHECK(s.d == doctest::Approx(0.15));
-    CHECK(s.d_median == doctest::Approx(0.15));
     CHECK(s.n_filtered == 0);
-    CHECK(s.d_highest == doctest::Approx(0.2));
-    CHECK(s.d_upper == doctest::Approx(0.2));
     CHECK(s.d_v.size() == 2);
   }
 
@@ -144,10 +141,7 @@ TEST_SUITE("summarize_symmetric summary")
     const summary_t s = summarize({mle(0.1), mle(0.2), mle(0.3), mle(0.9, 1.0)}, {});
     CHECK(s.d == doctest::Approx(0.2)); // mean(0.1, 0.2, 0.3)
     CHECK(s.n_filtered == 1);
-    CHECK(s.d_mean == doctest::Approx(0.375)); // the plain mean, which filtering excluded
-    // `d_upper` covers kept windows only; `d_highest` covers all of them.
-    CHECK(s.d_upper == doctest::Approx(0.3));
-    CHECK(s.d_highest == doctest::Approx(0.9));
+    CHECK(s.d_v.size() == 3); // the outlier is not behind the estimate
   }
 
   TEST_CASE("the cut is strict: a bound exactly at the threshold is rejected")
@@ -161,9 +155,8 @@ TEST_SUITE("summarize_symmetric summary")
   {
     // 1 of 4 survives (0.25 < 0.66): fall back to the unfiltered mean.
     const summary_t s = summarize({mle(0.1), mle(0.2, 1.0), mle(0.3, 1.0), mle(0.4, 1.0)}, {});
-    CHECK(s.d == doctest::Approx(0.25));      // mean of all four: the fallback
-    CHECK(s.d_mean == doctest::Approx(0.25)); // the plain mean, always unfiltered
-    CHECK(s.d_v.size() == 4);                 // the distances behind the reported mean
+    CHECK(s.d == doctest::Approx(0.25)); // mean of all four: the fallback
+    CHECK(s.d_v.size() == 4);            // the distances behind the reported mean
   }
 
   TEST_CASE("a missing bound carries no evidence and is rejected")
@@ -192,30 +185,29 @@ TEST_SUITE("summarize_symmetric summary")
   {
     const summary_t s = summarize({}, {});
     CHECK(std::isnan(s.d));
-    CHECK(std::isnan(s.d_median));
     CHECK(s.d_v.empty());
   }
 
-  TEST_CASE("the median is taken over the windows behind the reported estimate")
+  TEST_CASE("the estimate is taken over the windows behind it")
   {
-    // Filtered path: median of the kept windows (0.1, 0.2, 0.3), not of all four.
+    // Filtered path: the kept windows (0.1, 0.2, 0.3), not all four.
     const summary_t s = summarize({mle(0.1), mle(0.2), mle(0.3), mle(9.0, 1.0)}, {}, lr_th_default, 0.5);
-    CHECK(s.d_median == doctest::Approx(0.2));
-    CHECK(s.d_mean == doctest::Approx(2.4)); // the plain mean, over all four windows
+    CHECK(s.d == doctest::Approx(0.2));
+    CHECK(s.d_v.size() == 3);
   }
 
   TEST_CASE("min_portion of zero always takes the filtered mean when any window survives")
   {
     const summary_t s = summarize({mle(0.1), mle(0.9, 1.0), mle(0.8, 1.0)}, {}, lr_th_default, 0.0);
-    CHECK(s.d == doctest::Approx(0.1));      // the filtered mean
-    CHECK(s.d_mean == doctest::Approx(0.6)); // the plain mean, over all three windows
+    CHECK(s.d == doctest::Approx(0.1)); // the filtered mean
+    CHECK(s.d_v.size() == 1);
   }
 
   TEST_CASE("min_portion of one always takes the unfiltered mean")
   {
     const summary_t s = summarize({mle(0.1), mle(0.2, 1.0), mle(0.3, 1.0)}, {}, lr_th_default, 1.0);
-    CHECK(s.d == doctest::Approx(0.2));      // no portion can exceed 1: fallback
-    CHECK(s.d_mean == doctest::Approx(0.2)); // the plain mean, which is what it reports
+    CHECK(s.d == doctest::Approx(0.2)); // no portion can exceed 1: fallback
+    CHECK(s.d_v.size() == 3);
   }
 
 } // TEST_SUITE

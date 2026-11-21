@@ -14,7 +14,6 @@ extern thread_local std::mt19937 gen;
 void init_thread_rng(uint32_t i = 0);
 
 // Draw min(npos, nsamples) distinct coordinates from [0, npos), returned ascending.
-// The draw is part of the reproducible output and must not change casually.
 vec<uint64_t> sample_coords(uint64_t npos, uint64_t nsamples, std::mt19937& rng);
 
 #endif

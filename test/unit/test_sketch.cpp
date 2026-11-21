@@ -1,9 +1,10 @@
 // Container write/read round-trip for buckets and both window representations.
 #include "doctest/doctest.h"
 #include "buckets.hpp"
-#include "common.hpp"
+#include "utils.hpp"
 #include "sketch.hpp"
 #include "test_util.hpp"
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -185,13 +186,21 @@ TEST_SUITE("container")
     std::istringstream in(test_util::strip_comments(test_util::read_file(out)));
     std::string line;
     REQUIRE(std::getline(in, line)); // column header, after the provenance lines
-    CHECK(line.rfind("genome_a\tgenome_b\t", 0) == 0);
+    CHECK(line == "genome_a\tgenome_b\td\td_median_ab\td_median_ba\td_mean_ab\td_mean_ba\td_highest_ab\td_highest_ba\t"
+                  "n_ab\tn_ba\tn_ub\tn_na\tn_filtered");
 
     REQUIRE(std::getline(in, line)); // the pair's reconciled line
     size_t tabs = 0;
     for (const char c : line)
       tabs += (c == '\t');
-    CHECK(tabs == 13); // genome_a, genome_b, then the 12 reconciled columns
+    CHECK(tabs == 13); // genome_a, genome_b, d, then the per-direction statistics and counts
+    // Per direction, neither the median nor the mean can exceed the highest distance.
+    for (size_t dir = 0; dir < 2; ++dir) {
+      const double highest = std::stod(field(line, 7 + dir));
+      if (!std::isfinite(highest)) continue;
+      CHECK(std::stod(field(line, 3 + dir)) <= highest);
+      CHECK(std::stod(field(line, 5 + dir)) <= highest);
+    }
     CHECK(line.find(fa_a.filename().string()) == 0);
     CHECK(line.find(fa_b.filename().string()) != std::string::npos);
 

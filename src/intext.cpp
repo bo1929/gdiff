@@ -80,21 +80,6 @@ void Histogram::extract_histogram(uint64_t a, uint64_t b, vec<uint64_t>& v, uint
   u = miss_v[b] - miss_v[a];
 }
 
-void Histogram::extract_histogram(uint64_t a, uint64_t b, window_counts_t& wc) const
-{
-  uint64_t t = 0;
-  extract_histogram(a, b, wc.hist_v, wc.u, t);
-}
-
-void Histogram::extract_histogram(uint64_t a, uint64_t b, swindow_counts_t& wc, bool is_rc) const
-{
-  uint64_t t = 0;
-  if (is_rc)
-    extract_histogram(a, b, wc.hist_rc_v, wc.u_rc, t);
-  else
-    extract_histogram(a, b, wc.hist_fw_v, wc.u_fw, t);
-}
-
 template<typename T>
 IntExt<T>::IntExt(const map_params<T>& params, const LLH<T>& llhf, uint64_t nbins, uint64_t nmers)
   : params(params)
@@ -119,7 +104,7 @@ void IntExt<T>::set_seq_distance(double d_seq)
 
   if constexpr (std::is_same_v<T, double>) {
     const double t = params.dist_th;
-    thneg_v.front() = is_valid && t > d_seq;
+    thneg_v.front() = is_high_side(t, d_seq);
     thrank_v.clear();
     if (params.n_active > 0) {
       thrank_v.push_back(0);
@@ -133,14 +118,14 @@ void IntExt<T>::set_seq_distance(double d_seq)
     vec<rank_t> tp;
     for (size_t i = 0; i < params.n_active; ++i) {
       const double t = lane_at(params.dist_th, i);
-      thneg_v[i] = is_valid && t > d_seq;
+      thneg_v[i] = is_high_side(t, d_seq);
       tp.push_back({t, i});
     }
     for (size_t i = params.n_active; i < WIDTH; ++i)
       thneg_v[i] = false;
 
     // Most extreme threshold first, so each lane claims the regions it is most confident about.
-    auto extremity = [&](double t) { return t <= d_seq ? t : ((2.0 * d_ub) - t); };
+    auto extremity = [&](double t) { return t <= d_seq ? t : ((2.0 * UB) - t); };
     std::sort(tp.begin(), tp.end(), [&](const rank_t& a, const rank_t& b) {
       if (!is_valid) return a.t < b.t;
       return extremity(a.t) < extremity(b.t);
@@ -338,7 +323,8 @@ void IntExt<T>::expand_intervals(double chisq_th, size_t ix)
     b = iv_ix[i].b;
     fdiff = lane_at(fdps_v[b], ix) - lane_at(fdps_v[ap], ix);
     sdiff = lane_at(sdps_v[ap], ix) - lane_at(sdps_v[b], ix);
-    chisq_val = ((fdiff * fdiff) + eps) / (sdiff + eps);
+    constexpr double pseudo = 1e-7;
+    chisq_val = ((fdiff * fdiff) + pseudo) / (sdiff + pseudo);
 
     if ((chisq_val < chisq_th) && (a < bp)) {
       a = ap;
@@ -370,23 +356,6 @@ template<typename T>
 void IntExt<T>::extract_histogram(uint64_t a, uint64_t b, vec<uint64_t>& v, uint64_t& u, uint64_t& t) const
 {
   hist.extract_histogram(a, b, v, u, t);
-}
-
-template<typename T>
-void IntExt<T>::extract_histogram(uint64_t a, uint64_t b, window_counts_t& wc) const
-{
-  uint64_t t = 0;
-  extract_histogram(a, b, wc.hist_v, wc.u, t);
-}
-
-template<typename T>
-void IntExt<T>::extract_histogram(uint64_t a, uint64_t b, swindow_counts_t& wc, bool is_rc) const
-{
-  uint64_t t = 0;
-  if (is_rc)
-    extract_histogram(a, b, wc.hist_rc_v, wc.u_rc, t);
-  else
-    extract_histogram(a, b, wc.hist_fw_v, wc.u_fw, t);
 }
 
 template class IntExt<double>;

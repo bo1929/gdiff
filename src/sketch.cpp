@@ -6,7 +6,7 @@
 #include <numeric>
 #include <sstream>
 
-#include "common.hpp"
+#include "utils.hpp"
 #include "container.hpp"
 #include "distance.hpp"
 #include "enc.hpp"
@@ -20,35 +20,33 @@ namespace {
   class strbuf_t : public std::streambuf
   {
   public:
-    explicit strbuf_t(str& out) noexcept
-      : out_(out)
+    explicit strbuf_t(str& in) noexcept
+      : out(in)
     {
     }
 
   protected:
     std::streamsize xsputn(const char* s, std::streamsize n) override
     {
-      out_.append(s, static_cast<size_t>(n));
+      out.append(s, static_cast<size_t>(n));
       return n;
     }
     int overflow(int c) override
     {
-      if (c != traits_type::eof()) out_.push_back(static_cast<char>(c));
+      if (c != traits_type::eof()) out.push_back(static_cast<char>(c));
       return c;
     }
-    // pad_to_word() asks the stream for its position; report the bytes written so far.
     pos_type seekoff(off_type off, std::ios_base::seekdir dir, std::ios_base::openmode which) override
     {
       if (!(which & std::ios_base::out)) return pos_type(off_type(-1));
-      const off_type base = dir == std::ios_base::beg ? 0 : static_cast<off_type>(out_.size());
+      const off_type base = dir == std::ios_base::beg ? 0 : static_cast<off_type>(out.size());
       return pos_type(base + off);
     }
 
   private:
-    str& out_;
+    str& out;
   };
 
-  // Packed keys for retained k-mers in [j0, j1); nvalid counts all valid k-mers.
   template<bool Canonical>
   void collect_range_keys(const char* cseq,
                           uint64_t len,
@@ -151,8 +149,6 @@ namespace {
     write_array(os, pool.win_ix_v.data(), n);
   }
 
-  // Bucket-local nearest non-self Hamming distance histogram. The last slot counts entries with
-  // no non-self neighbor within max_hd.
   vec<uint64_t> compute_spurious_counts(const Buckets& buckets, uint32_t max_hd)
   {
     vec<uint64_t> counts(max_hd + 2, 0);
@@ -248,7 +244,7 @@ Sketch Container::open(uint32_t rec, SketchLoad part) const
 
   const char* p = base + static_cast<ptrdiff_t>(e.offset);
   const uint64_t rname_len = read_trivial<uint64_t>(p, end, "sketch name length");
-  p = need(p, end, round_up_word(rname_len), "sketch name");
+  require_bytes(p, end, round_up_word(rname_len), "sketch name");
   gs.rname.assign(p, p + rname_len);
   p += round_up_word(rname_len);
   gs.timestamp = read_trivial<uint64_t>(p, end, "sketch timestamp");
@@ -280,7 +276,7 @@ Sketch Container::open(uint32_t rec, SketchLoad part) const
     gs.windows.wins_v.resize(static_cast<size_t>(nwins));
     for (window_t& win : gs.windows.wins_v) {
       const uint64_t qid_len = read_trivial<uint64_t>(wp, wend, "window qid length");
-      wp = need(wp, wend, round_up_word(qid_len), "window qid");
+      require_bytes(wp, wend, round_up_word(qid_len), "window qid");
       win.qid.assign(wp, wp + qid_len);
       wp += round_up_word(qid_len);
       win.start = read_trivial<uint64_t>(wp, wend, "window start");
@@ -334,7 +330,6 @@ Sketch build_sketch(const str& input_path, const sketch_config_t& cfg, str rname
   vec<uint64_t> keys_v;
   while (rs.read_next_seq()) {
     if (!rs.set_curr_seq()) continue;
-    // Reserve from expected minimizer yield (one per w-k+2 bases, times frac).
     if (keys_v.capacity() == 0) {
       const double keep = static_cast<double>(cfg.nrows) / static_cast<double>(uint64_t(1) << (2 * lshf->get_h()));
       const uint64_t denom = std::max<uint64_t>(1, static_cast<uint64_t>(cfg.w) - lshf->get_k() + 2);
@@ -347,13 +342,12 @@ Sketch build_sketch(const str& input_path, const sketch_config_t& cfg, str rname
   buckets.build(cfg.nrows, std::move(keys_v));
   const uint64_t nkmers = buckets.get_nkmers();
 
-  // rho = exact retained count / HLL cardinality; clamped to (0, 1].
   const double raw = card > 0.0 ? static_cast<double>(nkmers) / card : 1.0;
   if (raw > 1.0) {
-    warn_msg(concat_msg(
-      "rho > 1 for ", input_path, " (retained ", nkmers, " vs estimated ", card, " distinct k-mers); clamping to 1"));
+    warn_msg("rho > 1 for ", input_path, " (retained ", nkmers, " vs estimated ", card, " distinct k-mers); clamping to 1");
   }
-  const double rho = std::min(1.0, std::max(d_eps, raw));
+  constexpr double min_rho = 1e-10;
+  const double rho = std::min(1.0, std::max(min_rho, raw));
   vec<uint64_t> spurious_v;
   if (compute_spurious && cfg.w > cfg.k) spurious_v = compute_spurious_counts(buckets, hdist_bound);
   return Sketch(cfg, std::move(rname), std::move(buckets), card, rho, std::move(spurious_v));
@@ -374,39 +368,39 @@ bool SketchSC::validate_configuration()
   bool is_invalid = false;
   if (frac <= 0.0 || frac > 1.0) {
     is_invalid = true;
-    cerr_msg("--frac must be in (0, 1]; got ", frac);
+    error_msg("--frac must be in (0, 1]; got ", frac);
   }
   if (w < k) {
     is_invalid = true;
-    cerr_msg("The minimum minimizer window size (-w) is k (-k)!");
+    error_msg("-w must be at least k (-k); got ", w);
   }
   if (h < 3) {
     is_invalid = true;
-    cerr_msg("The minimum number of LSH positions (-h) is 3!");
+    error_msg("-h must be in [3, 15]; got ", h);
   }
   if (h > 15) {
     is_invalid = true;
-    cerr_msg("The maximum number of LSH positions (-h) is 15!");
+    error_msg("-h must be in [3, 15]; got ", h);
   }
   if (k > 31) {
     is_invalid = true;
-    cerr_msg("The maximum allowed k-mer length (-k) is 31!");
+    error_msg("-k must be in [19, 31]; got ", k);
   }
   if (k < 19) {
     is_invalid = true;
-    cerr_msg("The minimum allowed k-mer length (-k) is 19!");
+    error_msg("-k must be in [19, 31]; got ", k);
   }
   if ((k - h) > 16) {
     is_invalid = true;
-    cerr_msg("For compact k-mer encodings, h must be >= k-16!");
+    error_msg("-h must be at least k - 16 (-k ", k, ", -h ", h, ")");
   }
   if (params.tau != 0 && params.tau < k) {
     is_invalid = true;
-    cerr_msg("-l must be 0 (no windows) or at least k (-k); got ", params.tau);
+    error_msg("-l must be 0 (no windows) or at least k (-k); got ", params.tau);
   }
   if (params.sample_size == 0 || params.sample_size > 65535) {
     is_invalid = true;
-    cerr_msg("--sample-size must be in [1, 65535]; got ", params.sample_size);
+    error_msg("--sample-size must be in [1, 65535]; got ", params.sample_size);
   }
   return !is_invalid;
 }
@@ -461,35 +455,34 @@ window_sample_t SketchSC::sample_windows(const str& input_path, uint64_t& ntotal
 
   window_sample_t sample;
   if (nwins == 0) {
-    warn_msg(concat_msg("No eligible windows in ",
-                        input_path,
-                        " for -l=",
-                        params.tau,
-                        ": every sequence is shorter than the ",
-                        wp.nwinmers + k - 1,
-                        " bp a window spans"));
+    warn_msg("No eligible windows in ",
+             input_path,
+             " for -l ",
+             params.tau,
+             ": every sequence is shorter than the ",
+             wp.nwinmers + k - 1,
+             " bp a window spans");
     return sample;
   }
   // The draw cannot exceed the eligible starts
   if (nwins < params.sample_size) {
-    warn_msg(concat_msg("Only ",
-                        nwins,
-                        " window(s) stored for ",
-                        input_path,
-                        " (--sample-size ",
-                        params.sample_size,
-                        "): ",
-                        wp.sources_v.size(),
-                        " of ",
-                        len_v.size(),
-                        " sequence(s) reach the ",
-                        wp.nwinmers + k - 1,
-                        " bp a window spans"));
+    warn_msg("Only ",
+             nwins,
+             " window(s) stored for ",
+             input_path,
+             " (--sample-size ",
+             params.sample_size,
+             "): ",
+             wp.sources_v.size(),
+             " of ",
+             len_v.size(),
+             " sequence(s) reach the ",
+             wp.nwinmers + k - 1,
+             " bp a window spans");
   }
 
   sample.wins_v.reserve(nwins);
   if (params.keep_seq) {
-    // Exact payload size for full-length windows: reserve once instead of resizing per window.
     const uint64_t total_bases = nwins * (params.tau + k - 1);
     sample.packs.packed_v.reserve(static_cast<size_t>((total_bases + 31) / 32));
     sample.packs.nmask_v.reserve(static_cast<size_t>((total_bases + 63) / 64));
@@ -659,19 +652,14 @@ void SketchSC::process()
     paths_v.insert(paths_v.begin(), list_paths_v.begin(), list_paths_v.end());
     rnames_v.insert(rnames_v.begin(), list_names_v.begin(), list_names_v.end());
   }
-  if (paths_v.empty()) error_exit("No input files provided! Use -i <path> and/or --input-list <file>.");
+  if (paths_v.empty()) error_exit("No input files; pass -i <path> and/or --input-list <file>");
   for (const str& path : paths_v) {
-    if (!check_input_type(path, input_type::sequence, "-i/--input-path")) error_exit("Invalid input!");
+    if (!check_input_type(path, input_type::sequence, "-i/--input-path")) exit_failure();
   }
 
   const uint64_t nsketches = paths_v.size();
   const uint32_t nthreads = std::max(1u, num_threads);
-  cerr_msg("Sketching ",
-           nsketches,
-           " file(s) w/ ",
-           nthreads,
-           " thread(s), windows=",
-           params.tau == 0 ? "none" : (params.keep_seq ? "seq" : "default"));
+  info_msg("Sketching ", nsketches, " file(s) with ", nthreads, " thread(s)");
 
   std::ofstream sketch_stream(sketch_path, std::ofstream::binary);
   check_fstream(sketch_stream, "Cannot open output container", sketch_path.string());
@@ -709,7 +697,7 @@ void SketchSC::process()
 
       pending_v[i].rel = write_sketch(pending_v[i].bytes, timestamp, ntotal_bp, nvalid_bp, built, sample);
       const uint64_t n = ndone.fetch_add(1, std::memory_order_relaxed) + 1;
-      progress("Sketched", n, nsketches);
+      progress_continue("Sketched", n, nsketches);
     });
   }
   progress_done();
@@ -732,37 +720,29 @@ void SketchSC::process()
   sketch_stream.seekp(0, std::ios::end);
   check_fstream(sketch_stream, "Failed to write the sketch", sketch_path.string());
   sketch_stream.close();
-  cerr_msg("Container saved to ", sketch_path.string(), " with ", nsketches, " sketch(es)");
+  info_msg("Wrote ", nsketches, " sketch(es) to ", sketch_path.string());
 }
 
 SketchSC::SketchSC(CLI::App& sc)
 {
   set_default_params();
-  sc.add_option("-i,--input-path", paths_v, "Input FASTA/FASTQ file(s) <path> (or URL) (gzip compatible)")
+  sc.add_option("-i,--input-path", paths_v, "Input FASTA/FASTQ(+gzip) file(s) <path> (or URL)")
     ->check(url_validator | CLI::ExistingFile);
-  sc.add_option("--input-list",
-                input_list_path,
-                "Read input paths from a file, one per line "
-                "(optional sketch name + TAB + path); combines with -i")
+  sc.add_option("--input-list", input_list_path, "Read inputs from a file, one per line: <name><TAB><path> or just <path>")
     ->check(CLI::ExistingFile);
   sc.add_option("-o,--output-path", sketch_path, "Path to store the resulting binary container")->required();
   sc.add_option("-k,--mer-len", k, "Length of k-mers [23]")->check(CLI::Range(19, 31));
   sc.add_option("-w,--win-len", w, "Length of the minimizer window (w>=k) [k]")->check(CLI::PositiveNumber);
-  sc.add_option("-h,--num-positions", h, "Number of positions for the LSH [max(floor(k/2)-2, k-16)]")
-    ->check(CLI::PositiveNumber);
-  sc.add_option("--frac", frac, "Keep a k-mer if LSH(x) < frac * 2^(2h); i.e., subsampling ratio [0.5]")
+  sc.add_option("-h,--num-positions", h, "Number of LSH positions [max(floor(k/2)-2, k-16)]")->check(CLI::PositiveNumber);
+  sc.add_option("--frac", frac, "Subsampling rate: keep k-mers LSH(x) < frac * 2^(2h) [0.33]")
     ->check(CLI::Range(std::numeric_limits<double>::min(), 1.0));
-  sc.add_flag("--canonical,!--no-canonical",
-              canonical,
-              "Canonical k-mers only by default; --no-canonical extracts k-mers based on the reference strand");
+  sc.add_flag(
+    "--canonical,!--no-canonical", canonical, "Canonical k-mers by default; --no-canonical uses the reference strand");
   sc.add_option("-l", params.tau, "Length of sampled windows in k-mers; 0 stores buckets only [333]")
     ->check(CLI::NonNegativeNumber);
-  sc.add_option("--sample-size", params.sample_size, "Windows sampled across each genome [500]")->check(CLI::Range(1, 65535));
-  sc.add_flag(
-    "--ignore-spurious", params.ignore_spurious, "Do not estimate the per-genome bucket-local spurious-hit histogram [off]");
-  sc.add_flag("--keep-seq,!--no-keep-seq",
-              params.keep_seq,
-              "Store sampled windows as 2-bit packed bases (compact) instead of the default pre-resolved keys");
+  sc.add_option("--sample-size", params.sample_size, "Windows sampled across each genome [333]")->check(CLI::Range(1, 65535));
+  sc.add_flag("--ignore-spurious", params.ignore_spurious, "Do not estimate the per-genome spurious-hit correction [off]");
+  sc.add_flag("--keep-seq,!--no-keep-seq", params.keep_seq, "Use a compact format; a bit slower but uses less memory");
   sc.callback([&]() {
     // -w and -h are independent: each falls back to its own k-derived default.
     if (!(sc.count("-w") + sc.count("--win-len"))) {
@@ -772,8 +752,6 @@ SketchSC::SketchSC(CLI::App& sc)
       // floor(k/2) - 2, but never below k - 16: drop_ppos_lr packs 2(k - h) bits into enc_t.
       h = std::max<uint8_t>(static_cast<uint8_t>(k / 2 - 2), static_cast<uint8_t>(k > 16 ? k - 16 : 0));
     }
-    if (!validate_configuration()) {
-      error_exit("Invalid configuration!");
-    }
+    if (!validate_configuration()) exit_failure();
   });
 }

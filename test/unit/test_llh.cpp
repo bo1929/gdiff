@@ -257,7 +257,7 @@ TEST_SUITE("likelihood-ratio bounds") {
 
 TEST_CASE("compute_lr_lb is zero at the floor and grows with distance") {
   LLH<double> llh(23, 9, 0.5, 3, 0.0, false);
-  CHECK(compute_lr_lb(llh, d_eps, 500) < 1.0); // still essentially at the floor
+  CHECK(compute_lr_lb(llh, LB, 500) < 1.0); // still essentially at the floor
   CHECK(compute_lr_lb(llh, 1e-4, 500) == doctest::Approx(2.30).epsilon(0.02));
   CHECK(compute_lr_lb(llh, 1e-3, 500) == doctest::Approx(23.0).epsilon(0.02));
   CHECK(compute_lr_lb(llh, 0.05, 500) > compute_lr_lb(llh, 0.01, 500));

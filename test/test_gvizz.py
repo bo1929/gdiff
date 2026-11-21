@@ -38,7 +38,7 @@ class TableTests(unittest.TestCase):
     def test_all_current_formats_are_distinguished(self):
         base = ['seq', 'start', 'end', 'reference', 'd']
         self.assertEqual(detect_kind(base), 'roll')
-        self.assertEqual(detect_kind(base + ['alpha', 'side']), 'map')
+        self.assertEqual(detect_kind(base + ['pi', 'side']), 'map')
         self.assertEqual(detect_kind(['seq', 'start', 'end', 'reference', 'd_fw', 'd_rc']), 'roll')
         self.assertEqual(detect_kind(['genome_a', 'genome_b', 'd']), 'dist')
         self.assertEqual(detect_kind(['genome_a', 'genome_b', 'd', 'seq', 'start', 'end', 'direction']), 'samples')
@@ -228,7 +228,7 @@ class ModeTests(unittest.TestCase):
     ROLL = ('seq\tstart\tend\treference\td\n'
             'chr1\t1\t10\tref\t0.2\n'
             'chr1\t11\t20\tref\t0.4\n')
-    MAP = ('seq\tseq_len\tstart\tend\treference\td\tside\talpha\tq_interval\n'
+    MAP = ('seq\tseq_len\tstart\tend\treference\td\tside\tpi\tq_interval\n'
            'chr1\t1000\t3\t8\tref\t0.1\tlow\t0.01\t0.02\n'
            'chr1\t1000\t12\t18\tref\tNA\thigh\t0.001\tNA\n'
            'chr1\t1000\t30\t40\tref\t0.3\tlow\t0.01\t0.4\n')

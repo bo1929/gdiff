@@ -1,164 +1,19 @@
-#include "gdiff.hpp"
-
-#include "common.hpp"
+#include "utils.hpp"
 #include "dist.hpp"
+#include "info.hpp"
 #include "map.hpp"
+#include "merge.hpp"
 #include "msg.hpp"
 #include "random.hpp"
 #include "roll.hpp"
 #include "sketch.hpp"
 
 #include <chrono>
-#include <ctime>
-#include <filesystem>
-#include <fstream>
+#include <cmath>
 #include <iostream>
-#include <memory>
-#include <system_error>
 
-void MergeSC::merge()
+static int run(int argc, char** argv)
 {
-  for (const str& path : paths_v) {
-    if (!check_input_type(path, input_type::container, "merge -i/--sketch-paths")) error_exit("Invalid input!");
-  }
-
-  // The output stream truncates its path, so writing over an input would destroy a file that is
-  // still being read. Refuse before opening anything.
-  std::error_code out_ec;
-  const std::filesystem::path out_path = std::filesystem::weakly_canonical(sketch_path, out_ec);
-  if (!out_ec) {
-    for (const str& path : paths_v) {
-      std::error_code in_ec;
-      const std::filesystem::path in_path = std::filesystem::weakly_canonical(path, in_ec);
-      if (!in_ec && in_path == out_path) {
-        error_exit("Output container is also an input: " + path);
-      }
-    }
-  }
-
-  cerr_msg("Merging ", paths_v.size(), " container(s)");
-
-  // Re-index rather than concatenate: sketches move, absolute offsets are rewritten.
-  vec<std::unique_ptr<Container>> inputs_v;
-  uint64_t nsketches = 0;
-  for (const str& path : paths_v) {
-    inputs_v.push_back(std::make_unique<Container>(path));
-    const Container& in = *inputs_v.back();
-    if (!compatible_configs(in.get_config(), inputs_v.front()->get_config())) {
-      error_exit("Cannot merge sketches with different configurations: " + path);
-    }
-    if (in.get_config().keep_seq != inputs_v.front()->get_config().keep_seq) {
-      error_exit("Cannot merge sketches with different --keep-seq: " + path);
-    }
-    nsketches += in.size();
-  }
-  if (nsketches == 0) error_exit("Nothing to merge: the inputs hold no sketches");
-
-  std::ofstream sout(sketch_path, std::ofstream::binary);
-  check_fstream(sout, "Cannot open output file", sketch_path.string());
-  write_container_header(sout, inputs_v.front()->get_config(), nsketches);
-  const std::streampos index_pos = sout.tellp();
-  vec<scentry> entries_v(nsketches);
-  sout.write(reinterpret_cast<const char*>(entries_v.data()), static_cast<std::streamsize>(sizeof(scentry) * nsketches));
-
-  vec<char> buffer_v;
-  uint64_t pos = static_cast<uint64_t>(sout.tellp());
-  uint64_t out_ix = 0;
-  for (size_t fi = 0; fi < inputs_v.size(); ++fi) {
-    std::ifstream sin(paths_v[fi], std::ifstream::binary);
-    check_fstream(sin, "Cannot open container", paths_v[fi]);
-    for (const scentry& e : inputs_v[fi]->get_entries()) {
-      buffer_v.resize(static_cast<size_t>(e.len));
-      sin.seekg(static_cast<std::streamoff>(e.offset));
-      sin.read(buffer_v.data(), static_cast<std::streamsize>(e.len));
-      check_fstream(sin, "Failed to read a sketch", paths_v[fi]);
-
-      scentry& out = entries_v[out_ix++];
-      out.offset = pos;
-      out.len = e.len;
-      out.buckets_offset = pos + (e.buckets_offset - e.offset);
-      out.buckets_len = e.buckets_len;
-      if (e.windows_len) {
-        out.windows_offset = pos + (e.windows_offset - e.offset);
-        out.windows_len = e.windows_len;
-      }
-      sout.write(buffer_v.data(), static_cast<std::streamsize>(e.len));
-      pos += e.len;
-    }
-  }
-
-  sout.seekp(index_pos);
-  sout.write(reinterpret_cast<const char*>(entries_v.data()), static_cast<std::streamsize>(sizeof(scentry) * nsketches));
-  sout.seekp(0, std::ios::end);
-  check_fstream(sout, "Failed to write the merged container", sketch_path.string());
-  sout.close();
-
-  cerr_msg("Merged sketch saved to ", sketch_path.string(), " with ", nsketches, " sketch(es)");
-}
-
-MergeSC::MergeSC(CLI::App& sc)
-{
-  sc.add_option("-i,--sketch-paths", paths_v, "Input containers to merge")->required()->check(CLI::ExistingFile);
-  sc.add_option("-o,--output-path", sketch_path, "Path to store the merged container")->required();
-}
-
-void InfoSC::info()
-{
-  if (!check_input_type(sketch_path, input_type::container, "info -i/--sketch-path")) error_exit("Invalid input!");
-
-  write_provenance(std::cout);
-
-  const Container file(sketch_path);
-  const sketch_config_t& cfg = file.get_config();
-
-  std::cout << "File:               " << sketch_path.string() << "\n";
-  std::cout << "Sketches:           " << file.size() << "\n";
-  std::cout << "k (mer len):        " << static_cast<int>(cfg.k) << "\n";
-  std::cout << "w (win len):        " << static_cast<int>(cfg.w) << "\n";
-  std::cout << "h (LSH pos):        " << static_cast<int>(cfg.h) << "\n";
-  std::cout << "canonical:          " << (cfg.canonical ? "true" : "false") << "\n";
-  std::cout << "nrows:              " << cfg.nrows << "\n";
-  std::cout << "frac:               " << cfg.frac << "\n";
-  std::cout << "-l (window len):    " << cfg.tau << "\n";
-  std::cout << "--sample-size:      " << cfg.sample_size << "\n";
-  std::cout << "--keep-seq:         " << (cfg.keep_seq ? "true" : "false") << "\n";
-  std::cout << "seed:               " << cfg.seed << "\n";
-
-  for (uint32_t i = 0; i < file.size(); ++i) {
-    const Sketch sk = file.open(i, SketchLoad::All);
-    std::time_t ts = static_cast<std::time_t>(sk.get_timestamp());
-    str ts_str = std::ctime(&ts);
-    if (!ts_str.empty() && ts_str.back() == '\n') ts_str.pop_back();
-
-    std::cout << "\n[Sketch " << (i + 1) << "/" << file.size() << "]\n";
-    std::cout << "  Name:             " << sk.get_rname() << "\n";
-    std::cout << "  Date:             " << ts_str << "\n";
-    std::cout << "  Genome length:    " << sk.get_ntotal_bp() << "\n";
-    std::cout << "  Valid bases:      " << sk.get_nvalid_bp() << "\n";
-    std::cout << "  k-mers:           " << sk.get_nkmers() << "\n";
-    std::cout << "  card:              " << sk.get_card() << "\n";
-    std::cout << "  rho:              " << sk.get_rho() << "\n";
-    if (!sk.get_spurious_v().empty()) {
-      uint64_t sp_total = 0;
-      for (uint64_t c : sk.get_spurious_v()) sp_total += c;
-      std::cout << "  spurious:         " << sp_total << " reference k-mers\n";
-    }
-    std::cout << "  Nonempty buckets: " << sk.get_buckets().get_nnonempty() << "\n";
-    std::cout << "  Windows:          " << sk.get_windows().wins_v.size() << "\n";
-    const scentry& e = file.get_entry(i);
-    std::cout << "  Bucket bytes:     " << e.buckets_len << "\n";
-    std::cout << "  Window bytes:     " << e.windows_len << "\n";
-  }
-}
-
-InfoSC::InfoSC(CLI::App& sc)
-{
-  sc.add_option("-i,--sketch-path", sketch_path, "Container to inspect")->required()->check(CLI::ExistingFile);
-}
-
-int main(int argc, char** argv)
-{
-  std::cerr << "gdiff version: " << gdiff_version << '\n';
   std::ios::sync_with_stdio(false);
   std::cin.tie(nullptr);
 
@@ -166,13 +21,11 @@ int main(int argc, char** argv)
   app.set_help_flag("--help");
   app.fallthrough();
 
-  app.add_flag("--verbose,!--no-verbose", verbose, "Report progress even when stderr is not a terminal");
-  // Exactly one: dispatch below is a fixed-order if-chain, so accepting several would silently
-  // run them in source order rather than the order they were given.
+  app.add_flag("--verbose,!--no-verbose", verbose, "Report progress even when stderr is not a terminal and details");
   app.require_subcommand(1);
   app.add_option("--seed", seed, "Random seed for the LSH and other parts that require randomness [0]");
   app.callback([&]() { init_thread_rng(0); });
-  app.add_option("--num-threads", num_threads, "Worker threads per subcommand [1]");
+  app.add_option("-t,--num-threads", num_threads, "Worker threads per subcommand [1]");
 
   auto& sc_sketch = *app.add_subcommand("sketch", "Create sketches from FASTA/FASTQ files");
   auto& sc_map = *app.add_subcommand("map", "Map queries and extract distance-based patterns from sketches");
@@ -197,55 +50,41 @@ int main(int argc, char** argv)
     invocation.pop_back();
   }
 
-  const auto tstart = std::chrono::system_clock::now();
-  const std::time_t tstart_f = std::chrono::system_clock::to_time_t(tstart);
-  std::cerr << "Invocation: " << invocation << '\n' << std::ctime(&tstart_f);
-
-  auto run_timed = [&](const char* done_msg, auto&& work) {
-    const auto t0 = std::chrono::system_clock::now();
+  auto get_running_time = [&](auto&& work) {
+    const auto t0 = std::chrono::steady_clock::now();
     work();
-    std::chrono::duration<float> es = std::chrono::system_clock::now() - t0;
-    cerr_msg(done_msg, es.count(), " sec");
+    const std::chrono::duration<double> es = std::chrono::steady_clock::now() - t0;
+    info_msg("Done in ", std::round(es.count() * 100.0) / 100.0, " s");
   };
 
   if (sc_sketch.parsed()) {
     write_provenance(std::cerr);
-    cerr_msg("Initializing the sketch...");
     gdiff_sketch.set_nrows();
     gdiff_sketch.set_lshf();
-    run_timed("Done sketching & saving, elapsed: ", [&]() { gdiff_sketch.process(); });
+    get_running_time([&]() { gdiff_sketch.process(); });
   }
 
   if (sc_merge.parsed()) {
     write_provenance(std::cerr);
-    cerr_msg("Merging sketches...");
-    run_timed("Done merging sketches, elapsed: ", [&]() { gdiff_merge.merge(); });
+    get_running_time([&]() { gdiff_merge.merge(); });
   }
 
-  if (sc_map.parsed()) {
-    cerr_msg("Loading the sketch...");
-    cerr_msg("Seeking query sequences in the sketch...");
-    run_timed("Done mapping sequences, elapsed: ", [&]() { gdiff_map.map(); });
-    cerr_msg("Total number of sequences queried: ", gdiff_map.get_total_qseq());
-  }
-
-  if (sc_dist.parsed()) {
-    cerr_msg("Comparing sketches and calculating distances...");
-    run_timed("Done calculating distances, elapsed: ", [&]() { gdiff_dist.dist(); });
-  }
-
-  if (sc_info.parsed()) {
-    gdiff_info.info();
-  }
-
-  if (sc_roll.parsed()) {
-    cerr_msg("Rolling windows and calculating local distances...");
-    run_timed("Done rolling windows, elapsed: ", [&]() { gdiff_roll.roll(); });
-  }
-
-  auto tend = std::chrono::system_clock::now();
-  std::time_t tend_f = std::chrono::system_clock::to_time_t(tend);
-  std::cerr << std::ctime(&tend_f);
+  if (sc_map.parsed()) get_running_time([&]() { gdiff_map.map(); });
+  if (sc_dist.parsed()) get_running_time([&]() { gdiff_dist.dist(); });
+  if (sc_info.parsed()) gdiff_info.info();
+  if (sc_roll.parsed()) get_running_time([&]() { gdiff_roll.roll(); });
 
   return 0;
+}
+
+int main(int argc, char** argv)
+{
+  try {
+    return run(argc, argv);
+  } catch (const fatal_error& e) {
+    error_msg(e.what());
+  } catch (const std::exception& e) {
+    error_msg("Unexpected failure: ", e.what());
+  }
+  return EXIT_FAILURE;
 }

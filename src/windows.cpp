@@ -3,7 +3,7 @@
 #include "random.hpp"
 #include <utility>
 
-window_plan_t make_window_plan(const vec<uint64_t>& slen_v,
+window_plan_t make_window_plan(const vec<uint64_t>& len_v,
                                uint64_t k,
                                uint64_t tau,
                                uint64_t bin_shift,
@@ -16,9 +16,9 @@ window_plan_t make_window_plan(const vec<uint64_t>& slen_v,
 
   // Cumulative eligible positions, so one global draw can be split back per source.
   uint64_t total_npos = 0;
-  vec<uint64_t> lenc_v(slen_v.size());
-  for (size_t i = 0; i < slen_v.size(); ++i) {
-    const uint64_t len = slen_v[i];
+  vec<uint64_t> lenc_v(len_v.size());
+  for (size_t i = 0; i < len_v.size(); ++i) {
+    const uint64_t len = len_v[i];
     if (len >= xtau) total_npos += (len - k + 1 - nwinmers) / bin_size + 1;
     lenc_v[i] = total_npos;
   }
@@ -28,12 +28,12 @@ window_plan_t make_window_plan(const vec<uint64_t>& slen_v,
   if (total_npos == 0) return plan;
 
   const vec<uint64_t> positions_v = sample_coords(total_npos, sample_size, rng);
-  plan.sources_v.reserve(slen_v.size());
+  plan.sources_v.reserve(len_v.size());
   size_t pidx = 0;
-  for (size_t i = 0; i < slen_v.size() && pidx < positions_v.size(); ++i) {
+  for (size_t i = 0; i < len_v.size() && pidx < positions_v.size(); ++i) {
     const uint64_t roff = i == 0 ? 0 : lenc_v[i - 1];
     if (lenc_v[i] == roff) continue; // nothing eligible in this source
-    const uint64_t enmers = slen_v[i] - k + 1;
+    const uint64_t enmers = len_v[i] - k + 1;
     window_plan_t::source_t entry;
     entry.bix = i;
     entry.enmers = enmers;
@@ -47,7 +47,6 @@ window_plan_t make_window_plan(const vec<uint64_t>& slen_v,
   return plan;
 }
 
-// Expand window wi into cseq as ACGT characters plus 'N' where masked.
 void seq_pack_t::unpack(uint64_t wi, str& cseq) const
 {
   static const char bases[4] = {'A', 'C', 'G', 'T'};

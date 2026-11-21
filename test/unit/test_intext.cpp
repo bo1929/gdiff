@@ -372,7 +372,7 @@ TEST_SUITE("IntExt::set_seq_distance") {
 TEST_CASE("double: thrank_v is always the single threshold index") {
   auto [llhf, params] = make_test_params(0.1, 4, 2, 0);
   IntExt<double> ext(params, llhf, 8, 80);
-  for (const double d_seq : {0.05, 0.25, 0.99, nanx()}) {
+  for (const double d_seq : {0.05, 0.25, 0.45, nanx()}) {
     ext.set_seq_distance(d_seq);
     const auto& thrank = ext.get_thrank_v();
     REQUIRE(thrank.size() == 1);

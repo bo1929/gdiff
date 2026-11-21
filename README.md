@@ -56,7 +56,7 @@ gdiff dist ref_A.gds ref_B.gds --output-samples -o samples.tsv
 
 Two containers compare every genome in one against every genome in the other; one container compares all pairs within it. Both inputs must contain sampled windows. `--list-a` and `--list-b` accept lists of container paths.
 
-The default output has one row per pair, with a reconciled distance `d`, directional medians `d_ab` and `d_ba`, and window counts.
+The default output has one row per pair: the reconciled distance `d`; the unfiltered median, mean and highest window distance per direction (`d_median_ab`, `d_median_ba`, `d_mean_ab`, ...); and window counts.
 `--output-samples` reports individual windows in both directions.
 Distance is on the `1 - ANI/100` scale.
 
@@ -78,15 +78,20 @@ Make sure to use multi-threading if you have resources available.
 gdiff map query.fasta reference.gds -l 500 -o intervals.tsv
 ```
 
-`-l 500` sets the minimum interval length and background sampling window to 500 k-mers. gdiff samples query windows against each reference, fits a gamma background with a point mass at the distance floor, and derives lower and upper thresholds. The fit is fail-closed: if it is rejected, no threshold can be placed and the reference is skipped with a warning, so thresholds and `p_gamma` always come from the same model.
+`-l 500` sets the minimum interval length and background sampling window to 500 k-mers. gdiff samples query windows against each reference, fits a gamma background with a point mass at the distance floor, and derives lower and upper thresholds. The fit is fail-closed: if it is rejected, no threshold can be placed and the reference is skipped, so thresholds and `p_gamma` always come from the same model. Every skip is also written to the output as a tab-separated comment line, `# skipped<TAB>reference<TAB>reason`.
 
-The default two-sided levels are `0.01 0.001 0.0001`. For example, `0.01` places thresholds at the 0.5th and 99.5th percentiles. Smaller levels select more extreme tails. To use more permissive levels or sample more background windows:
+Each level `pi` is a one-sided tail probability: it places a lower threshold at the `pi` quantile and an upper threshold at the `1 - pi` quantile of the fitted background (no division by 2). The default levels are `0.01 0.001 0.0001`; smaller levels select more extreme tails. To use more permissive levels or sample more background windows:
 
 ```bash
 gdiff map query.fasta reference.gds -l 500 --levels 0.05 0.01 0.005 --sample-size 1000 -o intervals.tsv
 ```
 
-For the stringent default levels, `--sample-size 1000` provides more background support for the fitted tails. Model thresholds outside the valid distance range are skipped.
+For the stringent default levels, `--sample-size 1000` provides more background support for the fitted tails. Model thresholds outside the valid distance range are dropped, as is a lower threshold that falls inside the point mass at the distance floor. The thresholds that were used, and any that were dropped with the reason, are listed before the records as tab-separated comment lines:
+
+```
+# threshold<TAB>reference<TAB>low|high<TAB>distance<TAB>pi
+# dropped<TAB>reference<TAB>low|high<TAB>distance<TAB>pi<TAB>reason
+```
 
 To skip threshold detection entirely, give distance cutoffs directly:
 
@@ -94,7 +99,7 @@ To skip threshold detection entirely, give distance cutoffs directly:
 gdiff map query.fasta reference.gds -l 500 --thresholds 0.02 0.3 -o intervals.tsv
 ```
 
-Each value becomes one lane, used as-is (up to 8, mutually exclusive with `--levels`). The background is still sampled for `d_null` and the p-value columns; `alpha` reports `nan` because no level placed the threshold.
+Each value becomes one lane, used as-is (up to 8, mutually exclusive with `--levels`). The background is still sampled for `d_null` and the p-value columns; `pi` reports `nan` because no level placed the threshold. Values must be below 0.5; a lane at or below the distance floor, or above `d_ceiling`, is kept but warned about because it cannot (or can only rarely) be reached.
 
 On each side, the most extreme level claims intervals first; later levels search the remaining gaps. Use `--independent-levels` to enumerate each level separately, allowing overlapping calls. A container with multiple references produces results for each reference.
 

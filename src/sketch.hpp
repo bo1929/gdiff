@@ -37,7 +37,6 @@ public:
   [[nodiscard]] const Buckets& get_buckets() const noexcept { return buckets; }
   [[nodiscard]] const window_sample_t& get_windows() const noexcept { return windows; }
   [[nodiscard]] const vec<uint64_t>& get_spurious_v() const noexcept { return spurious_v; }
-  // f_x for x=0..hdist_th from the stored spurious histogram; empty when absent.
   [[nodiscard]] vec<double> get_spurious_f(uint32_t hdist_th) const;
   [[nodiscard]] bool has_buckets() const noexcept { return loaded_buckets; }
   [[nodiscard]] bool has_windows() const noexcept { return loaded_windows; }
@@ -50,7 +49,7 @@ private:
   double rho = 1.0;
   uint64_t nkmers = 0;
   double card = 0.0;
-  vec<uint64_t> spurious_v; // counts for min non-self hd 0..hdist_bound, then misses
+  vec<uint64_t> spurious_v;
   uint64_t timestamp = 0;
   uint64_t ntotal_bp = 0;
   uint64_t nvalid_bp = 0;
@@ -68,7 +67,7 @@ private:
 // One path per line, '#' lines skipped; "name<TAB>path" names the sketch.
 void read_path_list(const std::filesystem::path& list_path, vec<str>& paths, vec<str>& names);
 
-// True when two sketches may be compared or merged: everything but keep_seq must match.
+// True when two sketches may be compared or merged: (almost) everything but must match.
 bool compatible_configs(const sketch_config_t& a, const sketch_config_t& b);
 
 class BaseLSH
@@ -130,8 +129,6 @@ private:
   params params;
 };
 
-// Build an in-memory sketch from a FASTA/FASTQ: owned buckets plus the HLL cardinality
-// estimate, with rho = retained / cardinality clamped to (0, 1].
 Sketch build_sketch(const str& input_path, const sketch_config_t& cfg, str rname, bool compute_spurious = true);
 
 #endif

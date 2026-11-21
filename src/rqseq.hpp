@@ -6,7 +6,7 @@
 #if defined(_LCURL) && _LCURL == 1
   #include <curl/curl.h>
 #endif
-#include "common.hpp"
+#include "utils.hpp"
 #include "msg.hpp"
 #include "types.hpp"
 #include "lshf.hpp"
@@ -81,11 +81,9 @@ public:
   ~RSeq();
   bool set_curr_seq();
   bool read_next_seq();
-  // HLL estimate of the number of distinct canonical k-mers seen so far.
-  [[nodiscard]] double get_card() const { return csk.estimate(); }
+  [[nodiscard]] double get_card() const { return csk.estimate(); } // HLL estimate of the number of distinct k-mers
   [[nodiscard]] const char* get_name() const { return name; }
   [[nodiscard]] uint64_t get_len() const { return len; }
-  // Append the selected minimizers of the current sequence as packed keys.
   void extract_mers(vec<uint64_t>& keys_v);
 
 private:
@@ -106,7 +104,6 @@ private:
   std::filesystem::path input_path;
 };
 
-// One query sequence with its ID (coupled: always same index, same lifetime).
 struct qseq_t
 {
   str qid;
@@ -120,7 +117,6 @@ class QSeq : public HandlerURL
 public:
   explicit QSeq(const str& input, uint64_t bpmax_batch = bpmax_batch_default);
   ~QSeq();
-  // Append up to one batch of sequences; false once the input is exhausted.
   bool read_next_batch();
   void clear();
   bool is_empty();

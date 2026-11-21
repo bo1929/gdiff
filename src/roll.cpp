@@ -5,7 +5,7 @@
 #include <limits>
 #include <sys/mman.h>
 
-#include "common.hpp"
+#include "utils.hpp"
 #include "records.hpp"
 #include "distance.hpp"
 #include "llh.hpp"
@@ -18,8 +18,6 @@
 
 namespace {
 
-  // Record every k-mer's Hamming distance once, so windows can then slide.
-  // Indices are relative to `base`, the first k-mer of the scanned range.
   struct block_scan_t
   {
     uint8_t* fw = nullptr;
@@ -40,7 +38,6 @@ namespace {
     inline void skip_mer(uint64_t) const noexcept {}
   };
 
-  // Sliding per-window counts: hits 0..hdist_th plus misses, with incremental remove.
   struct sliding_counts_t
   {
     vec<uint64_t> hist_v;
@@ -97,7 +94,6 @@ namespace {
     uint64_t k;
   };
 
-  // Fill hd_fw_v/hd_rc_v with the per-k-mer HD of the k-mers [r0, r1) (bin_shift = 0).
   template<bool Canonical>
   void
   scan_block(const scan_ctx_t& ctx, const str& seq, uint64_t r0, uint64_t r1, vec<uint8_t>& hd_fw_v, vec<uint8_t>& hd_rc_v)
@@ -217,12 +213,8 @@ namespace {
 
 void RollSC::roll()
 {
-  if (!check_input_type(query_path, input_type::sequence, "roll query-path (first positional)")) {
-    error_exit("Invalid configuration!");
-  }
-  if (!check_input_type(sketch_path, input_type::container, "roll sketch-path (second positional)")) {
-    error_exit("Invalid configuration!");
-  }
+  if (!check_input_type(query_path, input_type::sequence, "roll query-path (first positional)")) exit_failure();
+  if (!check_input_type(sketch_path, input_type::container, "roll sketch-path (second positional)")) exit_failure();
   const Container file(sketch_path);
   if (file.size() == 0) error_exit("Container has no sketches: " + sketch_path.string());
 
@@ -238,7 +230,7 @@ void RollSC::roll()
 
   const uint32_t nsketches = file.size();
   ThreadPool pool(std::max(1u, num_threads));
-  cerr_msg("Rolling ",
+  info_msg("Rolling ",
            params.tau,
            "-mer windows in steps of ",
            params.step,
@@ -246,7 +238,9 @@ void RollSC::roll()
            query_path.filename().string(),
            " against ",
            nsketches,
-           " reference sketch(es)...");
+           " sketch(es) with ",
+           pool.size(),
+           " thread(s)");
 
   for (uint32_t i = 0; i < nsketches; ++i) {
     const Sketch reference = file.open(i, SketchLoad::Buckets);
@@ -270,7 +264,7 @@ void RollSC::roll()
 
     const scentry& e = file.get_entry(i);
     file.advise(e.buckets_offset, e.buckets_len, MADV_DONTNEED);
-    progress("Rolled", i + 1, nsketches);
+    progress_continue("Rolled", i + 1, nsketches);
   }
   progress_done();
   os.flush();
@@ -280,15 +274,15 @@ bool RollSC::validate_configuration()
 {
   bool is_valid = true;
   if (params.hdist_th > hdist_bound) {
-    cerr_msg("--hdist-th must be in [0, ", hdist_bound, "]; got ", params.hdist_th);
+    error_msg("--hdist-th must be in [0, ", hdist_bound, "]; got ", params.hdist_th);
     is_valid = false;
   }
   if (params.step == 0) {
-    cerr_msg("-s must be positive; got 0");
+    error_msg("-s must be positive; got 0");
     is_valid = false;
   }
   if (params.tau == 0) {
-    cerr_msg("-l must be positive; got 0");
+    error_msg("-l must be positive; got 0");
     is_valid = false;
   }
   return is_valid;
@@ -296,10 +290,10 @@ bool RollSC::validate_configuration()
 
 RollSC::RollSC(CLI::App& sc)
 {
-  sc.add_option("query-path", query_path, "Query FASTA/FASTQ to roll the window over (gzip ok)")
+  sc.add_option("query-path", query_path, "Query FASTA/FASTQ (+gzip) <path> to roll the window over")
     ->required()
     ->check(CLI::ExistingFile);
-  sc.add_option("sketch-path", sketch_path, "Reference container <path>")->required()->check(CLI::ExistingFile);
+  sc.add_option("sketch-path", sketch_path, "Reference sketch container <path>")->required()->check(CLI::ExistingFile);
   sc.add_option("-l", params.tau, "Window length in k-mers")->required()->check(CLI::PositiveNumber);
   sc.add_option("-s", params.step, "Step between consecutive window starts [-l]")->check(CLI::PositiveNumber);
   sc.add_option("--hdist-th", params.hdist_th, "Maximum Hamming distance for a k-mer to match [3]")
@@ -307,7 +301,7 @@ RollSC::RollSC(CLI::App& sc)
   sc.add_option("-o,--output-path", output_path, "Write output to a file at <path> [stdout]");
   sc.callback([&]() {
     if (!sc.count("-s")) params.step = params.tau;
-    if (!validate_configuration()) error_exit("Invalid configuration!");
+    if (!validate_configuration()) exit_failure();
     open_output(output_file, output_path, output_stream);
   });
 }

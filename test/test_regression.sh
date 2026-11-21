@@ -256,13 +256,13 @@ cmp -s "$WORK/map_ref.data" "$WORK/map_t4.data" || fail "map output depends on -
 # level places at most one low and one high lane, so three levels fit at most 6 of the 8.
 n_lanes="$(
   "$GDIFF" map --levels 0.05 0.01 0.005 "genomes/${first_query}.fna.gz" \
-    "$WORK/sketches/${first_ref}.gs" $MAP_BASE 2>&1 >/dev/null |
-    awk '/threshold=/ { n++ } END { print n + 0 }'
+    "$WORK/sketches/${first_ref}.gs" $MAP_BASE 2>/dev/null |
+    awk '/^# threshold\t/ { n++ } END { print n + 0 }'
 )"
 [ "$n_lanes" -ge 2 ] && [ "$n_lanes" -le 6 ] || fail "--levels ran $n_lanes lanes, expected 2 to 6"
 
 # --thresholds places the given cutoffs verbatim: every record must name one of them, carry no
-# alpha (no level placed it), and sit on the side of the background median its value implies.
+# pi (no level placed it), and sit on the side of the background median its value implies.
 map_once "$WORK/map_th.tsv" --thresholds 0.02 0.3
 has_records "$WORK/map_th.tsv" || fail "map --thresholds produced no output"
 if ! strip_comments "$WORK/map_th.tsv" | awk -F'\t' '
@@ -271,12 +271,12 @@ if ! strip_comments "$WORK/map_th.tsv" | awk -F'\t' '
     th = $(col["threshold"]) + 0
     dn = $(col["d_null"]) + 0
     if (th != 0.02 && th != 0.3) bad = 1
-    else if ($(col["alpha"]) != "nan") bad = 2
+    else if ($(col["pi"]) != "nan") bad = 2
     else if (th <= dn && $(col["side"]) != "low") bad = 3
     else if (th > dn && $(col["side"]) != "high") bad = 4
   }
   END { exit bad ? 1 : 0 }'; then
-  fail "a --thresholds record carried an unexpected threshold, alpha, or side"
+  fail "a --thresholds record carried an unexpected threshold, pi, or side"
 fi
 
 # Both extraction modes must report on the same lanes.
@@ -306,6 +306,11 @@ strip_comments "$WORK/dist_pos.tsv" > "$WORK/dist_pos.data"
 strip_comments "$WORK/dist_list.tsv" > "$WORK/dist_list.data"
 cmp -s "$WORK/dist_pos.data" "$WORK/dist_list.data" ||
   fail "dist --list-a/--list-b differ from the positional form"
+
+# The summary header names the per-direction statistics.
+[ "$(strip_comments "$WORK/dist_pos.tsv" | head -n 1 | cut -f3-9)" = \
+  "$(printf 'd\td_median_ab\td_median_ba\td_mean_ab\td_mean_ba\td_highest_ab\td_highest_ba')" ] ||
+  fail "dist summary header changed"
 
 # -o must write exactly what stdout would.
 "$GDIFF" dist -o "$WORK/dist_o.tsv" "$sketch_a" "$sketch_b" >/dev/null 2>&1
@@ -404,8 +409,8 @@ echo "PASS: provenance header"
 echo "=== Phase 9: map output schema ==="
 # `map` names its columns so `gvizz.py` can find them by name instead of by position; the
 # strand-aware variant is not covered by the gt/ files above.
-EXPECT_AGNOSTIC="seq seq_len start end reference alpha threshold side interval_len n_kmers d d_seq d_null delta d_min d_max d_floor d_ceiling n_at_floor n_at_ceiling p_interval q_interval p_gamma"
-EXPECT_AWARE="seq seq_len start end strand is_rc reference alpha threshold side interval_len n_kmers d d_seq d_null delta d_min d_max d_floor d_ceiling n_at_floor n_at_ceiling p_interval q_interval p_gamma"
+EXPECT_AGNOSTIC="seq seq_len start end reference pi threshold side interval_len n_kmers d d_seq d_null delta d_min d_max d_floor d_ceiling n_at_floor n_at_ceiling p_interval q_interval p_gamma"
+EXPECT_AWARE="seq seq_len start end strand is_rc reference pi threshold side interval_len n_kmers d d_seq d_null delta d_min d_max d_floor d_ceiling n_at_floor n_at_ceiling p_interval q_interval p_gamma"
 
 agnostic_header="$(strip_comments "$WORK/map_ref.tsv" | head -n 1 | tr '\t' ' ')"
 [ "$agnostic_header" = "$EXPECT_AGNOSTIC" ] || fail "strand-agnostic map header changed: $agnostic_header"
@@ -423,6 +428,17 @@ for probe in map_ref aware; do
   bad="$(strip_comments "$WORK/$probe.tsv" | awk -F'\t' -v n="$fields" 'NF != n' | wc -l | tr -d ' ')"
   [ "$bad" = "0" ] || fail "$probe has $bad row(s) whose field count differs from the header"
 done
+
+# The thresholds used lead the output as tab-separated comment lines: threshold, reference, side,
+# distance, pi.
+n_th="$(grep -c '^# threshold	' "$WORK/map_ref.tsv" || true)"
+[ "$n_th" -ge 1 ] || fail "map wrote no '# threshold' comment lines"
+bad="$(grep '^# threshold	' "$WORK/map_ref.tsv" | awk -F'\t' 'NF != 5 || ($3 != "low" && $3 != "high") || $5 + 0 <= 0' | wc -l | tr -d ' ')"
+[ "$bad" = "0" ] || fail "$bad '# threshold' line(s) are not 'threshold ref side distance pi'"
+
+# --thresholds at or above UB (0.5) are refused; below the floor they are kept and warned about.
+"$GDIFF" map --thresholds 0.995 $MAP_BASE "genomes/${first_query}.fna.gz" \
+  "$WORK/sketches/${first_ref}.gs" > /dev/null 2>&1 && fail "--thresholds 0.995 was accepted"
 echo "PASS: map output schema"
 
 # -- Phase 10: ambiguous runs split extraction ---------------------------------
@@ -446,7 +462,7 @@ gzip -dc "genomes/${first_query}.fna.gz" | awk '
   }' > "$WORK/nrun.fa"
 
 nrun_map() {
-  "$GDIFF" map -l 5000 --thresholds 0.60 --hdist-th 4 "$WORK/nrun.fa" "$WORK/sketches/${first_query}.gs" \
+  "$GDIFF" map -l 5000 --thresholds 0.45 --hdist-th 4 "$WORK/nrun.fa" "$WORK/sketches/${first_query}.gs" \
     > "$1" 2>/dev/null
 }
 nrun_map "$WORK/nrun.tsv" || fail "map failed on an N-run query"

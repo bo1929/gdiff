@@ -50,7 +50,7 @@ Output: query coordinates and distance for each window against each reference. `
     -l 500 --sample-size 20000 -o demo/output/intervals.tsv
 ```
 
-Output: background-relative outlier intervals at levels `0.01 0.001 0.0001`, with normal merging. `-l` sets the minimum length in k-mers; 20,000 background samples improve tail estimation for this example.
+Output: background-relative outlier intervals at tail levels `0.01 0.001 0.0001` (pi, one-sided), with normal merging. `-l` sets the minimum length in k-mers; 20,000 background samples improve tail estimation for this example.
 
 Look near **49,276–52,521 bp** on `AG-899-N21_NODE_6`: distances to the donor drop, while those to the same-species reference rise or have no estimate. All coordinates are 1-based and inclusive.
 

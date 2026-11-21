@@ -43,7 +43,6 @@ inline scan_ctx_t make_scan_ctx(const Sketch& sketch, uint64_t bin_shift, uint32
   return {lshf, &sketch.get_buckets(), k, masks.bp, masks.lr, bin_shift, hdist_th, k};
 }
 
-// Canonical: one key per k-mer (true) vs non-canonical fw+rc (false). Agg: hit/miss aggregator.
 template<bool Canonical, typename Agg>
 inline void scan_mers_range(const scan_ctx_t& ctx, const char* cseq, uint64_t j0, uint64_t j1, Agg&& agg)
 {
@@ -143,7 +142,7 @@ inline void scan_mers_range(const scan_ctx_t& ctx, const char* cseq, uint64_t j0
   if (n) flush();
 }
 
-// Total hits accumulated in a per-window histogram (indices 0..hdist_th).
+// Total hits accumulated in a per-window histogram
 inline uint64_t hist_total(const uint64_t* hist, uint32_t hdist_th) noexcept
 {
   uint64_t t = 0;
@@ -152,7 +151,6 @@ inline uint64_t hist_total(const uint64_t* hist, uint32_t hdist_th) noexcept
   return t;
 }
 
-// Per-window HD counts
 struct window_counts_t
 {
   vec<uint64_t> hist_v;
@@ -187,7 +185,6 @@ struct window_counts_t
   inline void skip_mer(uint64_t /*bin*/) const noexcept {}
 };
 
-// Per-window HD counts with explicit fw/rc halves for strand-based scans.
 struct swindow_counts_t
 {
   vec<uint64_t> hist_fw_v;

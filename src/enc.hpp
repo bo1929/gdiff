@@ -9,9 +9,6 @@ extern const std::array<uint8_t, 128> SEQ_NT4_TABLE;
 extern const std::array<uint64_t, 4> NT4_LR_TABLE;
 extern const std::array<uint64_t, 4> NT4_BP_TABLE;
 
-// Position masks of a k-mer encoding:
-// `bp` selects the 2-bit base pairs, `lr` the 1-bit-per-position encoding.
-// Both also occupy the unused high positions.
 struct lsh_masks_t
 {
   uint64_t bp;

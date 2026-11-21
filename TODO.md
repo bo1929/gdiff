@@ -1,14 +1,20 @@
 # TODO
+make sketch positional as well and merge -i
 
-Live backlog. The full code-review worklist (dead code, error paths, robustness, style batch,
-prioritized order) is in `docs/REVIEW-20OCT26.md` — items are not duplicated here. Docs index:
+Live backlog. The open code-review findings (error paths, robustness, dead code, style batch,
+prioritized order) are in `docs/REVIEW.md`; items are not duplicated here. Docs index:
 `docs/README.md`; retired material: `docs/archive/`.
 
 ## Map / detection
 
-* Decide the final `map` output format and either print or drop the per-record statistics that
-  are computed but never emitted (Fisher info, `lr_lb`, `lr_ub`, empirical `pvalue`/`fold`;
-  REVIEW M1). Two extra Brent fits per record are the single largest wasted cost in `map`.
+* Revisit the default `--levels` and the scan inflation (decided 2026-11-20 to change nothing
+  for now): the scan takes maxima over many windows, so the loosest levels can call spurious
+  intervals on an unedited genome.
+* `map` no longer computes the unprinted per-record statistics (Fisher info, `lr_lb`, `lr_ub`,
+  empirical `pvalue`/`fold`). If identifiability diagnostics are wanted, add them as printed
+  `p_lb`/`p_ub` columns (see `NOTES.md`, section 3).
+* The hurdle fit has no point mass at the ceiling (`UB = 0.5 - 1e-7`): on very divergent
+  genomes the null median can sit at the cap.
 * Optional direction control: a strand-aware reference always scores both strands and reports
   the selected one; there is no way to restrict the search to a single strand.
 * Ns and repeats: ambiguous k-mers break intervals (`IntExt::skip_mer`), but there is no
@@ -18,6 +24,16 @@ prioritized order) is in `docs/REVIEW-20OCT26.md` — items are not duplicated h
   positions).
 * Container loads should reject headers whose counts exceed the remaining file bytes before
   resizing (`nsketches` for the index, `nwins` for the window list).
+
+## dist
+
+* `dist` builds its likelihood without the reference's spurious-hit fractions
+  (`make_llhf(reference, hdist_th)`), while `map` and `roll` pass `get_spurious_f(hdist_th)`.
+  Decide whether that is intended; applying it would change `dist` output.
+
+## roll
+
+* Add `p`-values, FDR and the gamma fit to `roll` (see `NOTES.md`).
 
 ## Memory
 
@@ -33,10 +49,6 @@ prioritized order) is in `docs/REVIEW-20OCT26.md` — items are not duplicated h
 
 ## Tests / regression
 
-* `test/test_regression.sh` and the `test/gt/` goldens are broken against the current CLI: the
-  script invokes removed flags (`-d`, `--iterative-removal`) and the goldens predate the
-  22/24-column `map` schema. Update the script's option sets (default vs `--independent-levels`
-  modes), then delete `gt/*` and re-run to bootstrap new goldens.
 * No unit tests for `rqseq` / hyperloglog: `extract_mers` (minimizer selection + dedup) and the
   cardinality estimate are only exercised indirectly through `sketch`.
 * The symmetric merge is pinned by hand-written expectations in `test/unit/test_sym.cpp` rather
@@ -46,24 +58,12 @@ prioritized order) is in `docs/REVIEW-20OCT26.md` — items are not duplicated h
 * `dist` and `roll` have no golden files. They are covered by property tests (option
   equivalence, thread invariance, `-o` byte equality) instead of pinned values.
 
-## Tooling / paper
+## Paper
 
-* `gvizz` draws every reported interval and window as a segment at its exact
-  coordinates (viridis by distance, gray when missing) on one level per track,
-  with lower distances drawn on top where intervals overlap; paper notation in
-  the labels (D-hat, theta_pi tail thresholds), gene annotation tracks
-  (TSV/GFF3), overlay inputs, raw empirical CDFs for sampled windows, and pair
-  matrices ordered by mean distance. No sequence is selected by default: the
-  HTML report is a dependency-free interactive viewer (sequence arrows,
-  reference/side/genes checkboxes, drag-zoom), and PNG/SVG output requires
-  --seq. No binning or per-position counters; caps keep longest
-  intervals and report omissions. Covered by 25 tests in `test/test_gvizz.py`;
-  the archived `plot-notes.md`, `test-gvizz.sh`, and `verify-gvizz.js` stay
-  retired because the suite covers their role.
 * `docs/algorithm.tex` predates the current null model: it describes a plain moment-fit Gamma
-  with percentiles, not the hurdle fit (spike at `d_min` + ML-refined Gamma), the empirical
-  fallback, or the `p_interval`/`q_interval`/`p_gamma` columns. Update, then rebuild the pdf
-  (`latexmk -pdf algorithm.tex`).
+  with percentiles, not the hurdle fit (point mass at `d_floor` + ML-refined Gamma), the
+  `UB = 0.5 - 1e-7` domain, the `d_seq` side rule, or the `p_interval`/`q_interval`/`p_gamma`
+  columns. Update, then rebuild the pdf (`latexmk -pdf algorithm.tex`).
 
 ## Behaviour worth knowing
 
@@ -78,6 +78,5 @@ prioritized order) is in `docs/REVIEW-20OCT26.md` — items are not duplicated h
 
 ## Housekeeping
 
-* `docs/` is gitignored — none of the documentation is versioned. Decide whether to track it
+* `docs/` is gitignored; none of the documentation is versioned. Decide whether to track it
   (or at least `subcommands.md` / `architecture.md` / `style-guide.md`).
-* Stray build artifact `.d` sits at the repo root (ignored); safe to delete.

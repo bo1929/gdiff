@@ -6,7 +6,7 @@
 #include <memory>
 #include <ostream>
 
-inline constexpr uint32_t container_vgskey = 0x4B534447u;
+inline constexpr uint32_t container_vkey = 0x4B534447u;
 inline constexpr uint32_t container_version = 1;
 
 #pragma pack(push, 1)
@@ -63,7 +63,6 @@ public:
   [[nodiscard]] const char* end() const noexcept { return begin() + len; }
   [[nodiscard]] size_t size() const noexcept { return len; }
 
-  // Advise on a byte range, e.g. MADV_DONTNEED to drop a reference's pages.
   void advise(uint64_t off, uint64_t nbytes, int advice) const noexcept;
 
   static std::shared_ptr<const FileMap> open(const std::filesystem::path& path);
@@ -97,7 +96,7 @@ private:
   vec<scentry> entries_v;
 };
 
-// True when `path` starts with the container vgskey.
+// True when `path` starts with the container vkey.
 bool is_container_file(const std::filesystem::path& path);
 
 enum class input_type

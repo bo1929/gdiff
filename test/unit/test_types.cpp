@@ -1,4 +1,5 @@
 #include "doctest/doctest.h"
+#include "utils.hpp"
 #include "records.hpp"
 #include "intext.hpp"
 #include "types.hpp"
@@ -51,7 +52,7 @@ TEST_SUITE("record_t") {
 
 TEST_CASE("query-wide MLE selects the reference strand for background sampling") {
   const auto nan = std::numeric_limits<double>::quiet_NaN();
-  // Query-level winner used for background samples / add_to_acc: smaller finite strand MLE; fw on tie/NaN.
+  // Query-level winner used for background samples: smaller finite strand MLE; fw on tie/NaN.
   const auto winner_rc = [](double fw, double rc) { return strand_diff(fw, rc) > 0.0; };
   CHECK_FALSE(winner_rc(0.2, 0.3)); // fw lower
   CHECK_FALSE(winner_rc(0.3, 0.3)); // tie -> fw
@@ -111,21 +112,24 @@ TEST_CASE("report_strand reads the d_diff encoding") {
 TEST_CASE("validate_distance rejects out-of-range and non-finite values") {
   const auto nan = std::numeric_limits<double>::quiet_NaN();
   const auto inf = std::numeric_limits<double>::infinity();
-  CHECK(is_valid_distance(0.0));
-  CHECK(is_valid_distance(0.5));
-  CHECK(is_valid_distance(d_ub - 2.0 * eps));
-  CHECK_FALSE(is_valid_distance(d_ub - eps));
-  CHECK_FALSE(is_valid_distance(d_ub));
+  CHECK_FALSE(is_valid_distance(0.0)); // LB is 1e-7: the likelihood is undefined at D = 0
+  CHECK(is_valid_distance(0.3));
+  CHECK_FALSE(is_valid_distance(0.5)); // UB is just below 0.5
+  CHECK(is_valid_distance(LB));
+  CHECK(is_valid_distance(UB));
+  CHECK_FALSE(is_valid_distance(std::nextafter(UB, 1.0)));
+  CHECK_FALSE(is_valid_distance(1.0));
   CHECK_FALSE(is_valid_distance(-0.1));
   CHECK_FALSE(is_valid_distance(nan));
   CHECK_FALSE(is_valid_distance(inf));
   CHECK_FALSE(is_valid_distance(-inf));
-  CHECK(std::isnan(validate_distance(d_ub)));
-  CHECK(std::isnan(validate_distance(d_ub - eps)));
+  CHECK(std::isnan(validate_distance(1.0)));
+  CHECK(std::isnan(validate_distance(std::nextafter(UB, 1.0))));
   CHECK(std::isnan(validate_distance(-0.1)));
   CHECK(std::isnan(validate_distance(nan)));
-  CHECK(validate_distance(0.5) == doctest::Approx(0.5));
-  CHECK(validate_distance(0.0) == doctest::Approx(0.0));
+  CHECK(validate_distance(0.3) == doctest::Approx(0.3));
+  CHECK(std::isnan(validate_distance(0.0)));
+  CHECK(validate_distance(LB) == doctest::Approx(LB));
 }
 
 TEST_CASE("coordinate helpers preserve output conventions") {

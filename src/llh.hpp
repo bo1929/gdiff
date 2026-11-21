@@ -22,9 +22,14 @@ public:
   vec<uint64_t> binom_coef_hnk;
   vec<double> dcoef_k;
   vec<double> dcoef_hnk;
-  vec<double> spurious_f_v; // empirical non-self hit mixture; empty = old model
+  vec<double> spurious_f_v;
 
-  LLH(uint32_t k, uint32_t h, double rho, uint32_t hdist_th, T extrema, bool compute_derivatives = true,
+  LLH(uint32_t k,
+      uint32_t h,
+      double rho,
+      uint32_t hdist_th,
+      T extrema,
+      bool compute_derivatives = true,
       vec<double> spurious_f_v = {})
     : k(k)
     , h(h)
@@ -79,7 +84,7 @@ public:
         sdc_u[i] = compute_sdc_u(axtrema[i]);
       }
     } else {
-      static_assert(std::is_same_v<T, double> || std::is_same_v<T, cmlane_t>, "LLH supports only double or cmlane_t");
+      static_assert(std::is_same_v<T, double> || std::is_same_v<T, cmlane_t>, "LLH does not support this type");
     }
   }
 
@@ -197,7 +202,6 @@ public:
     return -ll_dd;
   }
 
-  // NaN when there are no k-mer hits (distance undefined).
   double mle(const uint64_t* v_r, uint64_t u_r, double* nll_min = nullptr) const
   {
     uint64_t t = 0;
@@ -281,7 +285,6 @@ private:
   }
 
   T sign;
-  // fdc/sdc: first/second d/dD log-likelihood contributions; *_v per Hamming-distance hit, *_u for misses.
   T fdc_u;
   T sdc_u;
   vec<T> fdc_v;
@@ -302,20 +305,15 @@ inline double likelihood_ratio_statistic(double nll_ref, double nll_mle) noexcep
   return 2.0 * std::max(0.0, nll_ref - nll_mle);
 }
 
-// Weakest detectable match: one hit at hdist_th, rest misses. Largest estimable d.
 template<typename T>
-inline double max_estimable_distance(const LLH<T>& llhf, uint64_t n_total, double* nll_min = nullptr)
+inline double max_estimable_distance(const LLH<T>& llhf, uint64_t n_total)
 {
-  if (n_total == 0) {
-    if (nll_min) *nll_min = nanx();
-    return nanx();
-  }
+  if (n_total == 0) return nanx();
   arr<uint64_t, hdist_bound + 1> v{};
   v[llhf.hdist_th] = 1;
-  return llhf.mle(v.data(), n_total - 1, nll_min);
+  return llhf.mle(v.data(), n_total - 1);
 }
 
-// All k-mers matching: the smallest estimable distance (the estimator floor).
 template<typename T>
 inline double min_estimable_distance(const LLH<T>& llhf, uint64_t n_total)
 {
@@ -325,7 +323,6 @@ inline double min_estimable_distance(const LLH<T>& llhf, uint64_t n_total)
   return llhf.mle(v.data(), 0);
 }
 
-// LR of d vs the sketch's max estimable distance on the ceiling match counts.
 template<typename T>
 inline double compute_lr_ub(const LLH<T>& llhf, double d, uint64_t n_total)
 {
@@ -333,10 +330,10 @@ inline double compute_lr_ub(const LLH<T>& llhf, double d, uint64_t n_total)
   arr<uint64_t, hdist_bound + 1> v{};
   v[llhf.hdist_th] = 1;
   const uint64_t u = n_total - 1;
-  double nll_ub = nanx();
-  const double d_ub_est = llhf.mle(v.data(), u, &nll_ub);
-  if (!is_valid_distance(d_ub_est)) return nanx();
-  return likelihood_ratio_statistic(llhf.nll(d, v.data(), u), nll_ub);
+  double nll_ceiling = nanx();
+  const double d_ceiling = llhf.mle(v.data(), u, &nll_ceiling);
+  if (!is_valid_distance(d_ceiling)) return nanx();
+  return likelihood_ratio_statistic(llhf.nll(d, v.data(), u), nll_ceiling);
 }
 
 template<typename T>
@@ -345,10 +342,10 @@ inline double compute_lr_lb(const LLH<T>& llhf, double d, uint64_t n_total)
   if (!is_valid_distance(d) || n_total == 0) return nanx();
   arr<uint64_t, hdist_bound + 1> v{};
   v[0] = n_total;
-  double nll_lb = nanx();
-  const double d_lb_est = llhf.mle(v.data(), 0, &nll_lb);
-  if (!is_valid_distance(d_lb_est)) return nanx();
-  return likelihood_ratio_statistic(llhf.nll(d, v.data(), 0), nll_lb);
+  double nll_floor = nanx();
+  const double d_floor = llhf.mle(v.data(), 0, &nll_floor);
+  if (!is_valid_distance(d_floor)) return nanx();
+  return likelihood_ratio_statistic(llhf.nll(d, v.data(), 0), nll_floor);
 }
 
 #endif

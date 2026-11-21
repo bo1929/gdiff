@@ -19,7 +19,7 @@ RSeq::RSeq(const str& input, const LSHF& lshf, uint8_t w, uint32_t fracth, bool 
 #if defined(_LCURL) && _LCURL == 1
     input_path = download_url(input);
 #else
-    warn_msg("Failed to download from URL, compiled without libcurl!");
+    error_exit("Cannot download " + input + ": gdiff was built without libcurl");
 #endif
   } else {
     input_path = input;
@@ -27,7 +27,7 @@ RSeq::RSeq(const str& input, const LSHF& lshf, uint8_t w, uint32_t fracth, bool 
 
   gfile = gzopen(input_path.c_str(), "rb");
   if (gfile == nullptr) {
-    error_exit(str("Failed to open the file at ") + input_path.string());
+    error_exit("Cannot open input file: " + input_path.string());
   }
   kseq = kseq_init(gfile);
 }
@@ -117,14 +117,14 @@ QSeq::QSeq(const str& input, uint64_t bpmax_batch)
 #if defined(_LCURL) && _LCURL == 1
     input_path = download_url(input);
 #else
-    warn_msg("Failed to download from URL, compiled without libcurl!");
+    error_exit("Cannot download " + input + ": gdiff was built without libcurl");
 #endif
   } else {
     input_path = input;
   }
   gfile = gzopen(input_path.c_str(), "rb");
   if (gfile == nullptr) {
-    error_exit(str("Failed to open the file at ") + input_path.string());
+    error_exit("Cannot open input file: " + input_path.string());
   }
   kseq = kseq_init(gfile);
 }

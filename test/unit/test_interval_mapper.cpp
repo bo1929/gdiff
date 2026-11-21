@@ -45,7 +45,7 @@ static const std::string GENOMES_DIR = TEST_DIR + "genomes/";
 static const std::string SKETCHES_DIR_A = test_util::path("sketches-saware").string() + "/";
 static const std::string SKETCHES_DIR_B = test_util::path("sketches-sagnostic").string() + "/";
 
-// Canonical output: seq seq_len start end reference alpha threshold side
+// Canonical output: seq seq_len start end reference pi threshold side
 // interval_len n_kmers d d_seq d_null delta d_min d_max d_floor d_ceiling
 // n_at_floor n_at_ceiling p_interval q_interval p_gamma
 static constexpr int k_ag_cols = 23;
@@ -54,7 +54,7 @@ static constexpr int k_ag_len = 1;
 static constexpr int k_ag_start = 2;
 static constexpr int k_ag_end = 3;
 static constexpr int k_ag_ref = 4;
-static constexpr int k_ag_alpha = 5;
+static constexpr int k_ag_pi = 5;
 static constexpr int k_ag_threshold = 6;
 static constexpr int k_ag_dist = 10;
 static constexpr int k_ag_dseq = 11;
@@ -72,7 +72,7 @@ static constexpr int k_sa_end = 3;
 static constexpr int k_sa_strand = 4;
 static constexpr int k_sa_rc = 5;
 static constexpr int k_sa_ref = 6;
-static constexpr int k_sa_alpha = 7;
+static constexpr int k_sa_pi = 7;
 static constexpr int k_sa_dist = 12;
 static constexpr int k_sa_pvalue = 22;
 static constexpr int k_sa_qvalue = 23;
@@ -161,14 +161,45 @@ static map_opts make_opts(uint64_t sample_size = 500,
   return opts;
 }
 
-static std::string run_intmap(const intmap_fixture_t& fx, const map_opts& opts)
+// Everything map_sequences wrote: records plus the `#` comment lines (threshold, dropped, skipped).
+static std::string run_intmap_raw(const intmap_fixture_t& fx, const map_opts& opts)
 {
   std::ostringstream sout;
   ThreadPool pool(1);
   init_thread_rng(1);
-  IntMap<cmlane_t> intmap(opts, fx.sketch, fx.qs->get_batch_v());
+  IntMap intmap(opts, fx.sketch, fx.qs->get_batch_v());
   intmap.map_sequences(sout, fx.sketch.get_rname(), pool);
   return sout.str();
+}
+
+static std::string without_comments(const std::string& s)
+{
+  std::string out;
+  std::istringstream iss(s);
+  std::string line;
+  while (std::getline(iss, line)) {
+    if (!line.empty() && line[0] != '#') out += line + "\n";
+  }
+  return out;
+}
+
+// The records only, which is what most checks below read.
+static std::string run_intmap(const intmap_fixture_t& fx, const map_opts& opts)
+{
+  return without_comments(run_intmap_raw(fx, opts));
+}
+
+static std::vector<std::vector<std::string>> comment_rows(const std::string& s, const std::string& kind)
+{
+  std::vector<std::vector<std::string>> rows;
+  std::istringstream iss(s);
+  std::string line;
+  while (std::getline(iss, line)) {
+    if (line.rfind("# " + kind + "\t", 0) != 0) continue;
+    auto f = split_tsv(line.substr(2));
+    rows.push_back(std::move(f));
+  }
+  return rows;
 }
 
 static int count_lines(const std::string& s)
@@ -295,7 +326,7 @@ TEST_CASE("default output reports all threshold intervals with q-values" * docte
     if (line.empty()) continue;
     const auto f = split_tsv(line);
     CHECK(f[k_ag_ref].find("G000341695") != std::string::npos);
-    CHECK(std::isfinite(std::stod(f[k_ag_alpha])));
+    CHECK(std::isfinite(std::stod(f[k_ag_pi])));
     CHECK(std::isfinite(std::stod(f[k_ag_threshold])));
     if (f[k_ag_dist] == "NA") {
       CHECK(f[k_ag_pvalue] == "NA");
@@ -327,13 +358,15 @@ TEST_CASE("independent levels claim more than gap-claiming" * doctest::skip(!tes
 TEST_CASE("floor-only null places no threshold lanes")
 {
   vec<double> sample(1000, 1e-7);
-  vec<double> th, alpha;
-  CHECK_FALSE(level_thresholds(sample, {0.1}, th, alpha, 10, nullptr));
+  vec<double> th, pi;
+  level_report_t report;
+  CHECK_FALSE(level_thresholds(sample, {0.1}, th, pi, 10, nullptr, nanx(), &report));
   CHECK(th.empty());
-  CHECK(alpha.empty());
+  CHECK(pi.empty());
+  CHECK(report.skip.find("background fit rejected") != std::string::npos);
 }
 
-TEST_CASE("one level emits only that alpha" * doctest::skip(!test_data_available()))
+TEST_CASE("one level emits only that pi" * doctest::skip(!test_data_available()))
 {
   const auto fx = intmap_fixture_t::load("G000341695", "G000025025", false);
   REQUIRE(!fx.qs->is_empty());
@@ -345,7 +378,7 @@ TEST_CASE("one level emits only that alpha" * doctest::skip(!test_data_available
   while (std::getline(iss, line)) {
     if (line.empty()) continue;
     const auto f = split_tsv(line);
-    CHECK(std::stod(f[k_ag_alpha]) == doctest::Approx(0.01));
+    CHECK(std::stod(f[k_ag_pi]) == doctest::Approx(0.01));
   }
 }
 
@@ -411,14 +444,70 @@ TEST_CASE("explicit thresholds become lanes verbatim" * doctest::skip(!test_data
     REQUIRE(static_cast<int>(f.size()) == k_ag_cols);
     const double th = std::stod(f[k_ag_threshold]);
     CHECK((th == doctest::Approx(0.02) || th == doctest::Approx(0.3)));
-    // No level placed the threshold, so the alpha column stays NaN.
-    CHECK_FALSE(token_is_finite(f[k_ag_alpha]));
+    // No level placed the threshold, so the pi column stays NaN.
+    CHECK_FALSE(token_is_finite(f[k_ag_pi]));
     ++rows;
   }
   CHECK(rows > 0);
   CHECK(any_finite_col(out, k_ag_dist, k_ag_cols));
   // The hurdle gamma still scores significance even though it placed no threshold.
   CHECK(any_finite_col(out, k_ag_pgamma, k_ag_cols));
+}
+
+TEST_CASE("the thresholds used are written as comment lines" * doctest::skip(!test_data_available()))
+{
+  const auto fx = intmap_fixture_t::load("G000341695", "G000025025", false);
+  REQUIRE(!fx.qs->is_empty());
+  const std::string raw = run_intmap_raw(fx, make_opts(500, false, 33.0, {0.01, 0.001}));
+  const auto th = comment_rows(raw, "threshold");
+  REQUIRE_FALSE(th.empty());
+  for (const auto& f : th) {
+    REQUIRE(f.size() == 5); // threshold, reference, side, distance, pi
+    CHECK(f[1].find("G000341695") != std::string::npos);
+    CHECK((f[2] == "low" || f[2] == "high"));
+    CHECK(token_is_finite(f[3]));
+    const double pi = std::stod(f[4]);
+    CHECK((pi == doctest::Approx(0.01) || pi == doctest::Approx(0.001)));
+  }
+  // Every record's threshold and pi is one of the listed pairs, on the listed side.
+  std::istringstream iss(without_comments(raw));
+  std::string line;
+  while (std::getline(iss, line)) {
+    const auto r = split_tsv(line);
+    bool listed = false;
+    for (const auto& f : th)
+      listed = listed || (std::stod(f[3]) == doctest::Approx(std::stod(r[k_ag_threshold])).epsilon(1e-4) &&
+                          std::stod(f[4]) == doctest::Approx(std::stod(r[k_ag_pi])));
+    CHECK(listed);
+  }
+}
+
+TEST_CASE("--thresholds lanes are listed with a NaN pi" * doctest::skip(!test_data_available()))
+{
+  const auto fx = intmap_fixture_t::load("G000341695", "G000025025", false);
+  REQUIRE(!fx.qs->is_empty());
+  auto opts = make_opts(500, false, 33.0, {});
+  opts.thresholds_v = {0.02, 0.3};
+  const auto th = comment_rows(run_intmap_raw(fx, opts), "threshold");
+  REQUIRE(th.size() == 2);
+  CHECK(std::stod(th[0][3]) == doctest::Approx(0.02));
+  CHECK(std::stod(th[1][3]) == doctest::Approx(0.3));
+  CHECK_FALSE(token_is_finite(th[0][4]));
+}
+
+TEST_CASE("a reference with too small a background sample is skipped and says why" * doctest::skip(!test_data_available()))
+{
+  // Fewer than min_fit_windows windows cannot support a gamma fit, however the --sample-size is set.
+  const auto fx = intmap_fixture_t::load("G000341695", "G000025025", false);
+  REQUIRE(!fx.qs->is_empty());
+  const std::string raw = run_intmap_raw(fx, make_opts(20));
+  CHECK(without_comments(raw).empty());
+  const auto skipped = comment_rows(raw, "skipped");
+  REQUIRE(skipped.size() == 1);
+  REQUIRE(skipped[0].size() == 3); // skipped, reference, reason
+  CHECK(skipped[0][1].find("G000341695") != std::string::npos);
+  CHECK(skipped[0][2].find("at least") != std::string::npos);
+  CHECK(comment_rows(raw, "threshold").empty());
 }
 
 } // TEST_SUITE
@@ -537,7 +626,7 @@ TEST_CASE("--thresholds bypasses level detection" * doctest::skip(!gdiff_cli_ava
     if (static_cast<int>(f.size()) != k_ag_cols || f[0] == "seq") continue;
     const double th = std::stod(f[k_ag_threshold]);
     CHECK((th == doctest::Approx(0.02) || th == doctest::Approx(0.3)));
-    CHECK_FALSE(token_is_finite(f[k_ag_alpha]));
+    CHECK_FALSE(token_is_finite(f[k_ag_pi]));
   }
   // The option replaces --levels and inherits the distance domain and uniqueness rules.
   const auto sink = test_util::path("cli_map_thresholds_sink.tsv");
@@ -604,7 +693,7 @@ TEST_CASE("demo background calls stay localized with normal merging" *
     if (f.size() != k_ag_cols || f[0] != "AG-899-N21_NODE_6" || f[7] != "low" ||
         f[k_ag_ref].find("AG-893-E15") == std::string::npos) continue;
     ++calls;
-    CHECK(token_is_finite(f[k_ag_alpha]));
+    CHECK(token_is_finite(f[k_ag_pi]));
     const uint64_t start = std::stoull(f[k_ag_start]), end = std::stoull(f[k_ag_end]);
     // Broad maximal calls are expected, but contig-wide calls are not a useful demo.
     CHECK(end - start + 1 < std::stoull(f[k_ag_len]) * 0.4);

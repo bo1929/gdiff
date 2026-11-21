@@ -45,9 +45,6 @@ using arr = std::array<T, WIDTH>;
 template<typename T>
 using vec = std::vector<T>;
 
-template<typename T>
-using vvec = std::vector<std::vector<T>>;
-
 // The mapped counterpart of vec<T>: a non-owning run of Ts.
 template<typename T>
 struct slice_t

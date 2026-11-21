@@ -45,9 +45,9 @@ bool is_container_file(const std::filesystem::path& path)
 {
   std::ifstream in(path, std::ios::binary);
   if (!in) return false;
-  uint32_t vgskey = 0;
-  in.read(reinterpret_cast<char*>(&vgskey), sizeof(uint32_t));
-  return in.good() && vgskey == container_vgskey;
+  uint32_t vkey = 0;
+  in.read(reinterpret_cast<char*>(&vkey), sizeof(uint32_t));
+  return in.good() && vkey == container_vkey;
 }
 
 bool check_input_type(const std::filesystem::path& path, input_type type, const str& what)
@@ -55,10 +55,10 @@ bool check_input_type(const std::filesystem::path& path, input_type type, const 
   if (!std::filesystem::is_regular_file(path)) return true;
   const bool is_container = type == input_type::container;
   if (is_container_file(path) == is_container) return true;
-  cerr_msg(what,
-           is_container ? " must be a sketch container, not a sequence file: "
-                        : " must be a FASTA/FASTQ sequence file, not a sketch container: ",
-           path.string());
+  error_msg(what,
+            is_container ? " must be a sketch container, not a sequence file: "
+                         : " must be a FASTA/FASTQ sequence file, not a sketch container: ",
+            path.string());
   return false;
 }
 
@@ -68,9 +68,9 @@ void read_container_header(const char*& p,
                            uint64_t& nsketches,
                            const std::filesystem::path& path)
 {
-  const uint32_t vgskey = read_trivial<uint32_t>(p, end, "vgskey");
+  const uint32_t vkey = read_trivial<uint32_t>(p, end, "vkey");
   const uint32_t version = read_trivial<uint32_t>(p, end, "version");
-  if (vgskey != container_vgskey) error_exit("Not a gdiff container: " + path.string());
+  if (vkey != container_vkey) error_exit("Not a gdiff container: " + path.string());
   if (version != container_version) {
     error_exit(concat_msg(
       "Container format version ", version, " != ", container_version, "; re-run `gdiff sketch`: ", path.string()));
@@ -84,22 +84,22 @@ void read_container_header(const char*& p,
   cfg.h = read_trivial<uint8_t>(p, end, "h");
   cfg.canonical = read_trivial<uint8_t>(p, end, "canonical") != 0;
   cfg.keep_seq = read_trivial<uint8_t>(p, end, "keep_seq") != 0;
-  p = need(p, end, 3, "config padding");
+  require_bytes(p, end, 3, "config padding");
   p += 3;
   cfg.nrows = read_trivial<uint32_t>(p, end, "nrows");
-  p = need(p, end, 4, "config padding");
+  require_bytes(p, end, 4, "config padding");
   p += 4;
   cfg.frac = read_trivial<double>(p, end, "frac");
   cfg.tau = read_trivial<uint64_t>(p, end, "tau");
   cfg.sample_size = read_trivial<uint64_t>(p, end, "sample_size");
 
   if (cfg.h > cfg.k || cfg.k == 0) error_exit("Corrupt sketch LSH config: " + path.string());
-  p = need(p, end, cfg.k, "LSH positions");
+  require_bytes(p, end, cfg.k, "LSH positions");
   cfg.ppos_v.assign(p, p + cfg.h);
   p += cfg.h;
   cfg.npos_v.assign(p, p + (cfg.k - cfg.h));
   p += (cfg.k - cfg.h);
-  p = need(p, end, round_up_word(cfg.k) - cfg.k, "LSH position padding");
+  require_bytes(p, end, round_up_word(cfg.k) - cfg.k, "LSH position padding");
   p += round_up_word(cfg.k) - cfg.k;
 }
 
@@ -111,7 +111,7 @@ void read_container_index(const char*& p,
 {
   entries_v.resize(static_cast<size_t>(nsketches));
   for (scentry& r : entries_v) {
-    p = need(p, end, sizeof(scentry), "index entry");
+    require_bytes(p, end, sizeof(scentry), "index entry");
     std::memcpy(&r, p, sizeof(scentry));
     p += sizeof(scentry);
   }
@@ -119,7 +119,7 @@ void read_container_index(const char*& p,
 
 void write_container_header(std::ostream& os, const sketch_config_t& cfg, uint64_t nsketches)
 {
-  write_trivial(os, container_vgskey);
+  write_trivial(os, container_vkey);
   write_trivial(os, container_version);
   write_trivial(os, nsketches);
   write_trivial(os, cfg.seed);

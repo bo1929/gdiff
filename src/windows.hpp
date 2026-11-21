@@ -96,7 +96,7 @@ inline uint64_t get_nwinmers(uint64_t tau, uint64_t bin_shift) noexcept
   return std::max<uint64_t>(1, (tau + bin_size - 1) >> bin_shift) << bin_shift;
 }
 
-window_plan_t make_window_plan(const vec<uint64_t>& slen_v,
+window_plan_t make_window_plan(const vec<uint64_t>& len_v,
                                uint64_t k,
                                uint64_t tau,
                                uint64_t bin_shift,

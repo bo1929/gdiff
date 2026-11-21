@@ -5,13 +5,16 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
+#include <exception>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <utility>
 #include <vector>
 
-// Synchronous parallel_for: coordinator participates; fn must not re-enter.
+// Synchronous parallel_for: coordinator participates; fn must not re-enter. The first exception
+// thrown by fn stops the remaining work and is rethrown on the calling thread.
 class ThreadPool
 {
 public:
@@ -57,6 +60,7 @@ public:
     next.store(0, std::memory_order_relaxed);
     remaining.store(n, std::memory_order_relaxed);
     acks.store(0, std::memory_order_relaxed);
+    failed.store(false, std::memory_order_relaxed);
     {
       std::lock_guard<std::mutex> lock(mtx);
       task_n = n;
@@ -69,26 +73,31 @@ public:
     // Wait until all indices are done and every worker has drained this generation.
     while (remaining.load(std::memory_order_acquire) != 0 || acks.load(std::memory_order_acquire) < nworkers)
       std::this_thread::yield();
+    if (failure) {
+      const std::exception_ptr ep = std::exchange(failure, nullptr);
+      std::rethrow_exception(ep);
+    }
   }
 
 private:
-  static void drain(uint64_t n,
-                    uint64_t chunk,
-                    const std::function<void(uint64_t)>& fn,
-                    std::atomic<uint64_t>& next,
-                    std::atomic<uint64_t>& remaining)
+  void drain(uint64_t n, uint64_t chunk, const std::function<void(uint64_t)>& fn)
   {
     while (true) {
       const uint64_t base = next.fetch_add(chunk, std::memory_order_relaxed);
       if (base >= n) break;
       const uint64_t end = std::min(base + chunk, n);
-      for (uint64_t i = base; i < end; ++i)
-        fn(i);
+      for (uint64_t i = base; i < end && !failed.load(std::memory_order_relaxed); ++i) {
+        try {
+          fn(i);
+        } catch (...) {
+          std::lock_guard<std::mutex> lock(mtx);
+          if (!failure) failure = std::current_exception();
+          failed.store(true, std::memory_order_relaxed);
+        }
+      }
       remaining.fetch_sub(end - base, std::memory_order_acq_rel);
     }
   }
-
-  void drain(uint64_t n, uint64_t chunk, const std::function<void(uint64_t)>& fn) { drain(n, chunk, fn, next, remaining); }
 
   void worker_loop()
   {
@@ -123,6 +132,8 @@ private:
   std::atomic<uint64_t> next{0};
   std::atomic<uint64_t> remaining{0};
   std::atomic<uint64_t> acks{0};
+  std::atomic<bool> failed{false};
+  std::exception_ptr failure;
 };
 
 #endif
